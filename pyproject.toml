@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "portable-os-admin"
+version = "0.1.0"
+description = "Secure administrative application for creating and administering a portable operating system on external media (LUKS-encrypted, with recovery and admin container)"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Maksim Khripunov" }]
+dependencies = [
+    "cryptography>=41.0",
+    "textual>=0.58",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4",
+]
+
+[project.scripts]
+portable-os-admin = "portable_os_admin.tui.app:run"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+portable_os_admin = ["recovery/recovery_module.sh"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,0 +1,95 @@
+"""Partition-table planning and creation ("Установка.Разметка").
+
+Layout written to the device, in order: boot/ESP, LUKS/system (rest of the
+usable space minus the two service partitions below), log partition,
+exchange partition -- matching "Конфигурация.Состав" and the "Разметка"
+step of the activity diagram (Рисунок 2).
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from ..config.schema import DiskLayoutConfig
+from .command_runner import CommandPlan, CommandRunner
+
+MIB = 1024 * 1024
+
+
+@dataclass(frozen=True)
+class NegativeOffset:
+    """parted accepts negative offsets ("-N MiB") to mean "N MiB before the
+    end of the disk"; this wraps that so a PartitionSpec position can be
+    either an absolute MiB offset from the start, or one of these."""
+
+    mib_from_end: int
+
+    def __str__(self) -> str:
+        return f"-{self.mib_from_end}MiB"
+
+
+@dataclass(frozen=True)
+class PartitionSpec:
+    number: int
+    label: str
+    fs_hint: str  # parted's filesystem-type hint, e.g. "fat32", "ext4", or "" for the LUKS partition
+    start_mib: "int | NegativeOffset"
+    end_mib: "int | NegativeOffset | None"  # None means "100%" (rest of the disk)
+
+
+@dataclass(frozen=True)
+class PartitionPlan:
+    device: str
+    partitions: tuple[PartitionSpec, ...]
+
+    def partition_path(self, spec: PartitionSpec) -> str:
+        # NVMe/mmcblk devices need a "p" separator before the partition number.
+        if self.device[-1].isdigit():
+            return f"{self.device}p{spec.number}"
+        return f"{self.device}{spec.number}"
+
+
+def plan_partitions(device: str, layout: DiskLayoutConfig) -> PartitionPlan:
+    boot_end = layout.boot_partition_mb
+    log_size = layout.log_partition_mb
+    exchange_size = layout.exchange_partition_mb
+
+    # The LUKS/system partition eats everything between the boot partition
+    # and the two trailing service partitions, whose sizes are fixed by the
+    # config -- so they are carved out from the *end* of the disk first and
+    # the system partition's end is expressed as a negative offset.
+    trailing_reserved_mib = log_size + exchange_size
+
+    partitions = (
+        PartitionSpec(1, "POA_BOOT", "fat32", 1, boot_end),
+        PartitionSpec(2, "POA_SYSTEM", "", boot_end, NegativeOffset(trailing_reserved_mib)),
+        PartitionSpec(3, "POA_LOGS", "ext4", NegativeOffset(trailing_reserved_mib), NegativeOffset(exchange_size)),
+        PartitionSpec(4, "POA_EXCHANGE", "ext4", NegativeOffset(exchange_size), None),
+    )
+    return PartitionPlan(device=device, partitions=partitions)
+
+
+def _format_position(position: "int | NegativeOffset") -> str:
+    if isinstance(position, NegativeOffset):
+        return str(position)
+    return f"{position}MiB"
+
+
+class DiskManager:
+    def __init__(self, runner: CommandRunner | None = None):
+        self.runner = runner or CommandRunner()
+
+    def commands_for(self, plan: PartitionPlan) -> list[list[str]]:
+        cmds = [["parted", "--script", plan.device, "--", "mklabel", "gpt"]]
+        for spec in plan.partitions:
+            start = _format_position(spec.start_mib)
+            end = "100%" if spec.end_mib is None else _format_position(spec.end_mib)
+            fs_arg = [spec.fs_hint] if spec.fs_hint else []
+            cmds.append(["parted", "--script", plan.device, "--", "mkpart", spec.label, *fs_arg, start, end])
+        cmds.append(["parted", "--script", plan.device, "set", "1", "esp", "on"])
+        return cmds
+
+    def apply(self, plan: PartitionPlan, *, dry_run: bool = True, confirm_device: str | None = None) -> CommandPlan:
+        command_plan = CommandPlan(device=plan.device)
+        for argv in self.commands_for(plan):
+            self.runner.run(argv, command_plan, dry_run=dry_run, confirm_device=confirm_device)
+        return command_plan
