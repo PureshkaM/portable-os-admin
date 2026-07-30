@@ -1,0 +1,24 @@
+Source: portable-os-admin
+Section: admin
+Priority: optional
+Maintainer: PureshkaM <xripmax@gmail.com>
+Build-Depends: debhelper-compat (= 13)
+Standards-Version: 4.6.2
+Homepage: https://github.com/PureshkaM/portable-os-admin
+
+Package: portable-os-admin
+Architecture: all
+Depends: ${misc:Depends}, python3 (>= 3.9), python3-venv, python3-pip, parted, cryptsetup, debootstrap
+Description: Admin tool for portable LUKS-encrypted OS media
+ Creates and administers an encrypted admin container, builds install
+ configurations, installs Debian/Astra Linux or RedOS onto an external
+ LUKS-encrypted medium, and manages its logs/exchange partition/recovery
+ codes afterwards.
+ .
+ The Python dependencies this project actually needs (textual>=0.58,
+ cryptography>=41.0) are newer than Debian's own packaged versions
+ (python3-textual in bookworm is 0.1.13, a pre-rewrite release with a
+ different widget API), so this package installs them into a private
+ virtualenv at /opt/portable-os-admin/venv during configuration instead
+ of depending on the system packages -- see packaging/README.md in the
+ source tree for why, and what that means for offline installs.

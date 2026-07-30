@@ -45,6 +45,11 @@ class ConfigValidationError(ConfigError):
         super().__init__("; ".join(problems))
 
 
+class RepoBrowseError(ConfigError):
+    """Raised when a target OS's package repository cannot be reached or
+    its metadata cannot be parsed while browsing packages to preinstall."""
+
+
 class InstallError(PortableOSAdminError):
     """Base class for installation-pipeline errors."""
 

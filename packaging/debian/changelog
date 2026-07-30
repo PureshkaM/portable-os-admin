@@ -1,0 +1,8 @@
+portable-os-admin (0.1.0-1) unstable; urgency=low
+
+  * Initial packaging: installs the admin TUI plus its Python
+    dependencies (into a private virtualenv, since Debian's own
+    python3-textual is far too old for this project) and pulls in
+    parted, cryptsetup, debootstrap as system dependencies.
+
+ -- PureshkaM <xripmax@gmail.com>  Thu, 30 Jul 2026 00:00:00 +0000

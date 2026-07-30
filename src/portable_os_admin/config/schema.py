@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 
-SUPPORTED_TARGET_OS = ("debian", "redos")
+SUPPORTED_TARGET_OS = ("debian", "redos", "astra")
 
 
 @dataclass
@@ -73,5 +73,5 @@ class InstallConfig:
 
     @classmethod
     def create_default(cls, name: str, target_os: str = "debian") -> "InstallConfig":
-        release = "bookworm" if target_os == "debian" else "9"
+        release = {"debian": "bookworm", "redos": "8.0", "astra": "orel"}.get(target_os, "")
         return cls(name=name, target_os=target_os, release=release)

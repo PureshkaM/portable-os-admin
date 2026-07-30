@@ -1,5 +1,6 @@
 from portable_os_admin.config import InstallConfig
 from portable_os_admin.install.backends import get_backend
+from portable_os_admin.install.backends.astra import AstraInstallBackend
 from portable_os_admin.install.backends.debian import DebianInstallBackend
 from portable_os_admin.install.backends.redos import RedOSInstallBackend
 
@@ -7,6 +8,7 @@ from portable_os_admin.install.backends.redos import RedOSInstallBackend
 def test_get_backend_returns_expected_types():
     assert isinstance(get_backend("debian"), DebianInstallBackend)
     assert isinstance(get_backend("redos"), RedOSInstallBackend)
+    assert isinstance(get_backend("astra"), AstraInstallBackend)
 
 
 def test_debian_bootstrap_command():
@@ -54,3 +56,23 @@ def test_redos_uses_wheel_group_and_sshd_service():
 
     assert any("wheel" in c for c in commands)
     assert any("sshd" in c for c in commands)
+
+
+def test_astra_bootstrap_command_reuses_debootstrap():
+    config = InstallConfig.create_default("stick1", "astra")
+    backend = AstraInstallBackend()
+    argv = backend.bootstrap_command("/mnt/poa", config)
+    assert argv[0] == "debootstrap"
+    assert config.release in argv
+    assert "/mnt/poa" in argv
+
+
+def test_astra_uses_astra_admin_group_not_sudo():
+    config = InstallConfig.create_default("stick1", "astra")
+    config.account.sudo = True
+
+    backend = AstraInstallBackend()
+    commands = backend.chroot_setup_commands("/mnt/poa", config)
+
+    assert any("astra-admin" in c for c in commands)
+    assert not any(c[-1] == "sudo" and "usermod" in c for c in commands)

@@ -7,6 +7,7 @@ from textual.screen import Screen
 from textual.widgets import Button, DataTable, Footer, Header, Input, Static
 
 from ...config.validator import ConfigValidationUnavailableError
+from .package_browser import PackageBrowserScreen
 
 
 class ConfigsScreen(Screen):
@@ -21,7 +22,11 @@ class ConfigsScreen(Screen):
             Horizontal(
                 Button("Создать (Debian)", id="new_debian"),
                 Button("Создать (RedOS)", id="new_redos"),
+                Button("Создать (Astra)", id="new_astra"),
+            ),
+            Horizontal(
                 Button("Проверить выбранную", id="validate", variant="primary"),
+                Button("Пакеты...", id="packages"),
                 Button("Назад", id="back"),
             ),
             Static("", id="message"),
@@ -30,6 +35,9 @@ class ConfigsScreen(Screen):
 
     def on_mount(self) -> None:
         self._paths = []
+        self._refresh_table()
+
+    def on_screen_resume(self) -> None:
         self._refresh_table()
 
     def _refresh_table(self) -> None:
@@ -45,12 +53,12 @@ class ConfigsScreen(Screen):
         message = self.query_one("#message", Static)
         button_id = event.button.id
 
-        if button_id in ("new_debian", "new_redos"):
+        if button_id in ("new_debian", "new_redos", "new_astra"):
             name = self.query_one("#new_name", Input).value.strip()
             if not name:
                 message.update("[red]Введите имя конфигурации[/red]")
                 return
-            target_os = "debian" if button_id == "new_debian" else "redos"
+            target_os = {"new_debian": "debian", "new_redos": "redos", "new_astra": "astra"}[button_id]
             self.app.config_manager.create(self.app.configs_dir, name, target_os)
             message.update(f"[green]Создана конфигурация «{name}»[/green]")
             self._refresh_table()
@@ -73,6 +81,14 @@ class ConfigsScreen(Screen):
             else:
                 message.update("[red]" + "; ".join(config.validation_errors) + "[/red]")
             self._refresh_table()
+
+        elif button_id == "packages":
+            table = self.query_one("#configs_table", DataTable)
+            if not self._paths or table.cursor_row is None:
+                message.update("[red]Выберите конфигурацию в таблице[/red]")
+                return
+            path = self._paths[table.cursor_row]
+            self.app.push_screen(PackageBrowserScreen(path))
 
         elif button_id == "back":
             self.app.pop_screen()

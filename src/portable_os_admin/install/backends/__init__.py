@@ -1,3 +1,4 @@
+from .astra import AstraInstallBackend
 from .base import InstallBackend
 from .debian import DebianInstallBackend
 from .redos import RedOSInstallBackend
@@ -5,6 +6,7 @@ from .redos import RedOSInstallBackend
 BACKENDS: dict[str, type[InstallBackend]] = {
     "debian": DebianInstallBackend,
     "redos": RedOSInstallBackend,
+    "astra": AstraInstallBackend,
 }
 
 
@@ -15,4 +17,11 @@ def get_backend(target_os: str) -> InstallBackend:
         raise ValueError(f"неизвестный backend установки: {target_os!r}") from exc
 
 
-__all__ = ["InstallBackend", "DebianInstallBackend", "RedOSInstallBackend", "BACKENDS", "get_backend"]
+__all__ = [
+    "InstallBackend",
+    "DebianInstallBackend",
+    "RedOSInstallBackend",
+    "AstraInstallBackend",
+    "BACKENDS",
+    "get_backend",
+]

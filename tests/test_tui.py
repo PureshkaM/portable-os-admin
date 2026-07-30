@@ -14,7 +14,7 @@ def test_tui_full_flow(tmp_path):
     async def scenario():
         container_path = tmp_path / "admin.container"
         app = PortableOSAdminApp()
-        async with app.run_test() as pilot:
+        async with app.run_test(size=(120, 60)) as pilot:
             await pilot.pause()
             app.screen.query_one("#path").value = str(container_path)
             app.screen.query_one("#password").value = "CorrectHorse123"

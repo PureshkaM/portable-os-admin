@@ -1,0 +1,18 @@
+#!/usr/bin/make -f
+
+%:
+	dh $@
+
+override_dh_auto_configure:
+
+override_dh_auto_build:
+
+override_dh_auto_test:
+
+override_dh_auto_install:
+	mkdir -p debian/portable-os-admin/usr/share/portable-os-admin/app
+	cp -r src pyproject.toml README.md debian/portable-os-admin/usr/share/portable-os-admin/app/
+	mkdir -p debian/portable-os-admin/usr/bin
+	printf '#!/bin/sh\nexec /opt/portable-os-admin/venv/bin/portable-os-admin "$$@"\n' \
+		> debian/portable-os-admin/usr/bin/portable-os-admin
+	chmod 755 debian/portable-os-admin/usr/bin/portable-os-admin
