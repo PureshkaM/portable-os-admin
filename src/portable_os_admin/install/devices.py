@@ -28,7 +28,7 @@ class BlockDevice:
 
 
 class DeviceLister:
-    LSBLK_COLUMNS = "NAME,PATH,SIZE,MODEL,RM,TYPE,MOUNTPOINTS"
+    LSBLK_COLUMNS = "NAME,PATH,SIZE,MODEL,RM,TRAN,TYPE,MOUNTPOINTS"
 
     def list_removable(self) -> list[BlockDevice]:
         data = self._lsblk_json()
@@ -36,7 +36,12 @@ class DeviceLister:
         for entry in data.get("blockdevices", []):
             if entry.get("type") != "disk":
                 continue
-            if not _truthy(entry.get("rm")):
+            # lsblk's own RM ("removable") bit is frequently wrong for real USB
+            # sticks -- many controllers/enclosures report RM=0 even though the
+            # disk is plainly hot-pluggable. Treat "connected over USB" (TRAN)
+            # as an equally valid signal so a real flash drive isn't silently
+            # dropped from the list just because RM lied.
+            if not _truthy(entry.get("rm")) and (entry.get("tran") or "").strip().lower() != "usb":
                 continue
             devices.append(
                 BlockDevice(

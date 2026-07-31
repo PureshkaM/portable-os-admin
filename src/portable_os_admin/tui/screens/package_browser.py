@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from textual import work
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
@@ -12,6 +13,8 @@ from textual.widgets import Button, DataTable, Footer, Header, Input, Static
 
 from ...config.repo_browser import RepoPackage, get_package_source
 from ...errors import RepoBrowseError
+
+CATALOG_DISPLAY_LIMIT = 200
 
 
 class PackageBrowserScreen(Screen):
@@ -63,9 +66,17 @@ class PackageBrowserScreen(Screen):
     def _refresh_catalog(self, items: list[RepoPackage]) -> None:
         table = self.query_one("#catalog_table", DataTable)
         table.clear()
-        self._catalog_view = items[:200]
+        self._catalog_view = items[:CATALOG_DISPLAY_LIMIT]
         for pkg in self._catalog_view:
             table.add_row(pkg.name, pkg.version, pkg.summary)
+        label = self.query_one("#catalog_label", Static)
+        if len(items) > CATALOG_DISPLAY_LIMIT:
+            label.update(
+                f"Найдено в репозитории: {len(items)} — показаны первые {CATALOG_DISPLAY_LIMIT}, "
+                "уточните фильтр, чтобы найти нужный пакет:"
+            )
+        else:
+            label.update(f"Найдено в репозитории: {len(items)}:")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         message = self.query_one("#message", Static)
@@ -74,14 +85,13 @@ class PackageBrowserScreen(Screen):
             self.config.mirror = self.query_one("#mirror", Input).value.strip()
             self.config.release = self.query_one("#release", Input).value.strip()
             self.app.config_manager.save(self.config, self.config_path)
-            try:
-                source = get_package_source(self.config.target_os)
-                self._catalog = source.list_packages(self.config.mirror, self.config.release)
-            except RepoBrowseError as exc:
-                message.update(f"[red]{exc}[/red]")
-                return
-            self._refresh_catalog(self._catalog)
-            message.update(f"[green]Загружено пакетов из репозитория: {len(self._catalog)}[/green]")
+            self.query_one("#connect", Button).disabled = True
+            message.update(
+                "[yellow]Подключение к репозиторию… для больших репозиториев (десятки тысяч "
+                "пакетов) это может занять до минуты, интерфейс останется отзывчивым[/yellow]"
+            )
+            self._load_catalog(self.config.target_os, self.config.mirror, self.config.release)
+            return
 
         elif event.button.id == "add":
             table = self.query_one("#catalog_table", DataTable)
@@ -104,6 +114,35 @@ class PackageBrowserScreen(Screen):
             self.app.config_manager.save(self.config, self.config_path)
             self._refresh_selected()
             message.update(f"[green]Убран пакет «{name}»[/green]")
+
+    @work(thread=True, exclusive=True, group="repo-fetch")
+    def _load_catalog(self, target_os: str, mirror: str, release: str) -> None:
+        # Runs off the UI thread: fetching + parsing a real repo's package
+        # index (tens of thousands of entries, tens of MB) synchronously on
+        # Textual's event loop thread was the actual cause of the TUI
+        # appearing to freeze/render garbage during live testing -- it
+        # starved the loop that redraws the screen for as long as the
+        # network+parse took.
+        try:
+            source = get_package_source(target_os)
+            catalog = source.list_packages(mirror, release)
+        except RepoBrowseError as exc:
+            self.app.call_from_thread(self._on_catalog_error, exc)
+            return
+        except Exception as exc:  # network/parse failure not modeled as RepoBrowseError
+            self.app.call_from_thread(self._on_catalog_error, exc)
+            return
+        self.app.call_from_thread(self._on_catalog_loaded, catalog)
+
+    def _on_catalog_loaded(self, catalog: list[RepoPackage]) -> None:
+        self._catalog = catalog
+        self._refresh_catalog(catalog)
+        self.query_one("#connect", Button).disabled = False
+        self.query_one("#message", Static).update(f"[green]Загружено пакетов из репозитория: {len(catalog)}[/green]")
+
+    def _on_catalog_error(self, exc: Exception) -> None:
+        self.query_one("#connect", Button).disabled = False
+        self.query_one("#message", Static).update(f"[red]{exc}[/red]")
 
     def on_input_changed(self, event: Input.Changed) -> None:
         if event.input.id != "filter" or not self._catalog:

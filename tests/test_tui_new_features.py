@@ -89,6 +89,7 @@ def test_package_browser_add_and_remove_package(tmp_path, monkeypatch):
             screen.query_one("#mirror").value = "http://example.test/debian"
             screen.query_one("#release").value = "bookworm"
             await pilot.click("#connect")
+            await app.workers.wait_for_complete()
             await pilot.pause()
             assert "Загружено пакетов" in str(screen.query_one("#message").content)
 

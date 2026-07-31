@@ -10,6 +10,7 @@ BuildArch:      noarch
 
 Requires:       python3 >= 3.9
 Requires:       python3-pip
+Requires:       python3-tkinter
 Requires:       parted
 Requires:       cryptsetup
 
@@ -17,14 +18,21 @@ Requires:       cryptsetup
 Creates and administers an encrypted admin container, builds install
 configurations, installs Debian/Astra Linux or RedOS onto an external
 LUKS-encrypted medium, and manages its logs/exchange partition/recovery
-codes afterwards.
+codes afterwards. Ships both a guided Tkinter GUI (portable-os-admin, the
+default) and a Textual TUI (portable-os-admin-tui) built on the same
+backend.
 
 The Python dependencies this project actually needs (textual>=0.58,
 cryptography>=41.0) are not reliably available as matching system
 packages across RHEL-family hosts, so this package installs them into a
 private virtualenv at /opt/portable-os-admin/venv during %%post instead
 of declaring them as rpm Requires -- see packaging/README.md in the
-source tree for why, and what that means for offline installs.
+source tree for why, and what that means for offline installs. The GUI's
+own dependency, Tkinter, is the one exception: it's a C extension bound to
+the system Python (confirmed present in RedOS 8.0's own repodata as
+python3-tkinter), not installable from PyPI, so it comes from the
+Requires line above and the venv is created with --system-site-packages
+so it can see it.
 
 Note: this spec targets RedOS/RHEL-family *admin hosts*. If your install
 configurations target Debian or Astra Linux media, the admin host still
@@ -48,12 +56,32 @@ cat > %{buildroot}/usr/bin/portable-os-admin <<'EOF'
 exec /opt/portable-os-admin/venv/bin/portable-os-admin "$@"
 EOF
 chmod 755 %{buildroot}/usr/bin/portable-os-admin
+cat > %{buildroot}/usr/bin/portable-os-admin-tui <<'EOF'
+#!/bin/sh
+exec /opt/portable-os-admin/venv/bin/portable-os-admin-tui "$@"
+EOF
+chmod 755 %{buildroot}/usr/bin/portable-os-admin-tui
+mkdir -p %{buildroot}/usr/share/applications
+cat > %{buildroot}/usr/share/applications/portable-os-admin.desktop <<'EOF'
+[Desktop Entry]
+Type=Application
+Name=Portable OS Admin
+GenericName=Portable OS Admin Tool
+Comment=Create and administer a portable LUKS-encrypted OS on external media
+Exec=portable-os-admin
+Icon=utilities-terminal
+Terminal=false
+Categories=System;Settings;
+EOF
 
 %post
 VENV=/opt/portable-os-admin/venv
 APP=/usr/share/portable-os-admin/app
 if [ ! -x "$VENV/bin/python3" ]; then
-    python3 -m venv "$VENV"
+    # --system-site-packages: the GUI needs Tkinter (python3-tkinter Requires
+    # above), a C extension bound to the system Python that pip cannot
+    # install into an isolated venv.
+    python3 -m venv --system-site-packages "$VENV"
 fi
 "$VENV/bin/pip" install --upgrade pip --quiet
 "$VENV/bin/pip" install --quiet "$APP"
@@ -67,6 +95,8 @@ fi
 %license LICENSE
 /usr/share/%{name}/app
 /usr/bin/portable-os-admin
+/usr/bin/portable-os-admin-tui
+/usr/share/applications/portable-os-admin.desktop
 
 %changelog
 * Thu Jul 30 2026 PureshkaM <xripmax@gmail.com> - 0.1.0-1

@@ -21,7 +21,8 @@ dev = [
 ]
 
 [project.scripts]
-portable-os-admin = "portable_os_admin.tui.app:run"
+portable-os-admin = "portable_os_admin.gui.app:run"
+portable-os-admin-tui = "portable_os_admin.tui.app:run"
 
 [tool.setuptools.packages.find]
 where = ["src"]

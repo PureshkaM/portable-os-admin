@@ -24,10 +24,21 @@
 
 Поэтому оба пакета (`.deb` и `.rpm`) при установке (`postinst`/`%post`):
 
-1. создают приватный venv в `/opt/portable-os-admin/venv` (`python3 -m venv`);
+1. создают приватный venv в `/opt/portable-os-admin/venv`
+   (`python3 -m venv --system-site-packages`);
 2. ставят туда сам `portable_os_admin` через `pip install
    /usr/share/portable-os-admin/app` — что тянет `textual`/`cryptography`
    нужных версий с PyPI.
+
+`--system-site-packages` — не оговорка: GUI (`portable-os-admin`, теперь
+интерфейс по умолчанию) собран на `tkinter`, который является C-расширением,
+собранным вместе с системным Python, а не пакетом с PyPI — `pip install`
+внутри изолированного venv никогда его не увидит. Поэтому `python3-tk`
+(`.deb`)/`python3-tkinter` (`.rpm`) — обычные системные зависимости в
+`Depends`/`Requires`, а не что-то, ставящееся через venv, и оба имени пакета
+проверены напрямую по реальным индексам (`Packages.gz` Debian bookworm,
+`primary.xml` RedOS 8.0), а не угаданы по конвенции именования RHEL/Debian.
+Прежний TUI остаётся доступен как отдельная команда `portable-os-admin-tui`.
 
 **Это требует доступа в интернет в момент установки пакета** (не только во
 время `dnf --installroot`/`debootstrap` при самой установке ОС на носитель).
@@ -76,8 +87,9 @@ sudo dnf install -y rpmdevtools rpm-build
 packaging/
   debian/          # каноничные файлы для dpkg-buildpackage (build-deb.sh
                     # копирует их во временный ./debian на время сборки)
+                    # включая portable-os-admin.desktop (для GUI-лаунчера)
   rpm/
-    portable-os-admin.spec
+    portable-os-admin.spec   # генерирует .desktop-файл прямо в %install
   build-deb.sh
   build-rpm.sh
 ```

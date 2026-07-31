@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Portable OS Admin
+GenericName=Portable OS Admin Tool
+Comment=Create and administer a portable LUKS-encrypted OS on external media
+Exec=portable-os-admin
+Icon=utilities-terminal
+Terminal=false
+Categories=System;Settings;

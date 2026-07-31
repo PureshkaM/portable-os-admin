@@ -8,12 +8,14 @@ Homepage: https://github.com/PureshkaM/portable-os-admin
 
 Package: portable-os-admin
 Architecture: all
-Depends: ${misc:Depends}, python3 (>= 3.9), python3-venv, python3-pip, parted, cryptsetup, debootstrap
+Depends: ${misc:Depends}, python3 (>= 3.9), python3-venv, python3-pip, python3-tk, parted, cryptsetup, debootstrap
 Description: Admin tool for portable LUKS-encrypted OS media
  Creates and administers an encrypted admin container, builds install
  configurations, installs Debian/Astra Linux or RedOS onto an external
  LUKS-encrypted medium, and manages its logs/exchange partition/recovery
- codes afterwards.
+ codes afterwards. Ships both a guided Tkinter GUI (`portable-os-admin`,
+ the default) and a Textual TUI (`portable-os-admin-tui`) built on the
+ same backend.
  .
  The Python dependencies this project actually needs (textual>=0.58,
  cryptography>=41.0) are newer than Debian's own packaged versions
@@ -21,4 +23,9 @@ Description: Admin tool for portable LUKS-encrypted OS media
  different widget API), so this package installs them into a private
  virtualenv at /opt/portable-os-admin/venv during configuration instead
  of depending on the system packages -- see packaging/README.md in the
- source tree for why, and what that means for offline installs.
+ source tree for why, and what that means for offline installs. The GUI's
+ own dependency, Tkinter, is the one exception: it's a C extension bound
+ to the system Python (confirmed present in Debian bookworm's own
+ Packages.gz as python3-tk), not installable from PyPI, so it comes from
+ this Depends line and the venv is created with --system-site-packages so
+ it can see it.

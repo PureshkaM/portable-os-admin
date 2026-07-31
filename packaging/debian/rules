@@ -16,3 +16,8 @@ override_dh_auto_install:
 	printf '#!/bin/sh\nexec /opt/portable-os-admin/venv/bin/portable-os-admin "$$@"\n' \
 		> debian/portable-os-admin/usr/bin/portable-os-admin
 	chmod 755 debian/portable-os-admin/usr/bin/portable-os-admin
+	printf '#!/bin/sh\nexec /opt/portable-os-admin/venv/bin/portable-os-admin-tui "$$@"\n' \
+		> debian/portable-os-admin/usr/bin/portable-os-admin-tui
+	chmod 755 debian/portable-os-admin/usr/bin/portable-os-admin-tui
+	mkdir -p debian/portable-os-admin/usr/share/applications
+	cp debian/portable-os-admin.desktop debian/portable-os-admin/usr/share/applications/
