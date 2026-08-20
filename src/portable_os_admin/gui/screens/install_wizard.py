@@ -57,16 +57,18 @@ class InstallWizardFrame(WizardFrame):
         self.device_size_gb = "16"
         self.image_path = ""
         self.image_info = None
+        self._valid_paths: list[Path] = []
+        self._config_fitness: dict[Path, tuple[bool, str]] = {}
         self._devices: list[BlockDevice] = []
         self._running = False
 
         super().__init__(
             parent,
             app,
-            step_titles=["Конфигурация", "Образ ОС", "Носитель", "Пароль", "Подтверждение и установка"],
+            step_titles=["Образ ОС", "Конфигурация", "Носитель", "Пароль", "Подтверждение и установка"],
             step_hints=[
-                "Выберите, какую проверенную конфигурацию устанавливать.",
                 "Укажите установочный образ. Система ставится с него, из интернета ничего не скачивается.",
+                "Выберите конфигурацию. Подходящие для выбранного образа отмечены отдельно.",
                 "Выберите внешний носитель: из автоматически найденных устройств, либо укажите путь вручную.",
                 "Пароль пользователя, которым будет защищён системный раздел (LUKS).",
                 "Последний шаг перед необратимым стиранием носителя. Проверьте, что указан именно тот диск.",
@@ -74,23 +76,48 @@ class InstallWizardFrame(WizardFrame):
             finish_label="К панели",
         )
 
-    # -- step 0: pick a validated config ----------------------------------
+    # -- step 1: pick a validated config ----------------------------------
     def _build_step_config(self, body: ttk.Frame) -> None:
+        if self.image_info is not None:
+            ttk.Label(
+                body,
+                text=f"Выбранный образ: {self.image_info.label} ({self.image_info.family} "
+                f"{self.image_info.release})",
+                wraplength=740,
+                justify="left",
+                foreground="#555555",
+            ).pack(anchor="w", pady=(0, 6))
+
         ttk.Label(body, text="Проверенные конфигурации:").pack(anchor="w")
-        self.config_table = ttk.Treeview(body, columns=("file", "target_os", "release"), show="headings", height=8)
-        for col, text in (("file", "файл"), ("target_os", "цель"), ("release", "релиз")):
+        self.config_table = ttk.Treeview(
+            body, columns=("file", "target_os", "fits"), show="headings", height=8
+        )
+        for col, text, width in (
+            ("file", "файл", 220),
+            ("target_os", "рассчитана на", 150),
+            ("fits", "подходит образу", 260),
+        ):
             self.config_table.heading(col, text=text)
-            self.config_table.column(col, width=180, anchor="w")
+            self.config_table.column(col, width=width, anchor="w")
+        # Unsuitable rows stay visible rather than being hidden: seeing that a
+        # configuration exists but does not fit the chosen image is information;
+        # silently omitting it looks like the configuration was lost.
+        self.config_table.tag_configure("unfit", foreground="#a0a0a0")
         self.config_table.pack(fill="both", expand=True, pady=(4, 8))
 
         all_paths = self.app.config_manager.list_configs(self.app.configs_dir)
         self._valid_paths = []
+        self._config_fitness = {}
         for path in all_paths:
             config = self.app.config_manager.open(path)
             if config.validation_status != "valid":
                 continue
+            fits, reason = self._fits_image(config)
             self._valid_paths.append(path)
-            self.config_table.insert("", "end", values=(path.name, config.target_os, config.release))
+            self._config_fitness[path] = (fits, reason)
+            self.config_table.insert(
+                "", "end", values=(path.name, config.target_os, reason), tags=() if fits else ("unfit",)
+            )
 
         if not self._valid_paths:
             ttk.Label(
@@ -110,6 +137,29 @@ class InstallWizardFrame(WizardFrame):
             self.config_table.selection_set(row_id)
             self.config_table.see(row_id)
 
+    def _fits_image(self, config) -> tuple[bool, str]:
+        """Whether this configuration can be installed from the chosen image.
+
+        The image decides the family and the architecture, so a configuration
+        written for another family simply cannot be used with it. Reported per
+        configuration rather than as one error after the fact, so the answer is
+        visible while choosing instead of after.
+        """
+        if self.image_info is None:
+            return True, "образ не прочитан — проверка при установке"
+        expected = IMAGE_FAMILY.get(config.target_os, config.target_os)
+        if expected != self.image_info.family:
+            return False, f"нет: образ {self.image_info.family}, конфигурация для {config.target_os}"
+        if config.arch and self.image_info.architectures:
+            from ...install.backends import get_backend
+
+            wanted = get_backend(config.target_os).normalize_arch(config.arch)
+            if wanted not in self.image_info.architectures:
+                return False, (
+                    f"нет: образ {', '.join(self.image_info.architectures)}, конфигурация {wanted}"
+                )
+        return True, "да"
+
     def _go_to_configs(self) -> None:
         from .configs_list import ConfigsListFrame
 
@@ -124,8 +174,16 @@ class InstallWizardFrame(WizardFrame):
             self.message_bar.error("Выберите конфигурацию в таблице.")
             return False
         index = self.config_table.index(selection[0])
-        self.selected_config_path = self._valid_paths[index]
-        self.selected_config = self.app.config_manager.open(self.selected_config_path)
+        path = self._valid_paths[index]
+        fits, reason = self._config_fitness.get(path, (True, ""))
+        if not fits:
+            self.message_bar.error(
+                f"Эта конфигурация не подходит к выбранному образу — {reason}. "
+                "Выберите другую конфигурацию или вернитесь и укажите другой образ."
+            )
+            return False
+        self.selected_config_path = path
+        self.selected_config = self.app.config_manager.open(path)
         return True
 
     # -- step 1: the installation image -------------------------------------
@@ -246,13 +304,6 @@ class InstallWizardFrame(WizardFrame):
             return True
         if not self.image_info.complete:
             self.message_bar.error(self.image_info.incomplete_reason)
-            return False
-        expected = IMAGE_FAMILY.get(self.selected_config.target_os, self.selected_config.target_os)
-        if self.image_info.family != expected:
-            self.message_bar.error(
-                f"Конфигурация рассчитана на {self.selected_config.target_os}, "
-                f"а образ содержит {self.image_info.family}."
-            )
             return False
         return True
 
@@ -660,11 +711,11 @@ class InstallWizardFrame(WizardFrame):
 
     # -- WizardFrame hooks ------------------------------------------------
     _STEP_BUILDERS = [
-        _build_step_config, _build_step_image, _build_step_device, _build_step_passphrase, _build_step_confirm
+        _build_step_image, _build_step_config, _build_step_device, _build_step_passphrase, _build_step_confirm
     ]
-    _STEP_SAVERS = [None, _save_step_image, _save_step_device, _save_step_passphrase, None]
+    _STEP_SAVERS = [_save_step_image, None, _save_step_device, _save_step_passphrase, None]
     _STEP_VALIDATORS = [
-        _validate_step_config, _validate_step_image, _validate_step_device, _validate_step_passphrase, None
+        _validate_step_image, _validate_step_config, _validate_step_device, _validate_step_passphrase, None
     ]
 
     def build_step(self, index: int, body: ttk.Frame) -> None:

@@ -33,10 +33,16 @@ def gui_app():
     app.destroy()
 
 
-def _pump(app, condition, timeout=5.0, interval=0.05):
+def _pump(app, condition, timeout=20.0, interval=0.05):
     """Drives Tkinter's event loop until `condition()` is true or times out
     -- needed wherever a background thread (run_in_background) is involved,
-    since nothing updates until the queue is polled via app.after()."""
+    since nothing updates until the queue is polled via app.after().
+
+    The timeout is generous on purpose: it exists so a broken test fails
+    instead of hanging forever, not to measure how fast the machine is. A
+    tighter limit made the first run after a checkout fail while Python was
+    still byte-compiling, which says nothing about the code under test.
+    """
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         app.update()
@@ -288,13 +294,12 @@ def _stub_install(monkeypatch):
 
 
 def _fill_install_wizard(app, wizard, device="/dev/sdb", size="32"):
-    wizard.config_table.selection_set(wizard.config_table.get_children()[0])
+    # the image comes first: it decides which configurations can be used at all
+    wizard.image_path_var.set(_throwaway_image(app))
     wizard._go_next()
     app.update()
 
-    # the installation image: a path typed by hand is accepted, and the
-    # installer verifies what is inside it before touching the medium
-    wizard.image_path_var.set(_throwaway_image(app))
+    wizard.config_table.selection_set(wizard.config_table.get_children()[0])
     wizard._go_next()
     app.update()
 
@@ -323,7 +328,6 @@ def test_install_wizard_records_media_and_recovery(gui_app, tmp_path, monkeypatc
     app.show_frame(InstallWizardFrame)
     wizard = app._current_frame
     assert isinstance(wizard, InstallWizardFrame)
-    assert len(wizard.config_table.get_children()) == 1
 
     _fill_install_wizard(app, wizard)
     wizard.confirm_device_var.set("/dev/sdb")
@@ -496,9 +500,12 @@ def test_install_wizard_shows_no_valid_configs_guidance(gui_app, tmp_path):
 
     app.show_frame(InstallWizardFrame)
     wizard = app._current_frame
+    wizard.image_path_var.set(_throwaway_image(app))
+    wizard._go_next()  # image -> configuration
+    app.update()
+
     assert wizard._valid_paths == []
-    ok = wizard.validate_step(0)
-    assert ok is False
+    assert wizard.validate_step(1) is False
     assert "конфигурац" in wizard.message_bar.var.get()
 
 
@@ -516,3 +523,57 @@ def test_configs_list_delete(gui_app, tmp_path):
 
     assert not path.exists()
     assert configs._paths == []
+
+
+def test_configurations_are_marked_against_the_chosen_image(gui_app, tmp_path, monkeypatch):
+    """The image is chosen first because it decides what can be installed at
+    all. A configuration written for another family cannot be used with it, and
+    saying so in the list is more useful than an error after the choice."""
+    from portable_os_admin.config import InstallConfig
+    from portable_os_admin.gui.screens import install_wizard as install_wizard_module
+    from portable_os_admin.install.image_source import ImageInfo
+
+    app = gui_app
+    _open_container(app, tmp_path)
+    for name, target_os in (("debian-stick", "debian"), ("redos-stick", "redos")):
+        config = InstallConfig.create_default(name, target_os)
+        app.config_manager.validate(config)
+        app.config_manager.save(config, app.configs_dir / f"{name}.json")
+
+    debian_image = ImageInfo(
+        path="/images/debian.iso", family="debian", release="trixie",
+        architectures=("amd64",), label="Debian 13.6 DVD",
+    )
+    monkeypatch.setattr(
+        install_wizard_module.image_source, "probe", lambda path: debian_image
+    )
+
+    app.show_frame(InstallWizardFrame)
+    wizard = app._current_frame
+    assert wizard.step_titles[0] == "Образ ОС"
+
+    wizard.image_path_var.set(_throwaway_image(app))
+    wizard._examine_image(wizard.image_path_var.get())
+    _pump(app, lambda: wizard.image_info is not None)
+    wizard._go_next()
+    app.update()
+
+    rows = {
+        wizard.config_table.item(r)["values"][0]: wizard.config_table.item(r)
+        for r in wizard.config_table.get_children()
+    }
+    assert rows["debian-stick.json"]["values"][2] == "да"
+    assert "нет" in str(rows["redos-stick.json"]["values"][2])
+    # the unusable one stays visible but marked, rather than vanishing
+    assert "unfit" in rows["redos-stick.json"]["tags"]
+
+    # and choosing it is refused, with the reason
+    redos_row = next(
+        r for r in wizard.config_table.get_children()
+        if wizard.config_table.item(r)["values"][0] == "redos-stick.json"
+    )
+    wizard.config_table.selection_set(redos_row)
+    wizard._go_next()
+    app.update()
+    assert wizard.step_titles[wizard.step_index] == "Конфигурация"
+    assert "не подходит" in wizard.message_bar.var.get()
