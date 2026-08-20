@@ -73,3 +73,56 @@ def test_external_validator_unavailable_when_command_missing():
 def test_list_configs_empty_directory(tmp_path):
     cm = ConfigManager()
     assert cm.list_configs(tmp_path / "nonexistent") == []
+
+
+def test_configuration_is_checked_by_the_distributions_own_tool(make_config, monkeypatch):
+    """The project's own rules only prove a configuration agrees with itself.
+
+    Each target family ships an official validator for its own automated-install
+    file, so the configuration is rendered into that format and handed to it --
+    ksvalidator for the RHEL family, debconf-set-selections for Debian.
+    """
+    from portable_os_admin.config import native
+    from portable_os_admin.config.validator import NATIVE_VALIDATORS
+
+    assert native.render(make_config("s", "debian"))[0] == "preseed"
+    assert native.render(make_config("s", "astra"))[0] == "preseed"
+    assert native.render(make_config("s", "redos"))[0] == "kickstart"
+
+    # The Debian tool reports a malformed file as a *warning* and still exits 0
+    # -- verified against the real tool -- so its verdict has to come from its
+    # output. Trusting the exit status would pass everything.
+    assert NATIVE_VALIDATORS["preseed"][2] == "output"
+    assert NATIVE_VALIDATORS["kickstart"][2] == "status"
+
+
+def test_missing_distribution_tool_is_reported_not_silently_skipped(make_config, monkeypatch):
+    """pykickstart is not packaged for Debian, so a RedOS configuration written
+    on a Debian workstation genuinely cannot be checked this way. Saying the
+    configuration is fine would overstate what was verified."""
+    from portable_os_admin.config import validator as validator_module
+
+    monkeypatch.setattr(validator_module.shutil, "which", lambda name: None)
+    manager = ConfigManager()
+    config = make_config("stick1", "redos")
+    manager.validate(config)
+
+    assert config.validation_status == "valid"  # internal rules passed
+    assert "не установлено" in manager.native_validation_note
+
+
+def test_native_rendering_carries_the_authored_values(make_config):
+    config = make_config("stick1", "redos")
+    config.account.username = "ivanov"
+    config.account.sudo = True
+    config.packages = ["htop"]
+    config.remote_access.enabled = True
+
+    from portable_os_admin.config import native
+
+    text = native.to_kickstart(config)
+    assert "--name=ivanov" in text
+    assert "--groups=wheel" in text  # the RHEL family's admin group, not sudo
+    assert "htop" in text
+    assert "openssh-server" in text
+    assert f"--cipher={config.luks.cipher}" in text

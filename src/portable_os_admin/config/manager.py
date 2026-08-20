@@ -11,12 +11,25 @@ from pathlib import Path
 
 from ..errors import ConfigError
 from .schema import InstallConfig
-from .validator import BuiltinConfigValidator, ConfigValidationUnavailableError, ConfigValidator
+from .validator import (
+    BuiltinConfigValidator,
+    ConfigValidationUnavailableError,
+    ConfigValidator,
+    NativeToolValidator,
+)
 
 
 class ConfigManager:
-    def __init__(self, validator: ConfigValidator | None = None):
+    def __init__(
+        self,
+        validator: ConfigValidator | None = None,
+        native_validator: ConfigValidator | None = None,
+    ):
         self.validator = validator or BuiltinConfigValidator()
+        self.native_validator = native_validator or NativeToolValidator()
+        #: Set by validate() when the distribution's own tool was unavailable,
+        #: so a caller can tell the user what was and was not checked.
+        self.native_validation_note = ""
 
     def create(self, directory: Path, name: str, target_os: str = "debian") -> InstallConfig:
         config = InstallConfig.create_default(name=name, target_os=target_os)
@@ -42,14 +55,33 @@ class ConfigManager:
     def validate(self, config: InstallConfig) -> InstallConfig:
         """Runs validation and updates config.validation_status/errors in place.
 
-        Raises ConfigValidationUnavailableError (unchanged status) if the
-        configured external tool cannot be reached — "Конфигурация.Проверка.Недоступна"."""
+        Two layers, because they know different things. This project's own
+        structural rules cover its own requirements -- that /boot must sit
+        outside the LUKS volume, which key sizes a given cipher accepts -- which
+        no distribution tool has any reason to know. The distribution's own
+        validator (ksvalidator for the RHEL family, debconf-set-selections for
+        Debian) checks the configuration against a real external standard
+        instead of against rules invented here, which is what the
+        specification's "внешнее средство проверки конфигурации" means.
+
+        A missing distribution tool is reported, not silently skipped: the
+        result then says the configuration passed the internal rules only.
+        Raises ConfigValidationUnavailableError only when validation could not
+        be performed at all -- "Конфигурация.Проверка.Недоступна".
+        """
+        result = self.validator.validate(config)
+        errors = list(result.errors)
+        self.native_validation_note = ""
+
         try:
-            result = self.validator.validate(config)
-        except ConfigValidationUnavailableError:
-            raise
-        config.validation_errors = result.errors
-        config.validation_status = "valid" if result.ok else "invalid"
+            native = self.native_validator.validate(config)
+        except ConfigValidationUnavailableError as exc:
+            self.native_validation_note = str(exc)
+        else:
+            errors += [e for e in native.errors if e not in errors]
+
+        config.validation_errors = errors
+        config.validation_status = "valid" if not errors else "invalid"
         return config
 
     def list_configs(self, directory: Path) -> list[Path]:

@@ -113,6 +113,83 @@ class BuiltinConfigValidator:
         return ValidationResult(ok=not errors, errors=errors)
 
 
+#: The official validator each family ships for its own automated-install file.
+#: Both are the distribution's own tool, not something written here.
+NATIVE_VALIDATORS = {
+    # pykickstart. Parses the whole file: removed and deprecated commands,
+    # missing required options, mutually exclusive options, some partitioning
+    # errors. Ships with the RHEL family; absent from Debian's archive.
+    # Verdict is the exit status: ksvalidator exits non-zero on a bad file.
+    "kickstart": ("ksvalidator", ["ksvalidator"], "status"),
+    # debconf. Checks that every line names an owner, a question, a type and a
+    # value -- the file's format, not the sense of its values.
+    # Verdict is the *output*, not the exit status. Checked rather than
+    # assumed: given a malformed line, debconf-set-selections prints
+    # "warning: Unknown type ..., skipping line 2" and still exits 0, so a
+    # validator that trusted the return code would silently pass everything.
+    # Its documentation agrees -- no output means the file was accepted.
+    "preseed": ("debconf-set-selections", ["debconf-set-selections", "--checkonly"], "output"),
+}
+
+
+class NativeToolValidator:
+    """Validates by rendering the configuration into the distribution's own
+    automated-install format and running the distribution's own validator.
+
+    This is the "внешнее средство проверки конфигурации" the specification
+    calls for. It is deliberately not the only check: it knows the
+    distribution's rules and nothing about this project's own (that /boot must
+    live outside the LUKS volume, which key sizes a cipher accepts), so
+    validation runs it alongside BuiltinConfigValidator.
+
+    When the tool is missing the result says so rather than quietly passing:
+    pykickstart is not packaged for Debian, so a RedOS configuration authored on
+    a Debian workstation genuinely cannot be checked this way, and pretending
+    otherwise would be worse than admitting it.
+    """
+
+    def validate(self, config: InstallConfig) -> ValidationResult:
+        from . import native
+
+        fmt, text = native.render(config)
+        tool, argv, verdict_from = NATIVE_VALIDATORS[fmt]
+        if shutil.which(tool) is None:
+            raise ConfigValidationUnavailableError(
+                f"средство проверки {tool} не установлено, поэтому конфигурация проверена "
+                "только внутренними правилами. "
+                + (
+                    "pykickstart нет в репозиториях Debian — конфигурации для RedOS этим "
+                    "средством проверяются на машине с RedOS."
+                    if fmt == "kickstart"
+                    else "Установите пакет, который его предоставляет."
+                )
+            )
+
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / ("config.ks" if fmt == "kickstart" else "config.preseed")
+            path.write_text(text, encoding="utf-8")
+            try:
+                proc = subprocess.run(
+                    [*argv, str(path)], capture_output=True, text=True, timeout=60, check=False
+                )
+            except (OSError, subprocess.SubprocessError) as exc:
+                raise ConfigValidationUnavailableError(f"не удалось запустить {tool}: {exc}") from exc
+            details = "\n".join(part for part in (proc.stderr, proc.stdout) if part).strip()
+            details = details.replace(str(path), f"<{fmt}>")
+
+        rejected = bool(details) if verdict_from == "output" else proc.returncode != 0
+        if not rejected:
+            return ValidationResult(ok=True, errors=[])
+        return ValidationResult(
+            ok=False,
+            errors=[f"{tool}: {line.strip()}" for line in details.splitlines() if line.strip()]
+            or [f"{tool} отклонил конфигурацию (код {proc.returncode})"],
+        )
+
+
 class ConfigValidationUnavailableError(RuntimeError):
     """Raised by ExternalCommandValidator when the external tool cannot be run
     ("Конфигурация.Проверка.Недоступна")."""

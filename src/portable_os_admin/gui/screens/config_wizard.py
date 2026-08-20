@@ -661,9 +661,21 @@ class ConfigWizardFrame(WizardFrame):
         except ConfigValidationUnavailableError as exc:
             self.message_bar.error(f"Проверка недоступна: {exc}")
             return
+        # Say which checks actually ran. "Корректна" means something different
+        # when the distribution's own validator was unavailable, and hiding that
+        # would overstate what was verified.
+        note = getattr(self.app.config_manager, "native_validation_note", "")
         if self.config.validation_status == "valid":
-            self.validation_status_var.set("Статус проверки: корректна")
-            self.message_bar.success("Конфигурация корректна.")
+            self.validation_status_var.set(
+                "Статус проверки: корректна" + (f"\n{note}" if note else "")
+            )
+            if note:
+                self.message_bar.info("Конфигурация прошла внутренние правила. " + note)
+            else:
+                self.message_bar.success(
+                    "Конфигурация корректна: пройдены и внутренние правила, и штатное "
+                    "средство проверки дистрибутива."
+                )
         else:
             self.validation_status_var.set("Статус проверки: содержит ошибки: " + "; ".join(self.config.validation_errors))
             self.message_bar.error("Конфигурация содержит ошибки, см. выше.")
