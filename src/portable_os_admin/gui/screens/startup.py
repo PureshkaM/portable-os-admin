@@ -6,6 +6,7 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, ttk
 
+from ..elevate import invoking_user_home
 from ..widgets import MessageBar, add_field, error_guard
 
 DEFAULT_CONTAINER_NAME = "admin.container"
@@ -87,7 +88,7 @@ class StartupFrame(ttk.Frame):
             parent = Path(current).expanduser().parent
             if parent.is_dir():
                 return str(parent)
-        return str(Path.home())
+        return str(invoking_user_home())
 
     def _path(self) -> Path:
         raw = self.path_var.get().strip()

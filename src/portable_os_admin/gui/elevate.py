@@ -9,7 +9,7 @@ user found out only after filling in the whole wizard.
 
 The password is not verified by this application and never stored. It is
 handed to `sudo` on standard input, which does the checking through PAM, and
-the process then replaces itself with a privileged copy of the same program.
+a privileged copy of the same program is then started in place of this one.
 """
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ import shutil
 import subprocess
 import sys
 import tkinter as tk
+from pathlib import Path
 from tkinter import ttk
 
 #: Set to "1" in the re-executed child so it does not ask a second time.
@@ -109,6 +110,24 @@ class PasswordPrompt(tk.Tk):
         self.destroy()
 
 
+def invoking_user_home() -> Path:
+    """Home directory of the person who started the program, not of root.
+
+    The application relaunches itself under sudo, after which `Path.home()`
+    is /root -- so a file dialog would open somewhere the administrator does
+    not keep anything, instead of where they actually store the container.
+    """
+    sudo_user = os.environ.get("SUDO_USER")
+    if sudo_user:
+        try:
+            import pwd
+
+            return Path(pwd.getpwnam(sudo_user).pw_dir)
+        except (KeyError, ImportError):
+            pass
+    return Path.home()
+
+
 def _current_user() -> str:
     try:
         import getpass
@@ -141,7 +160,7 @@ def _sudo_accepts(password: str) -> bool:
 
 
 def elevate_or_exit() -> None:
-    """Prompts, then replaces this process with a privileged one.
+    """Prompts, then hands over to a privileged copy of the program.
 
     Returns normally only when the program is already running with the rights
     it needs. On cancellation the program exits: continuing unprivileged would
