@@ -16,7 +16,7 @@ import subprocess
 from dataclasses import dataclass
 from typing import Protocol
 
-from .schema import SUPPORTED_ARCH, SUPPORTED_TARGET_OS, InstallConfig
+from .schema import LUKS_CIPHERS, LUKS_KDFS, SUPPORTED_ARCH, SUPPORTED_TARGET_OS, InstallConfig
 
 _USERNAME_RE = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
 
@@ -68,8 +68,23 @@ class BuiltinConfigValidator:
             )
 
         luks = config.luks
-        if luks.key_size_bits not in (256, 512):
-            errors.append("размер ключа LUKS должен быть 256 или 512 бит")
+        if luks.cipher not in LUKS_CIPHERS:
+            errors.append(
+                f"неподдерживаемый шифр LUKS: {luks.cipher!r} "
+                f"(ожидается одно из {', '.join(LUKS_CIPHERS)})"
+            )
+        else:
+            allowed = LUKS_CIPHERS[luks.cipher]
+            if luks.key_size_bits not in allowed:
+                errors.append(
+                    f"шифр {luks.cipher} не принимает ключ {luks.key_size_bits} бит "
+                    f"(допустимо: {', '.join(str(s) for s in allowed)})"
+                )
+        if luks.kdf not in LUKS_KDFS:
+            errors.append(
+                f"неподдерживаемая функция формирования ключа: {luks.kdf!r} "
+                f"(ожидается одно из {', '.join(LUKS_KDFS)})"
+            )
         if not (1 <= luks.failed_attempts_limit <= 10):
             errors.append("лимит попыток ввода пароля должен быть в диапазоне от 1 до 10")
 
@@ -83,8 +98,15 @@ class BuiltinConfigValidator:
             errors.append("минимальная длина пользовательского пароля должна быть не менее 8")
 
         remote = config.remote_access
-        if remote.enabled and remote.method not in ("openssh", "vpn"):
-            errors.append(f"неподдерживаемый метод удалённого доступа: {remote.method!r}")
+        # "vpn" used to be accepted here and offered in the UI, but nothing ever
+        # implemented it: the install configured a remote-access method only for
+        # "openssh", so choosing vpn produced a config that validated, installed
+        # cleanly, and left the medium with no remote access whatsoever.
+        if remote.enabled and remote.method != "openssh":
+            errors.append(
+                f"неподдерживаемый метод удалённого доступа: {remote.method!r} "
+                "(реализован только openssh)"
+            )
         if remote.enabled and not (0 < remote.port <= 65535):
             errors.append("некорректный порт удалённого доступа")
 

@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..errors import InstallError
+from .tooling import resolve_argv
 
 DEFAULT_TIMEOUT = 600
 # debootstrap/dnf pull a whole base system over the network onto slow USB
@@ -72,8 +73,11 @@ class CommandRunner:
                     "подтверждение целевого устройства не совпадает — операция отменена "
                     f"(ожидалось {plan.device!r}, получено {confirm_device!r})"
                 )
+            # Resolved rather than left to PATH: the installer's tools live in
+            # /usr/sbin, which is not on a normal user's PATH, and `sudo -E`
+            # hands that PATH straight to the root process.
             proc = subprocess.run(
-                argv, input=input_bytes, capture_output=True, timeout=timeout, check=False
+                resolve_argv(argv), input=input_bytes, capture_output=True, timeout=timeout, check=False
             )
             result = CommandResult(
                 argv=argv,

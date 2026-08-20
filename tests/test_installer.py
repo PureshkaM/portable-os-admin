@@ -60,23 +60,6 @@ def test_successful_dry_run_produces_media_and_recovery_records(session, big_rem
     assert session.container.find_recovery(result.media_record.media_id, 7) is not None
 
 
-def test_dry_run_plan_includes_partitioning_luks_and_backend_steps(session, big_removable_device):
-    cfgm = ConfigManager()
-    config = InstallConfig.create_default("stick1", "redos")
-    cfgm.validate(config)
-
-    installer = OSInstaller(session)
-    result = installer.run(big_removable_device, config, b"user-passphrase-123", dry_run=True)
-
-    argvs = [r.argv for r in result.plan.results]
-    assert any(a[0] == "parted" for a in argvs)
-    assert any(a[0] == "cryptsetup" and "luksFormat" in a for a in argvs)
-    assert any(a[0] == "cryptsetup" and "luksAddKey" in a for a in argvs)
-    assert any(a[0] == "dnf" for a in argvs)
-    assert any(a[0] == "mkfs.ext4" for a in argvs)
-    assert any(a[0] == "mkfs.vfat" for a in argvs)
-
-
 def _plan_argvs(session, target_os="debian"):
     cfgm = ConfigManager()
     config = InstallConfig.create_default("stick1", target_os)

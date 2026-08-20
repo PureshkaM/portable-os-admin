@@ -17,6 +17,7 @@ from tkinter import ttk
 from ..config import ConfigManager
 from ..container import AdminContainer, ContainerManager
 from ..session import AdminSession
+from .elevate import elevate_or_exit
 
 
 class PortableOSAdminGUI(tk.Tk):
@@ -90,6 +91,11 @@ class PortableOSAdminGUI(tk.Tk):
 
 
 def run() -> None:
+    # Before any window: the program administers portable media and erases
+    # disks, so it opens only for someone who can prove they are the machine's
+    # administrator. This also removes the old failure mode where installation
+    # was attempted unprivileged and died inside parted.
+    elevate_or_exit()
     PortableOSAdminGUI().mainloop()
 
 

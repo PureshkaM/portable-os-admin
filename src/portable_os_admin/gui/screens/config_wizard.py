@@ -14,11 +14,19 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import ttk
 
+import json
+
 from ...config.repo_browser import RepoPackage, get_package_source
-from ...config.schema import InstallConfig, SUPPORTED_TARGET_OS
+from ...config.schema import (
+    KNOWN_RELEASES,
+    LUKS_CIPHERS,
+    LUKS_KDFS,
+    SUPPORTED_TARGET_OS,
+    InstallConfig,
+)
 from ...config.validator import ConfigValidationUnavailableError
 from ...errors import RepoBrowseError
-from ..widgets import KNOWN_ERRORS, WizardFrame, add_field, run_in_background
+from ..widgets import KNOWN_ERRORS, WizardFrame, add_choice, add_field, run_in_background
 
 OS_LABELS = {
     "debian": "Debian (стандартный, debootstrap)",
@@ -49,6 +57,7 @@ class ConfigWizardFrame(WizardFrame):
             self.config.mirror = DEFAULT_MIRROR["debian"]
         self._catalog: list[RepoPackage] = []
         self._catalog_view: list[RepoPackage] = []
+        self._sort_descending: dict[str, bool] = {}
 
         super().__init__(
             parent,
@@ -58,7 +67,6 @@ class ConfigWizardFrame(WizardFrame):
                 "Учётная запись пользователя",
                 "Диск и шифрование",
                 "Удалённый доступ",
-                "Дополнительные задачи",
                 "Пакеты для предустановки",
                 "Проверка и сохранение",
             ],
@@ -66,10 +74,9 @@ class ConfigWizardFrame(WizardFrame):
                 "Что вы устанавливаете на носитель? Это определяет всё, что будет дальше.",
                 "Учётная запись, которая будет создана на установленной системе.",
                 "Размеры служебных разделов и параметры шифрования системного раздела (LUKS).",
-                "Необязательно: доступ по SSH или VPN на установленной системе.",
-                "Необязательно: команды, которые нужно выполнить в системе при установке.",
+                "Необязательно: доступ по SSH на установленной системе.",
                 "Необязательно: подключитесь к репозиторию выбранной ОС и выберите пакеты.",
-                "Проверьте конфигурацию перед сохранением.",
+                "Проверьте конфигурацию целиком, при необходимости поправьте вручную, затем сохраните.",
             ],
             finish_label="Сохранить конфигурацию",
         )
@@ -103,23 +110,42 @@ class ConfigWizardFrame(WizardFrame):
         row += 1
 
         self.release_var = tk.StringVar(value=self.config.release or DEFAULT_RELEASE[self.config.target_os])
-        _, row = add_field(form, row, "Релиз/версия:", self.release_var, width=24)
+        # Editable rather than a closed list: the list covers the releases this
+        # project has actually checked against real repositories, but a site can
+        # run an internal mirror of something else, and the UI should not make
+        # that impossible -- only unnecessary to remember.
+        self.release_combo, row = add_choice(
+            form,
+            row,
+            "Релиз/версия:",
+            self.release_var,
+            KNOWN_RELEASES.get(self.config.target_os, ()),
+            hint="выберите из списка проверенных выпусков или впишите свой",
+            width=22,
+            editable=True,
+        )
         self.mirror_var = tk.StringVar(value=self.config.mirror)
         add_field(
             form,
             row,
             "Зеркало репозитория:",
             self.mirror_var,
-            hint="используется и для установки, и для просмотра пакетов на шаге 6",
+            hint="используется и для установки, и для просмотра пакетов на шаге 5",
             width=48,
         )
 
     def _on_target_os_changed(self) -> None:
         target_os = self.target_os_var.get()
         self.os_description_var.set(OS_DESCRIPTIONS.get(target_os, ""))
+        # The release list belongs to the chosen OS: leaving Debian suite names
+        # on offer after picking RedOS would invite exactly the mistake the list
+        # exists to prevent.
+        releases = KNOWN_RELEASES.get(target_os, ())
+        self.release_combo.configure(values=list(releases))
         # Only replace release/mirror if they still hold another OS's default
         # (or are empty) -- never clobber something the user already typed.
-        if self.release_var.get() in ("", *DEFAULT_RELEASE.values()):
+        known_defaults = {r for group in KNOWN_RELEASES.values() for r in group}
+        if self.release_var.get() in ("", *known_defaults):
             self.release_var.set(DEFAULT_RELEASE.get(target_os, ""))
         if self.mirror_var.get() in ("", *DEFAULT_MIRROR.values()):
             self.mirror_var.set(DEFAULT_MIRROR.get(target_os, ""))
@@ -214,20 +240,57 @@ class ConfigWizardFrame(WizardFrame):
         ttk.Separator(form, orient="horizontal").grid(row=row, column=0, columnspan=2, sticky="ew", pady=8)
         row += 1
         self.cipher_var = tk.StringVar(value=luks.cipher)
-        _, row = add_field(form, row, "Шифр LUKS:", self.cipher_var, width=20)
+        self.cipher_combo, row = add_choice(
+            form,
+            row,
+            "Шифр LUKS:",
+            self.cipher_var,
+            LUKS_CIPHERS.keys(),
+            hint="aes-xts-plain64 — то, что используют штатные установщики Debian и RHEL",
+            width=24,
+            on_change=self._on_cipher_changed,
+        )
         self.key_size_var = tk.StringVar(value=str(luks.key_size_bits))
-        ttk.Label(form, text="Размер ключа (бит):").grid(row=row, column=0, sticky="ne", padx=(0, 10), pady=4)
-        key_frame = ttk.Frame(form)
-        key_frame.grid(row=row, column=1, sticky="w")
-        for bits in (256, 512):
-            ttk.Radiobutton(key_frame, text=str(bits), value=str(bits), variable=self.key_size_var).pack(
-                side="left", padx=(0, 12)
-            )
-        row += 1
+        self.key_size_combo, row = add_choice(
+            form,
+            row,
+            "Размер ключа (бит):",
+            self.key_size_var,
+            [str(s) for s in LUKS_CIPHERS.get(luks.cipher, (512, 256))],
+            hint=(
+                "Список зависит от выбранного шифра — другие значения cryptsetup не примет. "
+                "В режиме XTS ключ делится пополам, поэтому 512 бит — это AES-256, "
+                "самый стойкий вариант AES; более длинного ключа для AES не существует. "
+                "Стойкость к подбору пароля задаётся не этим полем, а функцией ниже."
+            ),
+            width=10,
+            editable=True,
+        )
+        self.kdf_var = tk.StringVar(value=luks.kdf)
+        self.kdf_combo, row = add_choice(
+            form,
+            row,
+            "Формирование ключа:",
+            self.kdf_var,
+            LUKS_KDFS,
+            hint=(
+                "argon2id требует много памяти на каждую попытку и потому резко удорожает "
+                "перебор пароля; pbkdf2 слабее и нужен только для совместимости"
+            ),
+            width=12,
+        )
         self.attempts_var = tk.StringVar(value=str(luks.failed_attempts_limit))
         add_field(
             form, row, "Лимит попыток пароля:", self.attempts_var, hint="от 1 до 10", width=6
         )
+
+    def _on_cipher_changed(self) -> None:
+        allowed = LUKS_CIPHERS.get(self.cipher_var.get(), ())
+        self.key_size_combo.configure(values=[str(s) for s in allowed])
+        # A size the new cipher cannot take would fail inside cryptsetup halfway
+        # through an install, so it is corrected here instead.
+        if allowed and self.key_size_var.get().strip() not in {str(s) for s in allowed}:
+            self.key_size_var.set(str(allowed[0]))
 
     def _save_step_disk(self) -> None:
         disk = self.config.disk
@@ -243,8 +306,9 @@ class ConfigWizardFrame(WizardFrame):
             except ValueError:
                 setattr(disk, attr, default)
         luks.cipher = self.cipher_var.get().strip() or "aes-xts-plain64"
+        luks.kdf = self.kdf_var.get().strip() or "argon2id"
         try:
-            luks.key_size_bits = int(self.key_size_var.get())
+            luks.key_size_bits = int(self.key_size_var.get().strip())
         except ValueError:
             luks.key_size_bits = 0
         try:
@@ -267,8 +331,20 @@ class ConfigWizardFrame(WizardFrame):
         if disk.exchange_partition_mb < 64:
             self.message_bar.error("Размер раздела обмена должен быть не менее 64 МБ.")
             return False
-        if luks.key_size_bits not in (256, 512):
-            self.message_bar.error("Размер ключа LUKS должен быть 256 или 512 бит.")
+        if luks.cipher not in LUKS_CIPHERS:
+            self.message_bar.error(
+                f"Шифр {luks.cipher} не поддерживается. Доступны: {', '.join(LUKS_CIPHERS)}."
+            )
+            return False
+        allowed = LUKS_CIPHERS[luks.cipher]
+        if luks.key_size_bits not in allowed:
+            self.message_bar.error(
+                f"Шифр {luks.cipher} не принимает ключ {luks.key_size_bits} бит. "
+                f"Допустимо: {', '.join(str(s) for s in allowed)}."
+            )
+            return False
+        if luks.kdf not in LUKS_KDFS:
+            self.message_bar.error(f"Функция формирования ключа {luks.kdf} не поддерживается.")
             return False
         if not (1 <= luks.failed_attempts_limit <= 10):
             self.message_bar.error("Лимит попыток пароля должен быть от 1 до 10.")
@@ -284,14 +360,16 @@ class ConfigWizardFrame(WizardFrame):
         ttk.Checkbutton(
             form, text="Включить удалённый доступ", variable=self.remote_enabled_var
         ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
-        self.remote_method_var = tk.StringVar(value=remote.method)
-        method_frame = ttk.Frame(form)
+        # Only openssh is offered because only openssh is implemented: the
+        # install puts openssh-server on the medium and enables the service.
+        # A "vpn" choice used to sit here, but nothing acted on it -- it merely
+        # got written into the configuration file, so a medium built with it
+        # had no remote access at all.
+        self.remote_method_var = tk.StringVar(value="openssh")
         ttk.Label(form, text="Метод:").grid(row=1, column=0, sticky="ne", padx=(0, 10))
-        method_frame.grid(row=1, column=1, sticky="w")
-        for method in ("openssh", "vpn"):
-            ttk.Radiobutton(method_frame, text=method, value=method, variable=self.remote_method_var).pack(
-                side="left", padx=(0, 12)
-            )
+        ttk.Label(form, text="OpenSSH (ставится openssh-server, служба включается)").grid(
+            row=1, column=1, sticky="w"
+        )
         self.remote_port_var = tk.StringVar(value=str(remote.port))
         add_field(form, 2, "Порт:", self.remote_port_var, width=8)
 
@@ -308,45 +386,12 @@ class ConfigWizardFrame(WizardFrame):
         remote = self.config.remote_access
         if not remote.enabled:
             return True
-        if remote.method not in ("openssh", "vpn"):
-            self.message_bar.error(f"Неподдерживаемый метод удалённого доступа: {remote.method!r}.")
-            return False
         if not (0 < remote.port <= 65535):
             self.message_bar.error("Некорректный порт удалённого доступа (1-65535).")
             return False
         return True
 
-    # -- step 4: system tasks ----------------------------------------------
-    def _build_step_tasks(self, body: ttk.Frame) -> None:
-        ttk.Label(body, text="Команды, выполняемые в системе при установке (по одной на строку):").pack(
-            anchor="w"
-        )
-        self.tasks_list = tk.Listbox(body, height=8, width=70)
-        self.tasks_list.pack(anchor="w", pady=(4, 4))
-        for task in self.config.system_tasks:
-            self.tasks_list.insert("end", task)
-        entry_row = ttk.Frame(body)
-        entry_row.pack(anchor="w")
-        self.new_task_var = tk.StringVar()
-        ttk.Entry(entry_row, textvariable=self.new_task_var, width=50).pack(side="left")
-        ttk.Button(entry_row, text="Добавить", command=self._add_task).pack(side="left", padx=(6, 0))
-        ttk.Button(entry_row, text="Удалить выбранную", command=self._remove_task).pack(side="left", padx=(6, 0))
-
-    def _add_task(self) -> None:
-        task = self.new_task_var.get().strip()
-        if task:
-            self.tasks_list.insert("end", task)
-            self.new_task_var.set("")
-
-    def _remove_task(self) -> None:
-        selection = self.tasks_list.curselection()
-        if selection:
-            self.tasks_list.delete(selection[0])
-
-    def _save_step_tasks(self) -> None:
-        self.config.system_tasks = list(self.tasks_list.get(0, "end"))
-
-    # -- step 5: packages ----------------------------------------------------
+    # -- step 4: packages ----------------------------------------------------
     def _build_step_packages(self, body: ttk.Frame) -> None:
         top = ttk.Frame(body)
         top.pack(fill="x")
@@ -370,21 +415,56 @@ class ConfigWizardFrame(WizardFrame):
         lists.pack(fill="both", expand=True)
         left = ttk.Frame(lists)
         left.pack(side="left", fill="both", expand=True)
-        self.catalog_table = ttk.Treeview(left, columns=("name", "version", "summary"), show="headings", height=10)
+        # selectmode="extended" is what makes Ctrl-click and Shift-click work;
+        # the default "browse" allows exactly one row, which meant adding
+        # twenty packages took twenty round trips through the button.
+        self.catalog_table = ttk.Treeview(
+            left, columns=("name", "version", "summary"), show="headings", height=10, selectmode="extended"
+        )
         for col, text, width in (("name", "пакет", 140), ("version", "версия", 100), ("summary", "описание", 260)):
-            self.catalog_table.heading(col, text=text)
+            self.catalog_table.heading(col, text=text, command=lambda c=col: self._sort_catalog(c))
             self.catalog_table.column(col, width=width, anchor="w")
         self.catalog_table.pack(fill="both", expand=True)
-        ttk.Button(left, text="Добавить в конфигурацию ->", command=self._add_package).pack(anchor="w", pady=(4, 0))
+        ttk.Label(
+            left,
+            text="Несколько пакетов: Ctrl — по одному, Shift — диапазоном. Щелчок по заголовку столбца сортирует.",
+            foreground="#777777",
+            font=("TkDefaultFont", 9),
+            wraplength=420,
+            justify="left",
+        ).pack(anchor="w", pady=(4, 0))
+        ttk.Button(left, text="Добавить выбранные ->", command=self._add_package).pack(anchor="w", pady=(4, 0))
 
         right = ttk.Frame(lists)
         right.pack(side="left", fill="both", expand=True, padx=(12, 0))
         ttk.Label(right, text="Выбрано для установки:").pack(anchor="w")
-        self.selected_list = tk.Listbox(right, height=10)
+        self.selected_list = tk.Listbox(right, height=10, selectmode="extended")
         self.selected_list.pack(fill="both", expand=True)
         for name in self.config.packages:
             self.selected_list.insert("end", name)
-        ttk.Button(right, text="<- Убрать из конфигурации", command=self._remove_package).pack(anchor="w", pady=(4, 0))
+        ttk.Button(right, text="<- Убрать выбранные", command=self._remove_package).pack(anchor="w", pady=(4, 0))
+
+    def _sort_catalog(self, column: str) -> None:
+        """Sorts the whole fetched catalogue, not just the rows on screen.
+
+        Sorting only the visible page would be misleading: the table shows the
+        first N of possibly tens of thousands of packages, so "sort by name
+        descending" has to reach into the full list to mean anything.
+        """
+        if not self._catalog:
+            return
+        ascending = not self._sort_descending.get(column, False)
+        self._sort_descending[column] = ascending
+        key = {"name": lambda p: p.name.lower(),
+               "version": lambda p: p.version,
+               "summary": lambda p: p.summary.lower()}[column]
+        self._catalog.sort(key=key, reverse=not ascending)
+        for col, text in (("name", "пакет"), ("version", "версия"), ("summary", "описание")):
+            marker = ""
+            if col == column:
+                marker = "  ↑" if ascending else "  ↓"
+            self.catalog_table.heading(col, text=text + marker)
+        self._apply_filter()
 
     def _connect_repo(self) -> None:
         target_os = self.config.target_os
@@ -440,61 +520,140 @@ class ConfigWizardFrame(WizardFrame):
     def _add_package(self) -> None:
         selection = self.catalog_table.selection()
         if not selection:
-            self.message_bar.error("Выберите пакет в списке репозитория.")
+            self.message_bar.error("Выберите пакеты в списке репозитория (Ctrl или Shift — несколько сразу).")
             return
-        index = self.catalog_table.index(selection[0])
-        pkg = self._catalog_view[index]
-        if pkg.name not in self.config.packages:
+        added, already = [], 0
+        for row_id in selection:
+            pkg = self._catalog_view[self.catalog_table.index(row_id)]
+            if pkg.name in self.config.packages:
+                already += 1
+                continue
             self.config.packages.append(pkg.name)
             self.selected_list.insert("end", pkg.name)
-        self.message_bar.success(f"Добавлен пакет «{pkg.name}».")
+            added.append(pkg.name)
+        if not added:
+            self.message_bar.info("Все выбранные пакеты уже в конфигурации.")
+            return
+        note = f" (ещё {already} уже были в списке)" if already else ""
+        if len(added) == 1:
+            self.message_bar.success(f"Добавлен пакет «{added[0]}»{note}.")
+        else:
+            self.message_bar.success(f"Добавлено пакетов: {len(added)}{note}.")
 
     def _remove_package(self) -> None:
         selection = self.selected_list.curselection()
         if not selection:
-            self.message_bar.error("Выберите пакет в списке справа.")
+            self.message_bar.error("Выберите пакеты в списке справа (Ctrl или Shift — несколько сразу).")
             return
-        index = selection[0]
-        name = self.selected_list.get(index)
-        self.selected_list.delete(index)
-        if name in self.config.packages:
-            self.config.packages.remove(name)
-        self.message_bar.success(f"Убран пакет «{name}».")
+        # Deleted back to front so the earlier indices stay valid.
+        removed = []
+        for index in sorted(selection, reverse=True):
+            name = self.selected_list.get(index)
+            self.selected_list.delete(index)
+            if name in self.config.packages:
+                self.config.packages.remove(name)
+            removed.append(name)
+        if len(removed) == 1:
+            self.message_bar.success(f"Убран пакет «{removed[0]}».")
+        else:
+            self.message_bar.success(f"Убрано пакетов: {len(removed)}.")
 
     def _save_step_packages(self) -> None:
         return  # config.packages is kept in sync live by _add_package/_remove_package
 
-    # -- step 6: review + save --------------------------------------------
+    # -- step 5: review + edit + save --------------------------------------
     def _build_step_review(self, body: ttk.Frame) -> None:
-        summary = (
-            f"Имя: {self.config.name}\n"
-            f"Целевая ОС: {OS_LABELS.get(self.config.target_os, self.config.target_os)}\n"
-            f"Релиз: {self.config.release}   Зеркало: {self.config.mirror or '(не задано)'}\n"
-            f"Пользователь: {self.config.account.username} "
-            f"(sudo: {'да' if self.config.account.sudo else 'нет'})\n"
-            f"Разделы (МБ): EFI {self.config.disk.esp_partition_mb}, "
-            f"/boot {self.config.disk.boot_partition_mb}, "
-            f"логи {self.config.disk.log_partition_mb}, обмен {self.config.disk.exchange_partition_mb}\n"
-            f"LUKS: {self.config.luks.cipher}, {self.config.luks.key_size_bits} бит, "
-            f"лимит попыток {self.config.luks.failed_attempts_limit}\n"
-            f"Удалённый доступ: {'включён (' + self.config.remote_access.method + ')' if self.config.remote_access.enabled else 'выключен'}\n"
-            f"Дополнительных задач: {len(self.config.system_tasks)}\n"
-            f"Пакетов для предустановки: {len(self.config.packages)}"
-        )
-        text = tk.Text(body, height=12, width=80, wrap="word")
-        text.insert("1.0", summary)
-        text.configure(state="disabled")
-        text.pack(anchor="w", fill="both", expand=True)
-        ttk.Button(body, text="Проверить конфигурацию", command=self._run_validation).pack(anchor="w", pady=(8, 0))
+        """The whole configuration, editable.
+
+        This replaces the old read-only summary and the separate "system tasks"
+        step. An administrator who wants to set something the wizard does not
+        expose -- a system task, an unusual option -- edits it here, where the
+        full document is visible, instead of through a step dedicated to typing
+        shell commands into a list box.
+        """
+        ttk.Label(
+            body,
+            text="Файл конфигурации целиком. Можно править прямо здесь — изменения применятся по кнопке ниже.",
+            foreground="#555555",
+            wraplength=740,
+            justify="left",
+        ).pack(anchor="w")
+
+        editor_frame = ttk.Frame(body)
+        editor_frame.pack(fill="both", expand=True, pady=(6, 0))
+        self.config_text = tk.Text(editor_frame, height=14, width=88, wrap="none", undo=True)
+        y_scroll = ttk.Scrollbar(editor_frame, orient="vertical", command=self.config_text.yview)
+        x_scroll = ttk.Scrollbar(editor_frame, orient="horizontal", command=self.config_text.xview)
+        self.config_text.configure(yscrollcommand=y_scroll.set, xscrollcommand=x_scroll.set)
+        y_scroll.pack(side="right", fill="y")
+        x_scroll.pack(side="bottom", fill="x")
+        self.config_text.pack(side="left", fill="both", expand=True)
+        self.config_text.insert("1.0", self._config_as_text())
+
+        buttons = ttk.Frame(body)
+        buttons.pack(anchor="w", pady=(8, 0))
+        ttk.Button(buttons, text="Применить правки", command=self._apply_edits).pack(side="left")
+        ttk.Button(buttons, text="Вернуть как было", command=self._reset_edits).pack(side="left", padx=(6, 0))
+        ttk.Button(buttons, text="Проверить конфигурацию", command=self._run_validation).pack(side="left", padx=(6, 0))
+
         status = "не проверена"
         if self.config.validation_status == "valid":
             status = "корректна"
         elif self.config.validation_status == "invalid":
             status = "содержит ошибки: " + "; ".join(self.config.validation_errors)
         self.validation_status_var = tk.StringVar(value=f"Статус проверки: {status}")
-        ttk.Label(body, textvariable=self.validation_status_var, wraplength=700, justify="left").pack(
-            anchor="w", pady=(4, 0)
+        ttk.Label(body, textvariable=self.validation_status_var, wraplength=740, justify="left").pack(
+            anchor="w", pady=(6, 0)
         )
+
+    def _config_as_text(self) -> str:
+        data = self.config.to_dict()
+        # Validation state is derived, not authored: showing it invites editing
+        # it, and a hand-set "valid" would let an unchecked configuration reach
+        # the installer.
+        for derived in ("validation_status", "validation_errors"):
+            data.pop(derived, None)
+        return json.dumps(data, ensure_ascii=False, indent=2)
+
+    def _apply_edits(self) -> None:
+        raw = self.config_text.get("1.0", "end").strip()
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            self.message_bar.error(f"Не разобрать JSON (строка {exc.lineno}, позиция {exc.colno}): {exc.msg}")
+            return
+        if not isinstance(data, dict):
+            self.message_bar.error("Ожидается объект JSON верхнего уровня.")
+            return
+        data.setdefault("name", self.config.name)
+        try:
+            edited = InstallConfig.from_dict(data)
+        except (TypeError, ValueError) as exc:
+            self.message_bar.error(f"Конфигурация не принята: {exc}")
+            return
+        self.config = edited
+        # Edits invalidate any earlier verdict -- the installer refuses configs
+        # that are not marked valid, so this cannot smuggle an unchecked one
+        # through.
+        self.config.validation_status = "unchecked"
+        self.config.validation_errors = []
+        self.validation_status_var.set("Статус проверки: не проверена (после правки)")
+        self.message_bar.success("Правки применены. Нажмите «Проверить конфигурацию».")
+
+    def _has_unapplied_edits(self) -> bool:
+        editor = getattr(self, "config_text", None)
+        if editor is None or not editor.winfo_exists():
+            return False
+        try:
+            shown = json.loads(editor.get("1.0", "end").strip())
+        except json.JSONDecodeError:
+            return True  # unparseable text is certainly not what is stored
+        return shown != json.loads(self._config_as_text())
+
+    def _reset_edits(self) -> None:
+        self.config_text.delete("1.0", "end")
+        self.config_text.insert("1.0", self._config_as_text())
+        self.message_bar.info("Текст возвращён к сохранённому состоянию.")
 
     def _run_validation(self) -> None:
         try:
@@ -518,7 +677,6 @@ class ConfigWizardFrame(WizardFrame):
         _build_step_account,
         _build_step_disk,
         _build_step_remote,
-        _build_step_tasks,
         _build_step_packages,
         _build_step_review,
     ]
@@ -527,7 +685,6 @@ class ConfigWizardFrame(WizardFrame):
         _save_step_account,
         _save_step_disk,
         _save_step_remote,
-        _save_step_tasks,
         _save_step_packages,
         _save_step_review,
     ]
@@ -536,7 +693,6 @@ class ConfigWizardFrame(WizardFrame):
         _validate_step_account,
         _validate_step_disk,
         _validate_step_remote,
-        None,
         None,
         None,
     ]
@@ -554,6 +710,15 @@ class ConfigWizardFrame(WizardFrame):
         return validator(self)
 
     def on_finish(self) -> None:
+        # Text typed into the editor but never applied would otherwise be
+        # dropped silently on save -- the user would watch their edit vanish
+        # with a success message.
+        if self._has_unapplied_edits():
+            self.message_bar.error(
+                "В тексте конфигурации есть неприменённые правки. Нажмите «Применить правки» "
+                "или «Вернуть как было» — иначе они не сохранятся."
+            )
+            return
         if self.config_path is not None:
             path = self.config_path
         else:

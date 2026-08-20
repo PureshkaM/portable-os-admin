@@ -119,13 +119,25 @@ class DiskManager:
     def __init__(self, runner: CommandRunner | None = None):
         self.runner = runner or CommandRunner()
 
-    def commands_for(self, plan: PartitionPlan) -> list[list[str]]:
-        # wipefs first: leftover filesystem/RAID signatures from whatever the
-        # stick held before survive a new partition table and then confuse
-        # blkid, the initramfs and the bootloader into finding two candidate
-        # filesystems on the same offsets.
-        cmds = [
-            ["wipefs", "--all", plan.device],
+    def commands_for(self, plan: PartitionPlan, existing_partitions: tuple[str, ...] = ()) -> list[list[str]]:
+        # Erase before writing anything new. Leftover filesystem, LUKS and RAID
+        # signatures survive a fresh partition table and then confuse blkid,
+        # the initramfs and the bootloader into finding two candidate
+        # filesystems at the same offsets -- a medium that was previously
+        # installed by this very tool is the likeliest case.
+        #
+        # Order matters: signatures inside each old partition go first (once
+        # the partition table is gone their offsets are unknown), then the
+        # disk's own signatures, then sgdisk --zap-all which clears both the
+        # primary GPT and its backup copy at the end of the device. Wiping only
+        # the head of the disk leaves that backup behind, and the kernel
+        # happily restores the old layout from it.
+        cmds: list[list[str]] = []
+        for partition in existing_partitions:
+            cmds.append(["wipefs", "--all", "--force", partition])
+        cmds += [
+            ["wipefs", "--all", "--force", plan.device],
+            ["sgdisk", "--zap-all", plan.device],
             ["parted", "--script", plan.device, "--", "mklabel", "gpt"],
         ]
         for spec in plan.partitions:
@@ -148,8 +160,9 @@ class DiskManager:
         dry_run: bool = True,
         confirm_device: str | None = None,
         command_plan: CommandPlan | None = None,
+        existing_partitions: tuple[str, ...] = (),
     ) -> CommandPlan:
         command_plan = command_plan if command_plan is not None else CommandPlan(device=plan.device)
-        for argv in self.commands_for(plan):
+        for argv in self.commands_for(plan, existing_partitions):
             self.runner.run(argv, command_plan, dry_run=dry_run, confirm_device=confirm_device)
         return command_plan

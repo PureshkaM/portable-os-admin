@@ -117,6 +117,77 @@ def run_in_background(
     widget.after(poll_ms, poll)
 
 
+class ScrollableArea(ttk.Frame):
+    """A frame whose contents scroll vertically when they outgrow it.
+
+    Exists because several wizard steps (the package picker, the review step
+    with the configuration text) are taller than a modest screen, and without
+    this the whole window simply grew until the navigation buttons sat below
+    the bottom edge of the display with no way to reach them.
+
+    Callers put their widgets into `.content`, not into the ScrollableArea
+    itself.
+    """
+
+    def __init__(self, parent: tk.Widget):
+        super().__init__(parent)
+        self._canvas = tk.Canvas(self, highlightthickness=0, borderwidth=0)
+        self._scrollbar = ttk.Scrollbar(self, orient="vertical", command=self._canvas.yview)
+        self._canvas.configure(yscrollcommand=self._scrollbar.set)
+        self._canvas.pack(side="left", fill="both", expand=True)
+
+        self.content = ttk.Frame(self._canvas)
+        self._window = self._canvas.create_window((0, 0), window=self.content, anchor="nw")
+
+        self.content.bind("<Configure>", self._on_content_resize)
+        self._canvas.bind("<Configure>", self._on_canvas_resize)
+        # Wheel events go to the widget under the pointer, which is usually a
+        # label or an entry rather than the canvas, so they are bound while the
+        # pointer is inside this area instead of on the canvas alone.
+        self.bind("<Enter>", self._bind_wheel)
+        self.bind("<Leave>", self._unbind_wheel)
+
+    def _on_content_resize(self, _event) -> None:
+        self._canvas.configure(scrollregion=self._canvas.bbox("all"))
+        self._sync_scrollbar()
+
+    def _on_canvas_resize(self, event) -> None:
+        # Keep the inner frame exactly as wide as the viewport, so wraplength
+        # and fill="x" behave the way they would without the canvas.
+        self._canvas.itemconfigure(self._window, width=event.width)
+        self._sync_scrollbar()
+
+    def _sync_scrollbar(self) -> None:
+        needed = self.content.winfo_reqheight() > self._canvas.winfo_height()
+        if needed and not self._scrollbar.winfo_ismapped():
+            self._scrollbar.pack(side="right", fill="y")
+        elif not needed and self._scrollbar.winfo_ismapped():
+            self._scrollbar.pack_forget()
+            self._canvas.yview_moveto(0)
+
+    def _bind_wheel(self, _event=None) -> None:
+        self.bind_all("<MouseWheel>", self._on_wheel)
+        self.bind_all("<Button-4>", self._on_wheel)
+        self.bind_all("<Button-5>", self._on_wheel)
+
+    def _unbind_wheel(self, _event=None) -> None:
+        self.unbind_all("<MouseWheel>")
+        self.unbind_all("<Button-4>")
+        self.unbind_all("<Button-5>")
+
+    def _on_wheel(self, event) -> None:
+        if not self._scrollbar.winfo_ismapped():
+            return
+        if getattr(event, "num", None) == 4:
+            delta = -1
+        elif getattr(event, "num", None) == 5:
+            delta = 1
+        else:
+            # Windows reports multiples of 120; X11/macOS report small numbers.
+            delta = -1 if event.delta > 0 else 1
+        self._canvas.yview_scroll(delta, "units")
+
+
 def add_field(
     parent: tk.Widget,
     row: int,
@@ -139,6 +210,43 @@ def add_field(
         )
         next_row += 1
     return entry, next_row
+
+
+def add_choice(
+    parent: tk.Widget,
+    row: int,
+    label_text: str,
+    var: tk.Variable,
+    values,
+    hint: str | None = None,
+    width: int = 32,
+    editable: bool = False,
+    on_change=None,
+) -> tuple[ttk.Combobox, int]:
+    """Like `add_field`, but the value is picked from a list.
+
+    `editable=True` still allows typing something that is not on the list --
+    used where the list covers the realistic cases but cannot be exhaustive
+    (distribution releases, cipher key sizes), so an unusual but valid value
+    is not made impossible by the UI.
+    """
+    ttk.Label(parent, text=label_text).grid(row=row, column=0, sticky="ne", padx=(0, 10), pady=4)
+    combo = ttk.Combobox(
+        parent,
+        textvariable=var,
+        values=list(values),
+        width=width,
+        state="normal" if editable else "readonly",
+    )
+    combo.grid(row=row, column=1, sticky="w", pady=4)
+    if on_change is not None:
+        combo.bind("<<ComboboxSelected>>", lambda _event: on_change())
+    next_row = row + 1
+    if hint:
+        ttk.Label(parent, text=hint, foreground="#777777", font=("TkDefaultFont", 9), wraplength=520,
+                  justify="left").grid(row=next_row, column=1, sticky="w")
+        next_row += 1
+    return combo, next_row
 
 
 class WizardFrame(ttk.Frame):
@@ -172,8 +280,26 @@ class WizardFrame(ttk.Frame):
         self.finish_label = finish_label
         self.step_index = 0
 
+        # Three layers, packed in this order on purpose. Tk's packer hands out
+        # space to whatever was packed first, so the footer and the message bar
+        # claim theirs before the body does. A step tall enough to overflow the
+        # screen then scrolls inside its own area instead of pushing the
+        # navigation buttons past the bottom edge, where they became
+        # unreachable.
+        footer = ttk.Frame(self)
+        footer.pack(side="bottom", fill="x", padx=16, pady=16)
+        self.cancel_btn = ttk.Button(footer, text="Отмена", command=self._cancel)
+        self.cancel_btn.pack(side="left")
+        self.back_btn = ttk.Button(footer, text="< Назад", command=self._go_back)
+        self.back_btn.pack(side="left", padx=(8, 0))
+        self.next_btn = ttk.Button(footer, text="Далее >", command=self._go_next)
+        self.next_btn.pack(side="right")
+
+        self.message_bar = MessageBar(self)
+        self.message_bar.pack(side="bottom", fill="x", padx=16)
+
         header = ttk.Frame(self)
-        header.pack(fill="x", padx=16, pady=(16, 4))
+        header.pack(side="top", fill="x", padx=16, pady=(16, 4))
         self.step_title_var = tk.StringVar()
         ttk.Label(header, textvariable=self.step_title_var, font=("TkDefaultFont", 13, "bold")).pack(anchor="w")
         self.hint_var = tk.StringVar()
@@ -183,20 +309,9 @@ class WizardFrame(ttk.Frame):
         self.progress = ttk.Progressbar(header, maximum=max(len(step_titles) - 1, 1))
         self.progress.pack(fill="x", pady=(8, 0))
 
-        self.body = ttk.Frame(self)
-        self.body.pack(fill="both", expand=True, padx=16, pady=8)
-
-        self.message_bar = MessageBar(self)
-        self.message_bar.pack(fill="x", padx=16)
-
-        footer = ttk.Frame(self)
-        footer.pack(fill="x", padx=16, pady=16)
-        self.cancel_btn = ttk.Button(footer, text="Отмена", command=self._cancel)
-        self.cancel_btn.pack(side="left")
-        self.back_btn = ttk.Button(footer, text="< Назад", command=self._go_back)
-        self.back_btn.pack(side="left", padx=(8, 0))
-        self.next_btn = ttk.Button(footer, text="Далее >", command=self._go_next)
-        self.next_btn.pack(side="right")
+        self._scroller = ScrollableArea(self)
+        self._scroller.pack(side="top", fill="both", expand=True, padx=16, pady=8)
+        self.body = self._scroller.content
 
         self._render_step()
 

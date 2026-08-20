@@ -18,7 +18,7 @@ import os
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
-from textual.widgets import Button, DataTable, Footer, Header, Input, RichLog, Static, Switch
+from textual.widgets import Button, DataTable, Footer, Header, Input, RichLog, Static
 
 from ...errors import DeviceNotEligibleError, InstallError
 from ...install import BlockDevice, DeviceLister, OSInstaller
@@ -40,15 +40,12 @@ class InstallScreen(Screen):
             Static("Проверенные конфигурации:", id="configs_label"),
             DataTable(id="configs_table"),
             Input(placeholder="Пароль пользователя (LUKS)", password=True, id="passphrase"),
-            Horizontal(
-                Switch(id="real_run_switch", value=False),
-                Static("Реальное выполнение (ОПАСНО: необратимо стирает устройство)", id="real_run_label"),
-            ),
+            Static("", id="destroy_warning"),
             Input(
-                placeholder="Для реального запуска: повторите путь к устройству",
+                placeholder="Повторите путь к устройству для подтверждения",
                 id="confirm_device",
             ),
-            Button("Построить план установки (dry-run)", id="run", variant="primary"),
+            Button("Стереть носитель и установить систему", id="run", variant="error"),
             RichLog(id="plan_log", markup=True),
             Static("", id="message"),
         )
@@ -62,16 +59,24 @@ class InstallScreen(Screen):
         configs_table.add_columns("файл", "цель", "релиз")
         self._refresh_configs()
 
-    def on_switch_changed(self, event: Switch.Changed) -> None:
-        if event.switch.id != "real_run_switch":
-            return
-        button = self.query_one("#run", Button)
-        if event.value:
-            button.label = "ВЫПОЛНИТЬ РЕАЛЬНУЮ УСТАНОВКУ (необратимо)"
-            button.variant = "error"
+    def _show_destroy_warning(self, device: BlockDevice) -> None:
+        """Spells out what is on the medium right now, because "устройство
+        будет очищено" is not information a person can act on."""
+        lines = [f"[bold]{device.path}[/bold]"]
+        if device.model:
+            lines[0] += f" · {device.model}"
+        lines[0] += f" · {device.size_bytes / 1024**3:.1f} ГБ"
+        if device.partitions:
+            lines.append("[red]Всё перечисленное будет уничтожено безвозвратно:[/red]")
+            lines += [f"  • {p.describe()}" for p in device.partitions]
         else:
-            button.label = "Построить план установки (dry-run)"
-            button.variant = "primary"
+            lines.append("Разделов не обнаружено — носитель будет размечен заново.")
+        if device.is_mounted:
+            lines.append(
+                "[red]Носитель смонтирован (" + ", ".join(device.active_mountpoints)
+                + ") — будет отмонтирован автоматически.[/red]"
+            )
+        self.query_one("#destroy_warning", Static).update("\n".join(lines))
 
     def _refresh_configs(self) -> None:
         table = self.query_one("#configs_table", DataTable)
@@ -129,27 +134,23 @@ class InstallScreen(Screen):
             message.update("[red]Введите пользовательский пароль (LUKS)[/red]")
             return
 
-        real_run = self.query_one("#real_run_switch", Switch).value
-        confirm_device: str | None = None
-        if real_run:
-            confirm_device = self.query_one("#confirm_device", Input).value.strip()
-            if confirm_device != device_path:
-                message.update(
-                    "[red]Подтверждение устройства не совпадает с путём выше — "
-                    "реальная установка отменена[/red]"
-                )
-                return
-            # Checked here rather than left to fail inside parted: otherwise the
-            # user fills in the whole screen, starts an irreversible-looking
-            # operation and gets a permission error from a tool they never
-            # invoked. Nothing has been written yet, so refusing costs nothing.
-            if getattr(os, "geteuid", lambda: 0)() != 0:
-                message.update(
-                    "[red]Реальная установка требует прав root: разметка диска, cryptsetup "
-                    "и mkfs обычному пользователю недоступны. Перезапустите программу от root "
-                    "(например, «sudo portable-os-admin-tui»). Режим плана работает и без root.[/red]"
-                )
-                return
+        confirm_device = self.query_one("#confirm_device", Input).value.strip()
+        if confirm_device != device_path:
+            message.update(
+                "[red]Подтверждение устройства не совпадает с путём выше — установка отменена[/red]"
+            )
+            return
+        # Checked here rather than left to fail inside parted: otherwise the
+        # user fills in the whole screen, starts an irreversible operation and
+        # gets a permission error from a tool they never invoked. Nothing has
+        # been written yet, so refusing costs nothing.
+        if getattr(os, "geteuid", lambda: 0)() != 0:
+            message.update(
+                "[red]Установка требует прав root: разметка диска, cryptsetup и mkfs "
+                "обычному пользователю недоступны. Перезапустите программу от root "
+                "(например, «sudo portable-os-admin-tui»).[/red]"
+            )
+            return
 
         # Describe the target as the system currently reports it. Building it
         # from the form fields alone throws away its mountpoints, and those are
@@ -166,6 +167,7 @@ class InstallScreen(Screen):
             mountpoints=(),
         )
 
+        self._show_destroy_warning(device)
         installer = OSInstaller(self.app.session)
         log.clear()
         try:
@@ -173,13 +175,12 @@ class InstallScreen(Screen):
                 device,
                 config,
                 passphrase.encode("utf-8"),
-                dry_run=not real_run,
+                dry_run=False,
                 confirm_device=confirm_device,
             )
         except (DeviceNotEligibleError, InstallError) as exc:
             message.update(
-                f"[red]{exc}"
-                + ("[/red]" if not real_run else " -- часть шагов уже могла реально выполниться[/red]")
+                f"[red]{exc} Носитель уже изменён — прежние данные на нём не сохранились.[/red]"
             )
             return
 
@@ -191,8 +192,7 @@ class InstallScreen(Screen):
                     line += f" stderr: {entry.stderr.strip()}"
             log.write(line)
         self.app.save_container()
-        mode_note = "выполнено реально" if real_run else "план построен (dry-run)"
         message.update(
-            f"[green]{mode_note}. media_id={result.media_record.media_id}, "
+            f"[green]Установка завершена. media_id={result.media_record.media_id}, "
             f"код восстановления: {result.recovery_record.code}[/green]"
         )

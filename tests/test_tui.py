@@ -1,16 +1,41 @@
 """Headless end-to-end test of the Textual UI, driven via Textual's Pilot.
 
 Exercises the full window flow from the spec: open/create container ->
-dashboard -> create+validate a config -> dry-run install -> issue a
-recovery code for the medium that install just produced.
+dashboard -> create+validate a config -> install -> issue a recovery code for
+the medium that install just produced.
+
+The installer is stubbed: this test is about the screens reaching each other
+and passing the right things along, and there is no disk here to install onto.
 """
 import asyncio
 
+import pytest
+
 from portable_os_admin.recovery import RecoveryRequest
 from portable_os_admin.tui.app import PortableOSAdminApp
+from portable_os_admin.tui.screens import install as install_screen_module
 
 
-def test_tui_full_flow(tmp_path):
+class _StubInstaller:
+    """Delegates to the real orchestration in planning mode, so the screen's
+    own logic still runs end to end without touching hardware."""
+
+    def __init__(self, session):
+        from portable_os_admin.install import OSInstaller
+
+        self._real = OSInstaller(session)
+
+    def run(self, device, config, passphrase, *, dry_run, confirm_device):
+        return self._real.run(device, config, passphrase, dry_run=True, confirm_device=confirm_device)
+
+
+@pytest.fixture
+def stub_installer(monkeypatch):
+    monkeypatch.setattr(install_screen_module, "OSInstaller", _StubInstaller)
+    monkeypatch.setattr(install_screen_module.os, "geteuid", lambda: 0)
+
+
+def test_tui_full_flow(tmp_path, stub_installer):
     async def scenario():
         container_path = tmp_path / "admin.container"
         app = PortableOSAdminApp()
@@ -41,6 +66,7 @@ def test_tui_full_flow(tmp_path):
             app.screen.query_one("#device_path").value = "/dev/sdb"
             app.screen.query_one("#device_size_gb").value = "32"
             app.screen.query_one("#passphrase").value = "user-passphrase-123"
+            app.screen.query_one("#confirm_device").value = "/dev/sdb"
             await pilot.click("#configs_table")
             await pilot.pause()
             await pilot.click("#run")

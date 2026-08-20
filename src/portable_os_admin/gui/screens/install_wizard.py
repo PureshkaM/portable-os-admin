@@ -23,6 +23,11 @@ from ...errors import DeviceNotEligibleError, InstallError
 from ...install import BlockDevice, DeviceLister, OSInstaller
 from ..widgets import KNOWN_ERRORS, WizardFrame, add_field, run_in_background
 
+#: Used for the "this will be destroyed" copy. A plain red rather than a theme
+#: colour, because the warning has to read as a warning under whatever ttk
+#: theme the host desktop supplies.
+DANGER_COLOR = "#c0362c"
+
 NOT_ROOT_MESSAGE = (
     "Реальная установка требует прав root: разметка диска, cryptsetup и mkfs "
     "обычному пользователю недоступны. Закройте программу и запустите её от root "
@@ -50,13 +55,12 @@ class InstallWizardFrame(WizardFrame):
         super().__init__(
             parent,
             app,
-            step_titles=["Конфигурация", "Носитель", "Пароль", "Подтверждение и запуск"],
+            step_titles=["Конфигурация", "Носитель", "Пароль", "Подтверждение и установка"],
             step_hints=[
                 "Выберите, какую проверенную конфигурацию устанавливать.",
                 "Выберите внешний носитель: из автоматически найденных устройств, либо укажите путь вручную.",
                 "Пароль пользователя, которым будет защищён системный раздел (LUKS).",
-                "Проверьте всё ещё раз перед стиранием носителя. По умолчанию строится только план команд, "
-                "ничего не изменяется, пока вы явно не включите реальное выполнение.",
+                "Последний шаг перед необратимым стиранием носителя. Проверьте, что указан именно тот диск.",
             ],
             finish_label="К панели",
         )
@@ -213,29 +217,95 @@ class InstallWizardFrame(WizardFrame):
             return False
         return True
 
-    # -- step 3: confirm + run -----------------------------------------------
+    # -- step 3: what will be destroyed, then install --------------------------
     def _build_step_confirm(self, body: ttk.Frame) -> None:
+        """The last thing the administrator sees before the medium is erased.
+
+        There is deliberately no "preview what would happen" mode here. This
+        tool exists to install; a second mode that emits a list of shell
+        commands is developer scaffolding, and offering both on one screen only
+        made it unclear which one the button was about to do. What belongs here
+        instead is the thing a person actually needs before an irreversible
+        action: exactly what is on the device right now, and what will be left
+        of it.
+        """
         cfg = self.selected_config
         ttk.Label(
             body,
-            text=f"Конфигурация: {cfg.name} ({cfg.target_os}, {cfg.release})    Устройство: {self.device_path}",
+            text=f"Конфигурация: {cfg.name} ({cfg.target_os}, {cfg.release})",
             wraplength=760,
             justify="left",
         ).pack(anchor="w")
 
-        self.real_run_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(
-            body,
-            text="Реальное выполнение (ОПАСНО: необратимо стирает устройство)",
-            variable=self.real_run_var,
-            command=self._on_real_run_toggle,
-        ).pack(anchor="w", pady=(10, 4))
+        device = self._resolve_device(self._parsed_size_gb())
+        self._confirmed_device = device
 
-        self.confirm_frame = ttk.Frame(body)
+        warning = ttk.LabelFrame(body, text=" Носитель будет полностью очищен ")
+        warning.pack(fill="x", pady=(10, 6))
+        ttk.Label(
+            warning,
+            text=(
+                f"{device.path}"
+                + (f"  ·  {device.model}" if device.model else "")
+                + f"  ·  {device.size_bytes / 1024**3:.1f} ГБ"
+            ),
+            font=("TkDefaultFont", 10, "bold"),
+            justify="left",
+        ).pack(anchor="w", padx=10, pady=(8, 2))
+
+        if device.partitions:
+            ttk.Label(
+                warning,
+                text="Сейчас на носителе, всё это будет уничтожено безвозвратно:",
+                foreground=DANGER_COLOR,
+                justify="left",
+            ).pack(anchor="w", padx=10)
+            for partition in device.partitions:
+                ttk.Label(warning, text="    • " + partition.describe(), justify="left").pack(anchor="w", padx=10)
+        else:
+            ttk.Label(
+                warning,
+                text="Разделов на носителе не обнаружено — он будет размечен заново.",
+                justify="left",
+            ).pack(anchor="w", padx=10)
+
+        if device.is_mounted:
+            ttk.Label(
+                warning,
+                text=(
+                    "Носитель сейчас смонтирован ("
+                    + ", ".join(device.active_mountpoints)
+                    + ") — он будет отмонтирован автоматически."
+                ),
+                foreground=DANGER_COLOR,
+                wraplength=720,
+                justify="left",
+            ).pack(anchor="w", padx=10, pady=(4, 0))
+
+        ttk.Label(
+            warning,
+            text=(
+                "Восстановить данные после установки невозможно. Убедитесь, что указан "
+                "именно тот носитель, и что всё нужное с него скопировано."
+            ),
+            foreground=DANGER_COLOR,
+            wraplength=720,
+            justify="left",
+        ).pack(anchor="w", padx=10, pady=(6, 10))
+
+        confirm_frame = ttk.Frame(body)
+        confirm_frame.pack(anchor="w", pady=(4, 0))
         self.confirm_device_var = tk.StringVar()
-        add_field(self.confirm_frame, 0, "Повторите путь к устройству для подтверждения:", self.confirm_device_var, width=30)
+        add_field(
+            confirm_frame,
+            0,
+            "Повторите путь к устройству:",
+            self.confirm_device_var,
+            hint="это последняя защита от установки не на тот диск",
+            width=30,
+        )
 
-        self.start_btn = ttk.Button(body, text="Начать (план, без изменений)", command=self._start_install)
+        self.start_btn = ttk.Button(body, text="Стереть носитель и установить систему", command=self._start_install)
         self.start_btn.pack(anchor="w", pady=(8, 4))
 
         self.progress = ttk.Progressbar(body, mode="indeterminate", length=300)
@@ -243,15 +313,14 @@ class InstallWizardFrame(WizardFrame):
         self.log_text = tk.Text(body, height=12, width=95, state="disabled")
         self.log_text.pack(fill="both", expand=True, pady=(8, 0))
 
-    def _on_real_run_toggle(self) -> None:
-        if self.real_run_var.get():
-            self.confirm_frame.pack(anchor="w", before=self.start_btn)
-            self.start_btn.configure(text="ВЫПОЛНИТЬ РЕАЛЬНУЮ УСТАНОВКУ (необратимо)")
-            if not _is_root():
-                self.message_bar.error(NOT_ROOT_MESSAGE)
-        else:
-            self.confirm_frame.pack_forget()
-            self.start_btn.configure(text="Начать (план, без изменений)")
+        if not _is_root():
+            self.message_bar.error(NOT_ROOT_MESSAGE)
+
+    def _parsed_size_gb(self) -> float:
+        try:
+            return float(self.device_size_gb or "0")
+        except ValueError:
+            return 0.0
 
     def _log(self, text: str) -> None:
         self.log_text.configure(state="normal")
@@ -290,30 +359,21 @@ class InstallWizardFrame(WizardFrame):
     def _start_install(self) -> None:
         if self._running:
             return
-        real_run = self.real_run_var.get()
-        confirm_device = None
-        if real_run:
-            confirm_device = self.confirm_device_var.get().strip()
-            if confirm_device != self.device_path:
-                self.message_bar.error(
-                    "Подтверждение устройства не совпадает с путём выше -- реальная установка отменена."
-                )
-                return
-            # Checked here rather than left to fail inside parted: without this
-            # the user completes the whole wizard, starts an irreversible-looking
-            # operation and gets a permission error from a tool they never
-            # invoked. Nothing has been written at this point, so refusing is free.
-            if not _is_root():
-                self.message_bar.error(NOT_ROOT_MESSAGE)
-                return
-
-        try:
-            size_gb = float(self.device_size_gb or "0")
-        except ValueError:
-            self.message_bar.error("Некорректный размер устройства.")
+        confirm_device = self.confirm_device_var.get().strip()
+        if confirm_device != self.device_path:
+            self.message_bar.error(
+                "Подтверждение устройства не совпадает с путём выше — установка отменена."
+            )
+            return
+        # Checked here rather than left to fail inside parted: without this the
+        # user completes the whole wizard, starts an irreversible operation and
+        # gets a permission error from a tool they never invoked. Nothing has
+        # been written at this point, so refusing is free.
+        if not _is_root():
+            self.message_bar.error(NOT_ROOT_MESSAGE)
             return
 
-        device = self._resolve_device(size_gb)
+        device = getattr(self, "_confirmed_device", None) or self._resolve_device(self._parsed_size_gb())
 
         self._running = True
         self.start_btn.configure(state="disabled")
@@ -328,23 +388,24 @@ class InstallWizardFrame(WizardFrame):
         self.progress.pack(fill="x", pady=(0, 8), before=self.log_text)
         self.progress.start(12)
         self.message_bar.info(
-            "Выполняется..."
-            if not real_run
-            else "Выполняется реальная установка -- это может занять длительное время (сеть, разметка, копирование)."
+            "Идёт установка — это надолго: очистка носителя, разметка, шифрование, "
+            "загрузка базовой системы по сети. Окно останется отзывчивым."
         )
-        self._log(f"--- {'РЕАЛЬНАЯ УСТАНОВКА' if real_run else 'план (dry-run)'} ---")
+        self._log(f"--- УСТАНОВКА НА {device.path} ---")
 
         passphrase_bytes = self.passphrase.encode("utf-8")
         installer = OSInstaller(self.app.session)
 
         def do_install():
-            return installer.run(device, self.selected_config, passphrase_bytes, dry_run=not real_run, confirm_device=confirm_device)
+            return installer.run(
+                device, self.selected_config, passphrase_bytes, dry_run=False, confirm_device=confirm_device
+            )
 
         run_in_background(
             self,
             do_install,
-            on_success=lambda result: self._on_install_done(result, real_run),
-            on_error=lambda exc: self._on_install_error(exc, real_run),
+            on_success=self._on_install_done,
+            on_error=self._on_install_error,
         )
 
     def _stop_progress(self) -> None:
@@ -356,7 +417,7 @@ class InstallWizardFrame(WizardFrame):
         self.next_btn.configure(state="normal")
         self.cancel_btn.configure(state="normal")
 
-    def _on_install_done(self, result, real_run: bool) -> None:
+    def _on_install_done(self, result) -> None:
         self._stop_progress()
         for entry in result.plan.results:
             line = " ".join(entry.argv)
@@ -366,18 +427,19 @@ class InstallWizardFrame(WizardFrame):
                     line += f" stderr: {entry.stderr.strip()}"
             self._log(line)
         self.app.save_container()
-        mode_note = "выполнено реально" if real_run else "план построен (dry-run)"
         self.message_bar.success(
-            f"{mode_note}. media_id={result.media_record.media_id}, "
-            f"код восстановления: {result.recovery_record.code}"
+            f"Установка завершена. media_id={result.media_record.media_id}, "
+            f"код восстановления: {result.recovery_record.code} — запишите его, "
+            "он также сохранён в контейнере администратора."
         )
 
-    def _on_install_error(self, exc: BaseException, real_run: bool) -> None:
+    def _on_install_error(self, exc: BaseException) -> None:
         self._stop_progress()
-        suffix = " -- часть шагов уже могла реально выполниться." if real_run else ""
-        if isinstance(exc, (DeviceNotEligibleError, InstallError)):
-            self.message_bar.error(f"{exc}{suffix}")
-        elif isinstance(exc, KNOWN_ERRORS):
+        # No hedging about whether anything happened: by the time this runs the
+        # medium has been erased, so the honest statement is that its previous
+        # contents are gone regardless of where the failure landed.
+        suffix = " Носитель уже изменён — прежние данные на нём не сохранились."
+        if isinstance(exc, (DeviceNotEligibleError, InstallError)) or isinstance(exc, KNOWN_ERRORS):
             self.message_bar.error(f"{exc}{suffix}")
         else:
             self.message_bar.error(f"Непредвиденная ошибка: {exc}{suffix}")

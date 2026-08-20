@@ -12,6 +12,7 @@ from .command_runner import CommandPlan, CommandRunner, secret_file
 
 DEFAULT_CIPHER = "aes-xts-plain64"
 DEFAULT_KEY_SIZE = 512
+DEFAULT_KDF = "argon2id"
 
 
 @contextlib.contextmanager
@@ -37,6 +38,7 @@ class LuksManager:
         *,
         cipher: str = DEFAULT_CIPHER,
         key_size: int = DEFAULT_KEY_SIZE,
+        kdf: str = DEFAULT_KDF,
         dry_run: bool = True,
         confirm_device: str | None = None,
         plan: CommandPlan | None = None,
@@ -55,6 +57,10 @@ class LuksManager:
             argv = [
                 "cryptsetup", "luksFormat", "--type", "luks2",
                 "--cipher", cipher, "--key-size", str(key_size),
+                # --pbkdf was previously omitted, so config.luks.kdf was a
+                # field the user could set that changed nothing: cryptsetup
+                # silently used its own default instead.
+                "--pbkdf", kdf,
                 "--key-file", str(key_path), "--batch-mode", partition,
             ]
             self.runner.run(argv, plan, dry_run=dry_run, confirm_device=confirm_device)

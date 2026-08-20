@@ -34,6 +34,37 @@ class DiskLayoutConfig:
     # the LUKS/system partition consumes the remainder of the device
 
 
+#: Cipher specifications cryptsetup accepts, mapped to the key sizes each one
+#: actually supports. The sizes are not a UI preference -- cryptsetup rejects
+#: anything else outright.
+#:
+#: XTS modes take a *doubled* key: the 512-bit entry is AES-256 (two 256-bit
+#: keys), which is the strongest AES that exists, and the 256-bit entry is
+#: AES-128. There is no larger AES to offer. Where extra strength is actually
+#: available is the KDF below, which governs how expensive guessing the
+#: passphrase is -- that, not the cipher key length, is what a real attack
+#: goes after.
+LUKS_CIPHERS = {
+    "aes-xts-plain64": (512, 256),
+    "serpent-xts-plain64": (512, 256),
+    "twofish-xts-plain64": (512, 256),
+    "aes-cbc-essiv:sha256": (256, 192, 128),
+}
+#: Password-based key derivation functions LUKS2 supports. argon2id is memory-
+#: hard and the LUKS2 default; pbkdf2 exists for compatibility with tooling
+#: that cannot read argon2 headers (notably GRUB's cryptodisk).
+LUKS_KDFS = ("argon2id", "argon2i", "pbkdf2")
+
+#: Distribution releases each backend can install, newest first. Kept here so
+#: the UI can offer a list instead of asking an administrator to recall a suite
+#: name, and so a typo becomes a validation error rather than a failed install.
+KNOWN_RELEASES = {
+    "debian": ("trixie", "bookworm", "bullseye"),
+    "redos": ("8.0", "7.3"),
+    "astra": ("orel", "voronezh", "smolensk"),
+}
+
+
 @dataclass
 class LuksConfig:
     cipher: str = "aes-xts-plain64"

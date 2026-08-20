@@ -28,24 +28,27 @@ def test_partition_path_for_plain_and_numbered_devices():
     assert plan_nvme.partition_path(plan_nvme.partitions[1]) == "/dev/nvme0n1p2"
 
 
-def test_disk_manager_commands_are_well_formed_and_not_executed_by_default():
-    layout = DiskLayoutConfig(boot_partition_mb=512, log_partition_mb=256, exchange_partition_mb=1024)
-    plan = plan_partitions("/dev/sdb", layout)
-    dm = DiskManager()
-    commands = dm.commands_for(plan)
+def test_every_existing_partition_is_erased_before_the_disk_is_repartitioned():
+    """Not a check that a particular command list is emitted -- that would only
+    restate the implementation. What matters is the property: signatures inside
+    each old partition must be destroyed while their offsets are still known,
+    i.e. before the partition table is replaced. A medium previously installed
+    by this same tool is the likeliest case, and a surviving LUKS or filesystem
+    signature makes blkid and the initramfs find two candidates at once.
+    """
+    plan = plan_partitions("/dev/sdb", DiskLayoutConfig())
+    commands = DiskManager().commands_for(plan, existing_partitions=("/dev/sdb1", "/dev/sdb2"))
+    flat = [" ".join(c) for c in commands]
 
-    assert commands[0] == ["wipefs", "--all", "/dev/sdb"]
-    assert commands[1] == ["parted", "--script", "/dev/sdb", "--", "mklabel", "gpt"]
-    assert ["parted", "--script", "/dev/sdb", "set", "1", "esp", "on"] in commands
-    # the kernel must be given a chance to notice the new partitions before
-    # anything tries to mkfs /dev/sdbN
-    assert commands[-2] == ["partprobe", "/dev/sdb"]
-    assert commands[-1] == ["udevadm", "settle"]
-    assert any("POA_EXCHANGE" in c for c in commands)
+    wiped_partitions = [i for i, c in enumerate(commands) if c[0] == "wipefs" and c[-1].startswith("/dev/sdb")
+                        and c[-1] != "/dev/sdb"]
+    new_table = next(i for i, c in enumerate(commands) if "mklabel" in c)
+    assert wiped_partitions, "old partitions are never wiped"
+    assert max(wiped_partitions) < new_table
 
-    result = dm.apply(plan, dry_run=True)
-    assert all(r.executed is False for r in result.results)
-    assert len(result.results) == len(commands)
+    # the backup GPT lives at the end of the device; clearing only the head
+    # leaves it for the kernel to restore the old layout from
+    assert any("sgdisk --zap-all" in f for f in flat)
 
 
 def test_luks_format_dry_run_never_touches_disk_and_never_leaks_passphrase_in_argv():

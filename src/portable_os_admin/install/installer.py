@@ -29,6 +29,7 @@ from .command_runner import BOOTSTRAP_TIMEOUT, CommandPlan, CommandResult, Comma
 from .devices import BlockDevice, check_install_eligible
 from .disk import DiskManager, MediaLayout, build_media_layout, plan_partitions
 from .luks import LuksManager
+from .tooling import check_tools_available, resolve_argv
 
 MIB = 1024 * 1024
 MIN_SYSTEM_PARTITION_MB = 4096
@@ -90,6 +91,8 @@ class OSInstaller:
 
         backend = get_backend(config.target_os)
         self._check_arch(backend, config)
+        if not dry_run:
+            check_tools_available(backend.required_tools())
 
         # The installer unmounts the medium itself as an explicit, logged step,
         # so an automounted stick is not a hard stop -- the user has already
@@ -172,6 +175,10 @@ class OSInstaller:
             dry_run=dry_run,
             confirm_device=confirm_device,
             command_plan=plan,
+            # Whatever the medium held before is erased signature by signature,
+            # not merely overwritten by a new partition table -- see
+            # DiskManager.commands_for.
+            existing_partitions=device.partition_paths,
         )
 
         self.luks_manager.format(
@@ -179,6 +186,7 @@ class OSInstaller:
             user_passphrase,
             cipher=config.luks.cipher,
             key_size=config.luks.key_size_bits,
+            kdf=config.luks.kdf,
             dry_run=dry_run,
             confirm_device=confirm_device,
             plan=plan,
@@ -428,7 +436,7 @@ def _read_output(argv: list[str]) -> str:
     """Read-only probe, so it does not go through CommandRunner's destructive
     gate -- but a failure here still has to stop the install, because a blank
     UUID would produce an fstab that cannot mount anything."""
-    proc = subprocess.run(argv, capture_output=True, text=True, timeout=30, check=False)
+    proc = subprocess.run(resolve_argv(argv), capture_output=True, text=True, timeout=30, check=False)
     value = proc.stdout.strip()
     if proc.returncode != 0 or not value:
         raise InstallError(f"не удалось определить UUID: {' '.join(argv)}\n{proc.stderr.strip()}")

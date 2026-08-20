@@ -89,7 +89,7 @@ def test_config_wizard_creates_and_validates(gui_app, tmp_path):
     wizard._on_target_os_changed()
     assert wizard.release_var.get() == "8.0"
 
-    for _ in range(6):  # basics -> account, disk, remote, tasks, packages -> review
+    for _ in range(5):  # basics -> account, disk, remote, packages -> review
         wizard._go_next()
         app.update()
     assert wizard.step_titles[wizard.step_index] == "Проверка и сохранение"
@@ -104,6 +104,44 @@ def test_config_wizard_creates_and_validates(gui_app, tmp_path):
     configs = app._current_frame
     assert isinstance(configs, ConfigsListFrame)
     assert [p.name for p in configs._paths] == ["stick1.json"]
+
+
+def test_config_wizard_final_step_edits_are_applied_or_refused(gui_app, tmp_path):
+    """The last step lets the administrator hand-edit the configuration. Two
+    things must hold: an applied edit really changes what gets saved, and text
+    left unapplied is not silently thrown away with a success message."""
+    app = gui_app
+    _open_container(app, tmp_path)
+    app.show_frame(ConfigWizardFrame)
+    wizard = app._current_frame
+    wizard.name_var.set("stick1")
+    for _ in range(5):
+        wizard._go_next()
+        app.update()
+    assert wizard.step_titles[wizard.step_index] == "Проверка и сохранение"
+
+    text = wizard.config_text.get("1.0", "end")
+    wizard.config_text.delete("1.0", "end")
+    wizard.config_text.insert("1.0", text.replace('"release": "bookworm"', '"release": "trixie"'))
+
+    # not applied yet -> saving must refuse rather than discard the edit
+    wizard._go_next()
+    app.update()
+    assert "неприменённые" in wizard.message_bar.var.get()
+    assert not (app.configs_dir / "stick1.json").exists()
+
+    wizard._apply_edits()
+    app.update()
+    assert wizard.config.release == "trixie"
+    # editing invalidates the previous verdict, since the installer only
+    # accepts configurations that passed validation
+    assert wizard.config.validation_status == "unchecked"
+
+    wizard._run_validation()
+    wizard._go_next()
+    app.update()
+    saved = app.config_manager.open(app.configs_dir / "stick1.json")
+    assert saved.release == "trixie"
 
 
 def test_config_wizard_account_step_blocks_invalid_username(gui_app, tmp_path):
@@ -124,14 +162,20 @@ def test_config_wizard_account_step_blocks_invalid_username(gui_app, tmp_path):
     assert "имя пользователя" in wizard.message_bar.var.get()
 
 
-def test_config_wizard_package_picker_add_and_remove(gui_app, tmp_path, monkeypatch):
-    class FakeSource:
-        def list_packages(self, mirror, release):
-            assert mirror == "https://deb.debian.org/debian"
-            assert release == "bookworm"
-            return [RepoPackage(name="htop", version="3.2.0", summary="interactive process viewer")]
+class _FakeSource:
+    """Three packages whose alphabetical and version orders differ, so a sort
+    test cannot pass by accident."""
 
-    monkeypatch.setattr(config_wizard_module, "get_package_source", lambda target_os: FakeSource())
+    def list_packages(self, mirror, release):
+        return [
+            RepoPackage(name="mc", version="4.8", summary="midnight commander"),
+            RepoPackage(name="alpha", version="1.0", summary="first package"),
+            RepoPackage(name="htop", version="3.2.0", summary="interactive process viewer"),
+        ]
+
+
+def test_config_wizard_package_picker_add_and_remove(gui_app, tmp_path, monkeypatch):
+    monkeypatch.setattr(config_wizard_module, "get_package_source", lambda target_os: _FakeSource())
 
     app = gui_app
     _open_container(app, tmp_path)
@@ -139,24 +183,58 @@ def test_config_wizard_package_picker_add_and_remove(gui_app, tmp_path, monkeypa
     wizard = app._current_frame
     wizard.name_var.set("stick1")
 
-    for _ in range(5):  # basics -> account, disk, remote, tasks -> packages
+    for _ in range(4):  # basics -> account, disk, remote -> packages
         wizard._go_next()
         app.update()
     assert wizard.step_titles[wizard.step_index] == "Пакеты для предустановки"
 
     wizard._connect_repo()
     _pump(app, lambda: bool(wizard._catalog))
-    assert len(wizard._catalog) == 1
+    assert len(wizard._catalog) == 3
 
-    wizard.catalog_table.selection_set(wizard.catalog_table.get_children()[0])
+    # several rows at once, the way Ctrl/Shift-clicking leaves the table
+    rows = wizard.catalog_table.get_children()
+    wizard.catalog_table.selection_set(rows[0], rows[2])
     wizard._add_package()
     app.update()
-    assert wizard.config.packages == ["htop"]
+    assert sorted(wizard.config.packages) == ["htop", "mc"]
 
-    wizard.selected_list.selection_set(0)
+    wizard.selected_list.selection_set(0, "end")
     wizard._remove_package()
     app.update()
     assert wizard.config.packages == []
+
+
+def test_config_wizard_package_list_sorts_by_any_column(gui_app, tmp_path, monkeypatch):
+    """Sorting has to reach the whole fetched catalogue, not just the rows
+    currently drawn: the table shows the first N of what can be tens of
+    thousands of packages, so sorting only the visible page would order an
+    arbitrary slice and call it sorted."""
+    monkeypatch.setattr(config_wizard_module, "get_package_source", lambda target_os: _FakeSource())
+
+    app = gui_app
+    _open_container(app, tmp_path)
+    app.show_frame(ConfigWizardFrame)
+    wizard = app._current_frame
+    wizard.name_var.set("stick1")
+    for _ in range(4):
+        wizard._go_next()
+        app.update()
+
+    wizard._connect_repo()
+    _pump(app, lambda: bool(wizard._catalog))
+
+    def column(name):
+        return [wizard.catalog_table.item(r)["values"][{"name": 0, "version": 1}[name]]
+                for r in wizard.catalog_table.get_children()]
+
+    wizard._sort_catalog("name")
+    assert column("name") == ["alpha", "htop", "mc"]
+    wizard._sort_catalog("name")  # same column again -> reverse
+    assert column("name") == ["mc", "htop", "alpha"]
+
+    wizard._sort_catalog("version")
+    assert column("version") == ["1.0", "3.2.0", "4.8"]
 
 
 def _make_validated_debian_config(app):
@@ -167,7 +245,56 @@ def _make_validated_debian_config(app):
     return path
 
 
-def test_install_wizard_dry_run_records_media(gui_app, tmp_path):
+class _StubInstaller:
+    """Stands in for OSInstaller so wizard tests never touch a disk.
+
+    Delegates to the real orchestration in planning mode, so everything the
+    wizard itself is responsible for -- resolving the device, the confirmation
+    gate, saving the container, rendering the log -- runs for real. The wizard
+    no longer offers a planning mode to users; it survives here only as a test
+    seam.
+    """
+
+    last_device = None
+    last_dry_run = None
+
+    def __init__(self, session):
+        from portable_os_admin.install import OSInstaller
+
+        self._real = OSInstaller(session)
+
+    def run(self, device, config, passphrase, *, dry_run, confirm_device):
+        _StubInstaller.last_device = device
+        _StubInstaller.last_dry_run = dry_run
+        return self._real.run(device, config, passphrase, dry_run=True, confirm_device=confirm_device)
+
+
+def _stub_install(monkeypatch):
+    """Patches out the installer and the root check, so these tests behave the
+    same on a developer machine as on the root shell of a test VM."""
+    from portable_os_admin.gui.screens import install_wizard as install_wizard_module
+
+    monkeypatch.setattr(install_wizard_module, "OSInstaller", _StubInstaller)
+    monkeypatch.setattr(install_wizard_module, "_is_root", lambda: True)
+    return install_wizard_module
+
+
+def _fill_install_wizard(app, wizard, device="/dev/sdb", size="32"):
+    wizard.config_table.selection_set(wizard.config_table.get_children()[0])
+    wizard._go_next()
+    app.update()
+    wizard.device_path_var.set(device)
+    wizard.device_size_var.set(size)
+    wizard._go_next()
+    app.update()
+    wizard.passphrase_var.set("user-passphrase-123")
+    wizard.passphrase_confirm_var.set("user-passphrase-123")
+    wizard._go_next()
+    app.update()
+
+
+def test_install_wizard_records_media_and_recovery(gui_app, tmp_path, monkeypatch):
+    _stub_install(monkeypatch)
     app = gui_app
     _open_container(app, tmp_path)
     _make_validated_debian_config(app)
@@ -175,29 +302,18 @@ def test_install_wizard_dry_run_records_media(gui_app, tmp_path):
     app.show_frame(InstallWizardFrame)
     wizard = app._current_frame
     assert isinstance(wizard, InstallWizardFrame)
+    assert len(wizard.config_table.get_children()) == 1
 
-    children = wizard.config_table.get_children()
-    assert len(children) == 1
-    wizard.config_table.selection_set(children[0])
-    wizard._go_next()
-    app.update()
-
-    wizard.device_path_var.set("/dev/sdb")
-    wizard.device_size_var.set("32")
-    wizard._go_next()
-    app.update()
-
-    wizard.passphrase_var.set("user-passphrase-123")
-    wizard.passphrase_confirm_var.set("user-passphrase-123")
-    wizard._go_next()
-    app.update()
-
-    assert wizard.real_run_var.get() is False
+    _fill_install_wizard(app, wizard)
+    wizard.confirm_device_var.set("/dev/sdb")
     wizard._start_install()
     _pump(app, lambda: not wizard._running)
 
+    # the wizard asks for a real install -- there is no longer a preview mode
+    assert _StubInstaller.last_dry_run is False
     assert len(app.session.container.data.media_records) == 1
-    assert "dry-run" in wizard.message_bar.var.get()
+    assert len(app.session.container.data.recovery_records) == 1
+    assert "код восстановления" in wizard.message_bar.var.get()
 
 
 def test_install_wizard_passes_the_real_device_not_the_form_fields(gui_app, tmp_path, monkeypatch):
@@ -207,9 +323,9 @@ def test_install_wizard_passes_the_real_device_not_the_form_fields(gui_app, tmp_
     desktop has just seen appear -- got repartitioned underneath a live
     filesystem, and the container recorded "(введено вручную)" as its label.
     """
-    from portable_os_admin.install.devices import BlockDevice
-    from portable_os_admin.gui.screens import install_wizard as install_wizard_module
+    from portable_os_admin.install.devices import BlockDevice, Partition
 
+    install_wizard_module = _stub_install(monkeypatch)
     real_device = BlockDevice(
         name="sdb",
         path="/dev/sdb",
@@ -217,6 +333,7 @@ def test_install_wizard_passes_the_real_device_not_the_form_fields(gui_app, tmp_
         model="Cruzer Blade",
         removable=True,
         mountpoints=("/media/user/flash",),
+        partitions=(Partition("/dev/sdb1", 32_000_000_000, "ext4", "DATA", "/media/user/flash"),),
     )
 
     class FakeLister:
@@ -234,26 +351,19 @@ def test_install_wizard_passes_the_real_device_not_the_form_fields(gui_app, tmp_
 
     app.show_frame(InstallWizardFrame)
     wizard = app._current_frame
-    wizard.config_table.selection_set(wizard.config_table.get_children()[0])
-    wizard._go_next()
-    app.update()
-
     # the size field is deliberately left at a rounded, slightly wrong value:
     # the real byte count has to come from the system, not from this text
-    wizard.device_path_var.set("/dev/sdb")
-    wizard.device_size_var.set("29")
-    wizard._go_next()
-    app.update()
-    wizard.passphrase_var.set("user-passphrase-123")
-    wizard.passphrase_confirm_var.set("user-passphrase-123")
-    wizard._go_next()
-    app.update()
+    _fill_install_wizard(app, wizard, size="29")
 
+    wizard.confirm_device_var.set("/dev/sdb")
     wizard._start_install()
     _pump(app, lambda: not wizard._running)
 
+    assert _StubInstaller.last_device.size_bytes == 32_000_000_000
     log = wizard.log_text.get("1.0", "end")
     assert "umount /media/user/flash" in log, "the medium is never unmounted before repartitioning"
+    # the old partition's own signatures must go before the table is replaced
+    assert "wipefs --all --force /dev/sdb1" in log
     assert app.session.container.data.media_records[0].label == "Cruzer Blade"
 
 
@@ -262,8 +372,7 @@ def test_install_wizard_says_root_is_needed_instead_of_failing_inside_parted(gui
     operation, and only then gets a permission error from a tool they never
     invoked -- exactly the "errors in your face" behaviour the wizard exists to
     avoid. Nothing has been written yet at that point, so refusing is free."""
-    from portable_os_admin.gui.screens import install_wizard as install_wizard_module
-
+    install_wizard_module = _stub_install(monkeypatch)
     monkeypatch.setattr(install_wizard_module, "_is_root", lambda: False)
 
     app = gui_app
@@ -272,22 +381,9 @@ def test_install_wizard_says_root_is_needed_instead_of_failing_inside_parted(gui
 
     app.show_frame(InstallWizardFrame)
     wizard = app._current_frame
-    wizard.config_table.selection_set(wizard.config_table.get_children()[0])
-    wizard._go_next()
-    app.update()
-    wizard.device_path_var.set("/dev/sdb")
-    wizard.device_size_var.set("32")
-    wizard._go_next()
-    app.update()
-    wizard.passphrase_var.set("user-passphrase-123")
-    wizard.passphrase_confirm_var.set("user-passphrase-123")
-    wizard._go_next()
-    app.update()
+    _fill_install_wizard(app, wizard)
 
-    # the warning appears as soon as real execution is requested...
-    wizard.real_run_var.set(True)
-    wizard._on_real_run_toggle()
-    app.update()
+    # the warning is already on screen when the last step opens...
     assert "root" in wizard.message_bar.var.get()
 
     # ...and starting anyway is refused without touching the device
@@ -298,35 +394,17 @@ def test_install_wizard_says_root_is_needed_instead_of_failing_inside_parted(gui
     assert wizard._running is False
     assert app.session.container.data.media_records == []
 
-    # the plan mode remains usable without root
-    wizard.real_run_var.set(False)
-    wizard._on_real_run_toggle()
-    wizard._start_install()
-    _pump(app, lambda: not wizard._running)
-    assert len(app.session.container.data.media_records) == 1
 
-
-def test_install_wizard_blocks_mismatched_confirmation_before_real_run(gui_app, tmp_path):
+def test_install_wizard_blocks_mismatched_confirmation(gui_app, tmp_path, monkeypatch):
+    _stub_install(monkeypatch)
     app = gui_app
     _open_container(app, tmp_path)
     _make_validated_debian_config(app)
 
     app.show_frame(InstallWizardFrame)
     wizard = app._current_frame
-    wizard.config_table.selection_set(wizard.config_table.get_children()[0])
-    wizard._go_next()
-    app.update()
-    wizard.device_path_var.set("/dev/sdb")
-    wizard.device_size_var.set("32")
-    wizard._go_next()
-    app.update()
-    wizard.passphrase_var.set("user-passphrase-123")
-    wizard.passphrase_confirm_var.set("user-passphrase-123")
-    wizard._go_next()
-    app.update()
+    _fill_install_wizard(app, wizard)
 
-    wizard.real_run_var.set(True)
-    wizard._on_real_run_toggle()
     wizard.confirm_device_var.set("/dev/sdX-wrong")
     wizard._start_install()
     app.update()
@@ -335,6 +413,60 @@ def test_install_wizard_blocks_mismatched_confirmation_before_real_run(gui_app, 
     # must refuse before OSInstaller.run() is ever called
     assert len(app.session.container.data.media_records) == 0
     assert wizard._running is False
+
+
+def test_install_wizard_lists_what_will_be_destroyed(gui_app, tmp_path, monkeypatch):
+    """An irreversible action needs to say what it destroys. "Устройство будет
+    очищено" is not something a person can check themselves against; the
+    partitions, their sizes and labels are."""
+    from portable_os_admin.install.devices import BlockDevice, Partition
+
+    install_wizard_module = _stub_install(monkeypatch)
+    device = BlockDevice(
+        name="sdb", path="/dev/sdb", size_bytes=32_000_000_000, model="Cruzer Blade",
+        removable=True, mountpoints=("/media/user/photos",),
+        partitions=(
+            Partition("/dev/sdb1", 1_000_000_000, "vfat", "BOOT", ""),
+            Partition("/dev/sdb2", 31_000_000_000, "ext4", "ФОТО", "/media/user/photos"),
+        ),
+    )
+
+    class FakeLister:
+        def list_removable(self):
+            return [device]
+
+        def describe(self, path):
+            return device
+
+    monkeypatch.setattr(install_wizard_module, "DeviceLister", FakeLister)
+
+    app = gui_app
+    _open_container(app, tmp_path)
+    _make_validated_debian_config(app)
+    app.show_frame(InstallWizardFrame)
+    wizard = app._current_frame
+    _fill_install_wizard(app, wizard)
+
+    shown = _visible_text(wizard)
+    assert "/dev/sdb1" in shown and "/dev/sdb2" in shown
+    assert "ФОТО" in shown
+    assert "уничтожено" in shown
+    assert "/media/user/photos" in shown
+
+
+def _visible_text(widget) -> str:
+    """Every label caption under `widget`, so a test can assert on what the
+    screen actually says rather than on internal state."""
+    found = []
+    for child in widget.winfo_children():
+        try:
+            text = child.cget("text")
+        except tk.TclError:
+            text = ""
+        if text:
+            found.append(str(text))
+        found.append(_visible_text(child))
+    return "\n".join(found)
 
 
 def test_install_wizard_shows_no_valid_configs_guidance(gui_app, tmp_path):

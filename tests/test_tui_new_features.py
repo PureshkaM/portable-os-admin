@@ -1,6 +1,6 @@
 """Headless coverage for the two TUI additions built on top of the original
-flow tested in test_tui.py: the real-execution switch on InstallScreen, and
-the repository package browser reachable from ConfigsScreen."""
+flow tested in test_tui.py: the confirmation gate on InstallScreen, and the
+repository package browser reachable from ConfigsScreen."""
 import asyncio
 
 from portable_os_admin.config.repo_browser import RepoPackage
@@ -25,7 +25,10 @@ async def _open_container_and_create_debian_config(pilot, app, container_path):
     await pilot.pause()
 
 
-def test_install_real_run_switch_blocks_on_mismatched_confirmation(tmp_path):
+def test_install_blocks_on_mismatched_confirmation(tmp_path):
+    """Repeating the device path is the last thing standing between the user
+    and an erased disk, so it has to refuse before the installer is reached."""
+
     async def scenario():
         container_path = tmp_path / "admin.container"
         app = PortableOSAdminApp()
@@ -46,10 +49,6 @@ def test_install_real_run_switch_blocks_on_mismatched_confirmation(tmp_path):
             screen.query_one("#passphrase").value = "user-passphrase-123"
             await pilot.click("#configs_table")
             await pilot.pause()
-
-            await pilot.click("#real_run_switch")
-            await pilot.pause()
-            assert "РЕАЛЬНУЮ" in str(screen.query_one("#run").label)
 
             screen.query_one("#confirm_device").value = "/dev/sdX-wrong"
             await pilot.click("#run")

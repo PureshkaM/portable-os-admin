@@ -11,6 +11,33 @@ import subprocess
 from dataclasses import dataclass
 
 from ..errors import DeviceNotEligibleError
+from .tooling import resolve_argv
+
+
+@dataclass(frozen=True)
+class Partition:
+    """What currently occupies a slice of the medium.
+
+    Carried so the installer can erase each old partition's signatures by name,
+    and so the user can be shown exactly what is about to be destroyed instead
+    of a bare "устройство будет очищено"."""
+
+    path: str
+    size_bytes: int
+    fstype: str
+    label: str
+    mountpoint: str
+
+    def describe(self) -> str:
+        size_gb = self.size_bytes / 1024**3
+        parts = [f"{self.path}", f"{size_gb:.1f} ГБ"]
+        if self.fstype:
+            parts.append(self.fstype)
+        if self.label:
+            parts.append(f"«{self.label}»")
+        if self.mountpoint:
+            parts.append(f"смонтирован в {self.mountpoint}")
+        return ", ".join(parts)
 
 
 @dataclass(frozen=True)
@@ -21,6 +48,7 @@ class BlockDevice:
     model: str
     removable: bool
     mountpoints: tuple[str, ...]
+    partitions: tuple[Partition, ...] = ()
 
     @property
     def is_mounted(self) -> bool:
@@ -29,6 +57,10 @@ class BlockDevice:
     @property
     def active_mountpoints(self) -> tuple[str, ...]:
         return tuple(m for m in self.mountpoints if m)
+
+    @property
+    def partition_paths(self) -> tuple[str, ...]:
+        return tuple(p.path for p in self.partitions)
 
 
 def collect_mountpoints(entry: dict) -> tuple[str, ...]:
@@ -50,8 +82,31 @@ def collect_mountpoints(entry: dict) -> tuple[str, ...]:
     return tuple(found)
 
 
+def collect_partitions(entry: dict) -> tuple[Partition, ...]:
+    """Flattens an lsblk subtree into the partitions it holds.
+
+    Nested: a partition can carry an open LUKS mapping or an LVM volume as a
+    child, and those hold the filesystem signatures that must be erased too.
+    """
+    found: list[Partition] = []
+    for child in entry.get("children") or []:
+        if child.get("type") in ("part", "crypt", "lvm"):
+            mountpoints = [m for m in (child.get("mountpoints") or []) if m]
+            found.append(
+                Partition(
+                    path=child.get("path") or f"/dev/{child.get('name', '')}",
+                    size_bytes=int(child.get("size") or 0),
+                    fstype=(child.get("fstype") or "").strip(),
+                    label=(child.get("label") or "").strip(),
+                    mountpoint=mountpoints[0] if mountpoints else "",
+                )
+            )
+        found.extend(collect_partitions(child))
+    return tuple(found)
+
+
 class DeviceLister:
-    LSBLK_COLUMNS = "NAME,PATH,SIZE,MODEL,RM,TRAN,TYPE,MOUNTPOINTS"
+    LSBLK_COLUMNS = "NAME,PATH,SIZE,MODEL,RM,TRAN,TYPE,FSTYPE,LABEL,MOUNTPOINTS"
 
     def list_removable(self) -> list[BlockDevice]:
         data = self._lsblk_json()
@@ -74,6 +129,7 @@ class DeviceLister:
                     model=(entry.get("model") or "").strip(),
                     removable=True,
                     mountpoints=collect_mountpoints(entry),
+                    partitions=collect_partitions(entry),
                 )
             )
         return devices
@@ -115,6 +171,7 @@ class DeviceLister:
             model=(entry.get("model") or "").strip(),
             removable=True,
             mountpoints=collect_mountpoints(entry),
+            partitions=collect_partitions(entry),
         )
 
     def _lsblk_json(self, path: str | None = None) -> dict:
@@ -122,7 +179,7 @@ class DeviceLister:
         if path:
             argv.append(path)
         proc = subprocess.run(
-            argv,
+            resolve_argv(argv),
             capture_output=True,
             text=True,
             timeout=15,

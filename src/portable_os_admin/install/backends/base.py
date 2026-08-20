@@ -83,6 +83,21 @@ class InstallBackend(ABC):
         """argv (run outside chroot, targeting mount_root) that installs
         `config.packages`, or None if there is nothing to install."""
 
+    #: External utilities every install needs regardless of target family.
+    COMMON_TOOLS = (
+        "wipefs", "sgdisk", "parted", "partprobe", "udevadm",
+        "cryptsetup", "mkfs.ext4", "mkfs.vfat", "blkid",
+        "mount", "umount", "chroot",
+    )
+    #: Family-specific additions (the bootstrapper, mostly).
+    EXTRA_TOOLS: tuple[str, ...] = ()
+
+    def required_tools(self) -> list[str]:
+        """Everything that must exist before an install may start, so a missing
+        utility is reported up front rather than halfway through writing the
+        medium."""
+        return [*self.COMMON_TOOLS, *self.EXTRA_TOOLS]
+
     def temporary_files(self) -> dict[str, tuple[str, int | None]]:
         """Relative path -> (content, mode) for files that exist only while the
         target is being populated, and are deleted before the medium is

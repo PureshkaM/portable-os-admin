@@ -18,6 +18,8 @@ class DebianInstallBackend(InstallBackend):
     ssh_service = "ssh"
     sudo_group = "sudo"
 
+    EXTRA_TOOLS = ("debootstrap",)
+
     ARCH_NAMES = {
         "x86_64": "amd64",
         "amd64": "amd64",
