@@ -15,8 +15,8 @@ def test_create_default_config_is_initially_unchecked(tmp_path):
     assert config.target_os == "debian"
 
 
-def test_valid_config_passes_builtin_validation():
-    config = InstallConfig.create_default("stick1", "debian")
+def test_valid_config_passes_builtin_validation(make_config):
+    config = make_config()
     result = BuiltinConfigValidator().validate(config)
     assert result.ok
     assert result.errors == []
@@ -35,17 +35,17 @@ def test_valid_config_passes_builtin_validation():
         (lambda c: setattr(c.remote_access, "enabled", True) or setattr(c.remote_access, "port", 0), "порт"),
     ],
 )
-def test_invalid_configs_are_rejected(mutate, expected_substring):
-    config = InstallConfig.create_default("stick1", "debian")
+def test_invalid_configs_are_rejected(mutate, expected_substring, make_config):
+    config = make_config()
     mutate(config)
     result = BuiltinConfigValidator().validate(config)
     assert not result.ok
     assert any(expected_substring in err for err in result.errors)
 
 
-def test_config_manager_validate_updates_status_in_place():
+def test_config_manager_validate_updates_status_in_place(make_config):
     cm = ConfigManager()
-    config = InstallConfig.create_default("stick1", "redos")
+    config = make_config("stick1", "redos")
     cm.validate(config)
     assert config.validation_status == "valid"
 

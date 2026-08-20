@@ -75,8 +75,16 @@ class InstallBackend(ABC):
     # Bootstrapping and packages
     # ------------------------------------------------------------------
     @abstractmethod
-    def bootstrap_command(self, mount_root: str, config: InstallConfig) -> list[str]:
-        """argv that populates `mount_root` with a minimal base system."""
+    def bootstrap_command(
+        self, mount_root: str, config: InstallConfig, source_url: str, release: str
+    ) -> list[str]:
+        """argv that populates `mount_root` with a minimal base system.
+
+        `source_url` is the mounted installation image (`file:///…`) and
+        `release` is what that image turned out to contain. Both are parameters
+        rather than config fields: the base system always comes from the local
+        image, and taking the release from the image keeps distribution version
+        numbers out of the configuration entirely."""
 
     @abstractmethod
     def package_install_command(self, mount_root: str, packages: list[str]) -> list[str] | None:
@@ -97,6 +105,11 @@ class InstallBackend(ABC):
         utility is reported up front rather than halfway through writing the
         medium."""
         return [*self.COMMON_TOOLS, *self.EXTRA_TOOLS]
+
+    def sources_list(self, config: InstallConfig, release: str) -> str | None:
+        """Package sources to leave behind in the installed system, or None if
+        the family needs nothing written."""
+        return None
 
     def temporary_files(self) -> dict[str, tuple[str, int | None]]:
         """Relative path -> (content, mode) for files that exist only while the

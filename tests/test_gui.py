@@ -237,8 +237,11 @@ def test_config_wizard_package_list_sorts_by_any_column(gui_app, tmp_path, monke
     assert column("version") == ["1.0", "3.2.0", "4.8"]
 
 
-def _make_validated_debian_config(app):
+def _make_validated_debian_config(app, iso_path=None):
     config = app.config_manager.create(app.configs_dir, "stick1", "debian")
+    # A configuration without an installation image cannot validate: the system
+    # is installed from a local image, never downloaded.
+    config.image_path = iso_path or _throwaway_image(app)
     app.config_manager.validate(config)
     path = app.configs_dir / "stick1.json"
     app.config_manager.save(config, path)
@@ -257,16 +260,21 @@ class _StubInstaller:
 
     last_device = None
     last_dry_run = None
+    last_image_path = None
 
     def __init__(self, session):
         from portable_os_admin.install import OSInstaller
 
         self._real = OSInstaller(session)
 
-    def run(self, device, config, passphrase, *, dry_run, confirm_device):
+    def run(self, device, config, passphrase, *, image_path="", dry_run, confirm_device, on_step=None):
         _StubInstaller.last_device = device
         _StubInstaller.last_dry_run = dry_run
-        return self._real.run(device, config, passphrase, dry_run=True, confirm_device=confirm_device)
+        _StubInstaller.last_image_path = image_path
+        return self._real.run(
+            device, config, passphrase, image_path=image_path, dry_run=True,
+            confirm_device=confirm_device, on_step=on_step,
+        )
 
 
 def _stub_install(monkeypatch):
@@ -283,6 +291,13 @@ def _fill_install_wizard(app, wizard, device="/dev/sdb", size="32"):
     wizard.config_table.selection_set(wizard.config_table.get_children()[0])
     wizard._go_next()
     app.update()
+
+    # the installation image: a path typed by hand is accepted, and the
+    # installer verifies what is inside it before touching the medium
+    wizard.image_path_var.set(_throwaway_image(app))
+    wizard._go_next()
+    app.update()
+
     wizard.device_path_var.set(device)
     wizard.device_size_var.set(size)
     wizard._go_next()
@@ -291,6 +306,12 @@ def _fill_install_wizard(app, wizard, device="/dev/sdb", size="32"):
     wizard.passphrase_confirm_var.set("user-passphrase-123")
     wizard._go_next()
     app.update()
+
+
+def _throwaway_image(app):
+    path = app.configs_dir.parent / "image.iso"
+    path.write_bytes(b"not a real image")
+    return str(path)
 
 
 def test_install_wizard_records_media_and_recovery(gui_app, tmp_path, monkeypatch):

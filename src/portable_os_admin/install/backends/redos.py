@@ -56,12 +56,24 @@ class RedOSInstallBackend(InstallBackend):
     #: RHEL-family EFI package suffixes, which do not match the arch name
     EFI_SUFFIX = {"x86_64": "x64", "aarch64": "aa64"}
 
-    def bootstrap_command(self, mount_root: str, config: InstallConfig) -> list[str]:
-        argv = ["dnf", "--installroot", mount_root, "--releasever", config.release, "-y"]
-        if config.mirror:
-            argv += [f"--repofrompath=poa-repo,{config.mirror}", "--repo=poa-repo"]
-        argv += ["--forcearch", self.normalize_arch(config.arch), "install", "@core"]
-        return argv
+    def bootstrap_command(
+        self, mount_root: str, config: InstallConfig, source_url: str, release: str
+    ) -> list[str]:
+        # The mounted image carries repodata/, so dnf reads it as a repository
+        # directly. --disablerepo='*' keeps it from reaching for the host's own
+        # configured repositories, which on an isolated network do not answer.
+        return [
+            "dnf",
+            "--installroot", mount_root,
+            "--releasever", release,
+            "-y",
+            "--disablerepo=*",
+            f"--repofrompath=poa-image,{source_url}",
+            "--repo=poa-image",
+            "--nogpgcheck",
+            "--forcearch", self.normalize_arch(config.arch),
+            "install", "@core",
+        ]
 
     def package_install_command(self, mount_root: str, packages: list[str]) -> list[str] | None:
         if not packages:

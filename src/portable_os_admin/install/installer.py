@@ -16,6 +16,7 @@ import importlib.resources
 import os
 import subprocess
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from .. import crypto
@@ -28,12 +29,17 @@ from .backends.base import EXCHANGE_MOUNTPOINT, host_arch
 from .command_runner import BOOTSTRAP_TIMEOUT, CommandPlan, CommandResult, CommandRunner
 from .devices import BlockDevice, check_install_eligible
 from .disk import DiskManager, MediaLayout, build_media_layout, plan_partitions
+from .image_source import MountedImage, inspect_mounted
 from .luks import LuksManager
 from .tooling import check_tools_available, resolve_argv
 
 MIB = 1024 * 1024
 MIN_SYSTEM_PARTITION_MB = 4096
 RECOVERY_KEYSLOT = 7
+
+#: Which image family can install which target. Astra Linux is a Debian
+#: derivative, so its images look like Debian images.
+IMAGE_FAMILY = {"debian": "debian", "astra": "debian", "redos": "redos"}
 
 #: Directory on the (unencrypted) ESP holding the recovery module and the
 #: metadata that lets the admin tool recognise this medium later.
@@ -68,6 +74,7 @@ class OSInstaller:
         self.disk_manager = disk_manager or DiskManager()
         self.luks_manager = luks_manager or LuksManager()
         self.runner = runner or CommandRunner()
+        self._progress = _Progress(None)
 
     def check_possible(self, device: BlockDevice, config: InstallConfig, *, require_unmounted: bool = True) -> None:
         """"Установка.Проверка.Носитель" / "Установка.Проверка.ДоИзменения":
@@ -87,10 +94,26 @@ class OSInstaller:
         config: InstallConfig,
         user_passphrase: bytes,
         *,
+        image_path: str = "",
         dry_run: bool = True,
         confirm_device: str | None = None,
+        on_step: "Callable[[int, int, str], None] | None" = None,
     ) -> InstallResult:
+        """`image_path` is the installation image the system is taken from.
+
+        It is a parameter of the run rather than a field of the configuration:
+        the configuration describes *what* to install and is meant to be
+        reusable across admin machines, while the path of an ISO belongs to one
+        particular machine and would be a dead path anywhere else.
+
+        `on_step(index, total, text)` is called before each stage.
+
+        Installing takes the better part of an hour, most of it inside one
+        command, so a caller that shows nothing until the end leaves a person
+        watching a still window with no idea whether anything is happening.
+        """
         self.session.require_open()
+        self._progress = _Progress(on_step)
 
         # "Конфигурация.Использование.Запрет" / "Установка.Конфигурация.Запрет"
         if config.validation_status != "valid":
@@ -118,11 +141,14 @@ class OSInstaller:
 
         plan = CommandPlan(device=device.path)
         state = _TeardownState()
+        image = MountedImage(image_path, mountpoint=f"/mnt/poa-image-{media_id}")
+        state.image = image
 
         try:
+            release = self._prepare_image(image, image_path, config, backend, dry_run=dry_run)
             recovery_code, recovery_salt = self._install(
                 device, config, backend, layout, media_id, user_passphrase, plan, state,
-                dry_run=dry_run, confirm_device=confirm_device,
+                image_url=image.url, release=release, dry_run=dry_run, confirm_device=confirm_device,
             )
         except Exception as exc:
             # "Установка.Ошибка.Сохранение": nothing below this point runs, so
@@ -159,6 +185,48 @@ class OSInstaller:
         return InstallResult(media_record=media_record, recovery_record=recovery_record, plan=plan)
 
     # ------------------------------------------------------------------
+    # The installation image
+    # ------------------------------------------------------------------
+    def _prepare_image(
+        self, image: MountedImage, image_path: str, config: InstallConfig, backend, *, dry_run: bool
+    ) -> str:
+        """Mounts the image, checks it can install what was asked, and reports
+        which release it turned out to hold.
+
+        The release comes from the image rather than from the configuration on
+        purpose: it keeps configurations free of distribution version numbers,
+        so the same configuration works with next year's image without being
+        edited. Everything checked here would otherwise surface as a failure
+        deep inside debootstrap or dnf, tens of minutes in, as a complaint about
+        a missing Release file rather than about the image being the wrong one.
+        """
+        self._progress.step("Подключение установочного образа")
+        if dry_run:
+            return config.release
+
+        if not image_path:
+            raise InstallError("не указан установочный образ ОС")
+
+        image.mount()
+        info = inspect_mounted(image_path, image.mountpoint)
+
+        expected_family = IMAGE_FAMILY.get(config.target_os, config.target_os)
+        if info.family != expected_family:
+            raise InstallError(
+                f"образ не подходит: конфигурация рассчитана на {config.target_os}, "
+                f"а образ содержит {info.family} ({info.label})"
+            )
+        if not info.complete:
+            raise InstallError(f"образ не подходит: {info.incomplete_reason}")
+        wanted_arch = backend.normalize_arch(config.arch)
+        if info.architectures and wanted_arch not in info.architectures:
+            raise InstallError(
+                f"образ не подходит: эта машина ставит систему для {wanted_arch}, "
+                f"а образ собран для {', '.join(info.architectures)}"
+            )
+        return info.release or config.release
+
+    # ------------------------------------------------------------------
     # The pipeline itself
     # ------------------------------------------------------------------
     def _install(
@@ -172,13 +240,17 @@ class OSInstaller:
         plan: CommandPlan,
         state: "_TeardownState",
         *,
+        image_url: str,
+        release: str,
         dry_run: bool,
         confirm_device: str | None,
     ) -> tuple[str, bytes]:
         run = lambda argv, **kw: self._run(argv, plan, dry_run, confirm_device, **kw)  # noqa: E731
 
+        self._progress.step("Отключение носителя от системы")
         self._unmount_medium(device, plan, dry_run, confirm_device)
 
+        self._progress.step("Очистка носителя и создание разделов")
         self.disk_manager.apply(
             plan_partitions(device.path, config.disk),
             dry_run=dry_run,
@@ -190,6 +262,7 @@ class OSInstaller:
             existing_partitions=device.partition_paths,
         )
 
+        self._progress.step("Шифрование системного раздела (LUKS)")
         self.luks_manager.format(
             layout.system_partition,
             user_passphrase,
@@ -201,6 +274,7 @@ class OSInstaller:
             plan=plan,
         )
 
+        self._progress.step("Создание ключа восстановления")
         recovery_code = crypto.generate_recovery_code()
         recovery_salt = crypto.new_salt()
         recovery_passphrase = crypto.derive_recovery_passphrase(recovery_code, recovery_salt)
@@ -214,6 +288,7 @@ class OSInstaller:
             plan=plan,
         )
 
+        self._progress.step("Открытие зашифрованного тома")
         self.luks_manager.open(
             layout.system_partition,
             layout.mapper_name,
@@ -227,19 +302,23 @@ class OSInstaller:
         # Filesystems. The root filesystem goes *inside* the opened LUKS
         # mapping, which is the step whose absence made every earlier install
         # write the target system into a directory on the admin host instead.
+        self._progress.step("Создание файловых систем")
         run(["mkfs.ext4", "-F", "-L", "POA_ROOT", layout.mapper_path])
         run(["mkfs.vfat", "-F", "32", "-n", "POA_ESP", layout.esp_partition])
         run(["mkfs.ext4", "-F", "-L", "POA_BOOT", layout.boot_partition])
         run(["mkfs.ext4", "-F", "-L", "POA_LOGS", layout.logs_partition])
         run(["mkfs.ext4", "-F", "-L", "POA_EXCHANGE", layout.exchange_partition])
 
+        self._progress.step("Монтирование носителя")
         # Mount the target tree, outermost first.
         run(["mkdir", "-p", layout.mount_root])
         run(["mount", layout.mapper_path, layout.mount_root])
         state.mounts.append(layout.mount_root)
 
-        self._run_bootstrap(backend, config, layout, plan, dry_run, confirm_device)
+        self._progress.step("Развёртывание базовой системы с образа — самый долгий шаг")
+        self._run_bootstrap(backend, config, layout, image_url, release, plan, dry_run, confirm_device)
 
+        self._progress.step("Подключение служебных разделов")
         run(["mkdir", "-p", f"{layout.mount_root}/boot"])
         run(["mount", layout.boot_partition, f"{layout.mount_root}/boot"])
         state.mounts.append(f"{layout.mount_root}/boot")
@@ -273,6 +352,7 @@ class OSInstaller:
             self._write_file(target, content, plan, dry_run, confirm_device, mode=mode)
             temporary_paths.append(target)
 
+        self._progress.step("Настройка устанавливаемой системы")
         self._probe_uuids(layout, dry_run)
 
         for relative, content in backend.config_files(config, layout).items():
@@ -286,30 +366,46 @@ class OSInstaller:
         if refresh is not None:
             run(refresh, timeout=BOOTSTRAP_TIMEOUT)
 
+        self._progress.step("Установка ядра и загрузчика")
         boot_pkg_cmd = backend.package_install_command(layout.mount_root, backend.boot_packages(config))
         if boot_pkg_cmd is not None:
             run(boot_pkg_cmd, timeout=BOOTSTRAP_TIMEOUT)
 
+        self._progress.step("Создание учётной записи и служб")
         for argv in backend.chroot_setup_commands(layout.mount_root, config):
             run(argv, timeout=BOOTSTRAP_TIMEOUT)
 
+        self._progress.step("Сборка initramfs с разблокировкой диска")
         # crypttab/fstab are in place by now, so the initramfs built here is the
         # one that knows how to unlock the root volume at boot.
         run(backend.initramfs_command(layout.mount_root), timeout=BOOTSTRAP_TIMEOUT)
+
+        self._progress.step("Установка загрузчика на носитель")
         for argv in backend.bootloader_commands(layout, config):
             run(argv, timeout=BOOTSTRAP_TIMEOUT)
 
+        self._progress.step("Запись модуля восстановления")
         self._install_recovery_module(
             layout, media_id, recovery_salt, plan, dry_run=dry_run, confirm_device=confirm_device
         )
 
+        # The image is mounted here, on this machine, and will not exist once the
+        # medium is unplugged. Leaving it in the installed system's sources means
+        # every apt command there fails on a dead file:// path.
+        sources = backend.sources_list(config, release)
+        if sources is not None:
+            target = f"{layout.mount_root}/etc/apt/sources.list"
+            run(["mkdir", "-p", f"{layout.mount_root}/etc/apt"])
+            self._write_file(target, sources, plan, dry_run, confirm_device)
+
+        self._progress.step("Завершение записи и отключение носителя")
         if temporary_paths:
             run(["rm", "-f", *temporary_paths])
         run(["sync"])
         return recovery_code, recovery_salt
 
-    def _run_bootstrap(self, backend, config, layout, plan, dry_run, confirm_device) -> None:
-        argv = backend.bootstrap_command(layout.mount_root, config)
+    def _run_bootstrap(self, backend, config, layout, image_url, release, plan, dry_run, confirm_device) -> None:
+        argv = backend.bootstrap_command(layout.mount_root, config, image_url, release)
         self._run(argv, plan, dry_run, confirm_device, timeout=BOOTSTRAP_TIMEOUT)
 
     def _install_recovery_module(
@@ -358,6 +454,9 @@ class OSInstaller:
             self._try(["cryptsetup", "luksClose", layout.mapper_name], plan, dry_run, confirm_device)
             state.mapper_opened = False
         self._try(["rmdir", layout.mount_root], plan, dry_run, confirm_device)
+        if state.image is not None:
+            state.image.unmount()
+            state.image = None
 
     def _try(self, argv: list[str], plan: CommandPlan, dry_run: bool, confirm_device: str | None) -> None:
         try:
@@ -436,6 +535,29 @@ class OSInstaller:
 class _TeardownState:
     mounts: list[str] = field(default_factory=list)
     mapper_opened: bool = False
+    image: "MountedImage | None" = None
+
+
+class _Progress:
+    """Counts stages so a caller can show "шаг 7 из 17" instead of a spinner
+    that says nothing about how far along an hour-long run is."""
+
+    #: Stages the pipeline reports. A constant so the first stage already shows
+    #: a sensible total rather than counting up from one out of one.
+    EXPECTED_STAGES = 17
+
+    def __init__(self, callback):
+        self._callback = callback
+        self._index = 0
+
+    def step(self, text: str) -> None:
+        self._index += 1
+        if self._callback is None:
+            return
+        try:
+            self._callback(self._index, max(self.EXPECTED_STAGES, self._index), text)
+        except Exception:  # noqa: BLE001 - a broken display must not stop an install
+            pass
 
 
 def _blkid_uuid(path: str) -> str:

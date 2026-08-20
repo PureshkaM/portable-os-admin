@@ -101,6 +101,12 @@ def run_in_background(
             result_queue.put(("ok", value))
 
     def poll() -> None:
+        # The user can navigate away while the work is still running, which
+        # destroys the widgets the callbacks were going to update. Delivering
+        # the result then raises TclError from inside the event loop, where it
+        # surfaces as a traceback rather than as anything the user can act on.
+        if not widget_alive(widget):
+            return
         try:
             kind, payload = result_queue.get_nowait()
         except queue.Empty:
@@ -115,6 +121,20 @@ def run_in_background(
 
     threading.Thread(target=worker, daemon=True).start()
     widget.after(poll_ms, poll)
+
+
+def widget_alive(widget) -> bool:
+    """True while the widget still exists.
+
+    Needed wherever a background result lands on a widget the user may have
+    navigated away from: a wizard step's widgets are destroyed when the step is
+    left, and touching them afterwards raises TclError inside the event loop,
+    where it becomes a traceback instead of anything actionable.
+    """
+    try:
+        return bool(widget.winfo_exists())
+    except tk.TclError:
+        return False
 
 
 class ScrollableArea(ttk.Frame):
@@ -186,6 +206,49 @@ class ScrollableArea(ttk.Frame):
             # Windows reports multiples of 120; X11/macOS report small numbers.
             delta = -1 if event.delta > 0 else 1
         self._canvas.yview_scroll(delta, "units")
+
+
+class UiMailbox:
+    """Carries updates from a worker thread to the UI thread.
+
+    Not `widget.after(...)` called from the worker: `after` is itself a Tcl
+    call, and Tkinter is not thread-safe, so scheduling from another thread
+    corrupts the interpreter -- observed as "invalid command name ...poll"
+    followed by the event loop dropping callbacks. A queue plus polling from
+    the main thread is the same pattern `run_in_background` already uses.
+    """
+
+    def __init__(self, widget: tk.Widget, deliver: Callable[..., None], poll_ms: int = 100):
+        self._widget = widget
+        self._deliver = deliver
+        self._poll_ms = poll_ms
+        self._queue: "queue.Queue[tuple]" = queue.Queue()
+        self._running = False
+
+    def post(self, *args) -> None:
+        """Safe to call from any thread."""
+        self._queue.put(args)
+
+    def start(self) -> None:
+        if not self._running:
+            self._running = True
+            self._drain()
+
+    def stop(self) -> None:
+        self._running = False
+
+    def _drain(self) -> None:
+        if not widget_alive(self._widget):
+            self._running = False
+            return
+        while True:
+            try:
+                args = self._queue.get_nowait()
+            except queue.Empty:
+                break
+            self._deliver(*args)
+        if self._running:
+            self._widget.after(self._poll_ms, self._drain)
 
 
 def add_field(

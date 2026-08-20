@@ -14,6 +14,8 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import ttk
 
+from tkinter import messagebox
+
 from ..config import ConfigManager
 from ..container import AdminContainer, ContainerManager
 from ..session import AdminSession
@@ -86,8 +88,27 @@ class PortableOSAdminGUI(tk.Tk):
         self.show_startup()
 
     def _on_close_window(self) -> None:
+        # Closing mid-install is how the medium ends up mounted, its volume
+        # open and a bootstrap process orphaned and still writing. Asked rather
+        # than prevented: it is the administrator's machine, and there are good
+        # reasons to stop.
+        if self.install_in_progress():
+            if not messagebox.askyesno(
+                "Идёт установка",
+                "Сейчас идёт установка на носитель. Если закрыть программу, установка "
+                "будет прервана, а носитель останется в непригодном состоянии — его "
+                "придётся размечать заново.\n\nВсё равно закрыть?",
+                icon="warning",
+                default="no",
+                parent=self,
+            ):
+                return
         self.save_container()
         self.destroy()
+
+    def install_in_progress(self) -> bool:
+        frame = self._current_frame
+        return bool(getattr(frame, "_running", False))
 
 
 def run() -> None:

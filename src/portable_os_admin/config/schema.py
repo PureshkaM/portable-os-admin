@@ -95,6 +95,12 @@ class InstallConfig:
     name: str
     target_os: str = "debian"
     release: str = ""
+    # Where *additional* packages come from: a company repository, a public
+    # mirror, or nothing. The system itself is not installed from here -- it
+    # comes from a local installation image chosen at install time. The image's
+    # path is deliberately not part of the configuration: it belongs to one
+    # particular machine, and a configuration copied to another admin station
+    # would carry a path that does not exist there.
     mirror: str = ""
     # CPU architecture of the *target* system. Empty means "same as the machine
     # running the installer", which is the only combination that works without

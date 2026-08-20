@@ -41,6 +41,9 @@ class DashboardFrame(ttk.Frame):
         close_row = ttk.Frame(self)
         close_row.pack(fill="x", padx=16, pady=(0, 16))
         ttk.Button(close_row, text="Закрыть сеанс", command=self.app.close_session).pack(side="left")
+        ttk.Button(close_row, text="Проверить состояние", command=self._check_leftovers).pack(
+            side="left", padx=(8, 0)
+        )
 
     def _refresh_table(self) -> None:
         for item in self.table.get_children():
@@ -49,6 +52,35 @@ class DashboardFrame(ttk.Frame):
             self.table.insert(
                 "", "end", values=(record.media_id, record.label, record.target_os, record.config_name, record.created_at)
             )
+
+    def _check_leftovers(self) -> None:
+        """Reports, and offers to clear, what an interrupted run left behind.
+
+        An install that was killed leaves the medium mounted, its encrypted
+        volume open and its bootstrap process orphaned and still writing. The
+        program cannot notice that by itself after the fact, so this is where an
+        administrator can look and put it right.
+        """
+        found = leftovers.find()
+        if not found:
+            self.message_bar.success("Незавершённых установок нет, носители не заняты.")
+            return
+        if not messagebox.askyesno(
+            "Найдена незавершённая установка",
+            "От прерванной установки остались занятые ресурсы:\n\n"
+            + found.describe()
+            + "\n\nОсвободить их? Носитель после этого придётся размечать заново — "
+            "установка, которую прервали, всё равно не может быть продолжена.",
+            icon="warning",
+            parent=self,
+        ):
+            self.message_bar.info("Ресурсы оставлены как есть.")
+            return
+        remaining = leftovers.clear()
+        if remaining:
+            self.message_bar.error("Освободить удалось не всё:\n" + remaining.describe())
+        else:
+            self.message_bar.success("Всё освобождено, носитель можно извлекать или размечать заново.")
 
     def _open_configs(self) -> None:
         from .configs_list import ConfigsListFrame

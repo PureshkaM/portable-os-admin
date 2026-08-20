@@ -19,18 +19,20 @@ def _assert_debootstrap(argv, config):
     assert "debootstrap" in argv
     assert config.release in argv
     assert "/mnt/poa" in argv
+    # the base system comes from the local image, never from a network mirror
+    assert "file:///mnt/image" in argv
 
 
 def test_debian_bootstrap_command():
     config = InstallConfig.create_default("stick1", "debian")
     backend = DebianInstallBackend()
-    _assert_debootstrap(backend.bootstrap_command("/mnt/poa", config), config)
+    _assert_debootstrap(backend.bootstrap_command("/mnt/poa", config, "file:///mnt/image", config.release), config)
 
 
 def test_redos_bootstrap_command():
     config = InstallConfig.create_default("stick1", "redos")
     backend = RedOSInstallBackend()
-    argv = backend.bootstrap_command("/mnt/poa", config)
+    argv = backend.bootstrap_command("/mnt/poa", config, "file:///mnt/image", config.release)
     assert argv[0] == "dnf"
     assert "--installroot" in argv
     assert "/mnt/poa" in argv
@@ -68,7 +70,7 @@ def test_redos_uses_wheel_group_and_sshd_service():
 def test_astra_bootstrap_command_reuses_debootstrap():
     config = InstallConfig.create_default("stick1", "astra")
     backend = AstraInstallBackend()
-    _assert_debootstrap(backend.bootstrap_command("/mnt/poa", config), config)
+    _assert_debootstrap(backend.bootstrap_command("/mnt/poa", config, "file:///mnt/image", config.release), config)
 
 
 def test_astra_uses_astra_admin_group_not_sudo():

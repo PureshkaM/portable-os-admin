@@ -28,9 +28,9 @@ def test_run_rejects_unvalidated_config(session, big_removable_device):
         installer.run(big_removable_device, config, b"user-passphrase", dry_run=True)
 
 
-def test_run_rejects_ineligible_device(session):
+def test_run_rejects_ineligible_device(session, make_config):
     cfgm = ConfigManager()
-    config = InstallConfig.create_default("stick1", "debian")
+    config = make_config()
     cfgm.validate(config)
 
     tiny_device = BlockDevice(
@@ -41,9 +41,9 @@ def test_run_rejects_ineligible_device(session):
         installer.run(tiny_device, config, b"user-passphrase", dry_run=True)
 
 
-def test_successful_dry_run_produces_media_and_recovery_records(session, big_removable_device):
+def test_successful_dry_run_produces_media_and_recovery_records(session, big_removable_device, make_config):
     cfgm = ConfigManager()
-    config = InstallConfig.create_default("stick1", "debian")
+    config = make_config()
     cfgm.validate(config)
     assert config.validation_status == "valid"
 
@@ -60,9 +60,9 @@ def test_successful_dry_run_produces_media_and_recovery_records(session, big_rem
     assert session.container.find_recovery(result.media_record.media_id, 7) is not None
 
 
-def _plan_argvs(session, target_os="debian"):
+def _plan_argvs(session, make_config, target_os="debian"):
     cfgm = ConfigManager()
-    config = InstallConfig.create_default("stick1", target_os)
+    config = make_config("stick1", target_os)
     cfgm.validate(config)
     device = BlockDevice(
         name="sdb", path="/dev/sdb", size_bytes=32_000_000_000, model="Cruzer", removable=True,
@@ -72,7 +72,7 @@ def _plan_argvs(session, target_os="debian"):
     return [r.argv for r in result.plan.results], result
 
 
-def test_target_system_is_actually_written_onto_the_medium(session):
+def test_target_system_is_actually_written_onto_the_medium(session, make_config):
     """Regression test for the defect that made this project useless in practice.
 
     The original pipeline formatted the LUKS container and then bootstrapped
@@ -81,7 +81,7 @@ def test_target_system_is_actually_written_onto_the_medium(session):
     administrator's own machine and the medium stayed empty. Every assertion
     here is a link in the chain that was missing.
     """
-    argvs, _ = _plan_argvs(session)
+    argvs, _ = _plan_argvs(session, make_config)
     flat = [" ".join(a) for a in argvs]
 
     open_idx = next(i for i, a in enumerate(argvs) if a[0] == "cryptsetup" and "luksOpen" in a)
@@ -112,10 +112,10 @@ def test_target_system_is_actually_written_onto_the_medium(session):
     assert f"<write-file> {mount_root}/etc/crypttab" in flat
 
 
-def test_everything_opened_by_the_install_is_released_afterwards(session):
+def test_everything_opened_by_the_install_is_released_afterwards(session, make_config):
     """A medium left mounted cannot be safely unplugged, and a LUKS mapping left
     open collides with the next install."""
-    argvs, _ = _plan_argvs(session)
+    argvs, _ = _plan_argvs(session, make_config)
     mount_targets = [a[-1] for a in argvs if a[0] == "mount"]
     umounted = [a[-1] for a in argvs if a[0] == "umount"]
 
@@ -164,12 +164,12 @@ def test_locked_account_still_gets_a_way_to_log_in(session):
     assert "--autologin portable" in autologin
 
 
-def test_foreign_architecture_is_refused_with_an_explanation(session):
+def test_foreign_architecture_is_refused_with_an_explanation(session, make_config):
     import platform
 
     from portable_os_admin.errors import InstallError
 
-    config = InstallConfig.create_default("stick1", "debian")
+    config = make_config()
     config.arch = "amd64" if platform.machine() in ("aarch64", "arm64") else "arm64"
     ConfigManager().validate(config)
     device = BlockDevice(
