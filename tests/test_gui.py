@@ -257,6 +257,55 @@ def test_install_wizard_passes_the_real_device_not_the_form_fields(gui_app, tmp_
     assert app.session.container.data.media_records[0].label == "Cruzer Blade"
 
 
+def test_install_wizard_says_root_is_needed_instead_of_failing_inside_parted(gui_app, tmp_path, monkeypatch):
+    """Without this the user fills in every step, confirms an irreversible
+    operation, and only then gets a permission error from a tool they never
+    invoked -- exactly the "errors in your face" behaviour the wizard exists to
+    avoid. Nothing has been written yet at that point, so refusing is free."""
+    from portable_os_admin.gui.screens import install_wizard as install_wizard_module
+
+    monkeypatch.setattr(install_wizard_module, "_is_root", lambda: False)
+
+    app = gui_app
+    _open_container(app, tmp_path)
+    _make_validated_debian_config(app)
+
+    app.show_frame(InstallWizardFrame)
+    wizard = app._current_frame
+    wizard.config_table.selection_set(wizard.config_table.get_children()[0])
+    wizard._go_next()
+    app.update()
+    wizard.device_path_var.set("/dev/sdb")
+    wizard.device_size_var.set("32")
+    wizard._go_next()
+    app.update()
+    wizard.passphrase_var.set("user-passphrase-123")
+    wizard.passphrase_confirm_var.set("user-passphrase-123")
+    wizard._go_next()
+    app.update()
+
+    # the warning appears as soon as real execution is requested...
+    wizard.real_run_var.set(True)
+    wizard._on_real_run_toggle()
+    app.update()
+    assert "root" in wizard.message_bar.var.get()
+
+    # ...and starting anyway is refused without touching the device
+    wizard.confirm_device_var.set("/dev/sdb")
+    wizard._start_install()
+    app.update()
+    assert "root" in wizard.message_bar.var.get()
+    assert wizard._running is False
+    assert app.session.container.data.media_records == []
+
+    # the plan mode remains usable without root
+    wizard.real_run_var.set(False)
+    wizard._on_real_run_toggle()
+    wizard._start_install()
+    _pump(app, lambda: not wizard._running)
+    assert len(app.session.container.data.media_records) == 1
+
+
 def test_install_wizard_blocks_mismatched_confirmation_before_real_run(gui_app, tmp_path):
     app = gui_app
     _open_container(app, tmp_path)

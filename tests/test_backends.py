@@ -11,13 +11,20 @@ def test_get_backend_returns_expected_types():
     assert isinstance(get_backend("astra"), AstraInstallBackend)
 
 
+def _assert_debootstrap(argv, config):
+    # debootstrap is wrapped in eatmydata when the host provides it, so this
+    # must not assume it sits at argv[0] -- otherwise the suite would pass or
+    # fail depending on which packages the test machine happens to have.
+    assert argv[0] in ("debootstrap", "eatmydata")
+    assert "debootstrap" in argv
+    assert config.release in argv
+    assert "/mnt/poa" in argv
+
+
 def test_debian_bootstrap_command():
     config = InstallConfig.create_default("stick1", "debian")
     backend = DebianInstallBackend()
-    argv = backend.bootstrap_command("/mnt/poa", config)
-    assert argv[0] == "debootstrap"
-    assert config.release in argv
-    assert "/mnt/poa" in argv
+    _assert_debootstrap(backend.bootstrap_command("/mnt/poa", config), config)
 
 
 def test_redos_bootstrap_command():
@@ -61,10 +68,7 @@ def test_redos_uses_wheel_group_and_sshd_service():
 def test_astra_bootstrap_command_reuses_debootstrap():
     config = InstallConfig.create_default("stick1", "astra")
     backend = AstraInstallBackend()
-    argv = backend.bootstrap_command("/mnt/poa", config)
-    assert argv[0] == "debootstrap"
-    assert config.release in argv
-    assert "/mnt/poa" in argv
+    _assert_debootstrap(backend.bootstrap_command("/mnt/poa", config), config)
 
 
 def test_astra_uses_astra_admin_group_not_sudo():

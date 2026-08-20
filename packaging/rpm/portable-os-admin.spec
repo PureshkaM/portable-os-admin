@@ -90,7 +90,21 @@ if [ ! -x "$VENV/bin/python3" ]; then
     python3 -m venv --system-site-packages "$VENV"
 fi
 "$VENV/bin/pip" install --upgrade pip --quiet
-"$VENV/bin/pip" install --quiet "$APP"
+# Build from a throwaway copy, never from $APP itself. Two reasons, both
+# observed rather than theoretical: setuptools builds in-tree and then reuses
+# its own build/ directory, so a second install of the same version installed
+# the *previous* sources and the update silently did nothing; and those build
+# artifacts landed in a directory the package manager owns, unrecorded.
+BUILD_DIR=$(mktemp -d)
+cp -a "$APP/." "$BUILD_DIR/"
+rm -rf "$BUILD_DIR/build"
+# --force-reinstall because pip compares version numbers only, and this
+# package's version does not change on every rebuild. --no-deps keeps it from
+# rebuilding cryptography's Rust extension each time; the second call resolves
+# dependencies normally.
+"$VENV/bin/pip" install --quiet --upgrade --force-reinstall --no-deps "$BUILD_DIR"
+"$VENV/bin/pip" install --quiet "$BUILD_DIR"
+rm -rf "$BUILD_DIR"
 
 %postun
 if [ "$1" = "0" ]; then

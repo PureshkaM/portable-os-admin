@@ -14,6 +14,7 @@ to hang for however long partitioning/LUKS/debootstrap take.
 """
 from __future__ import annotations
 
+import os
 import tkinter as tk
 from pathlib import Path
 from tkinter import ttk
@@ -21,6 +22,19 @@ from tkinter import ttk
 from ...errors import DeviceNotEligibleError, InstallError
 from ...install import BlockDevice, DeviceLister, OSInstaller
 from ..widgets import KNOWN_ERRORS, WizardFrame, add_field, run_in_background
+
+NOT_ROOT_MESSAGE = (
+    "Реальная установка требует прав root: разметка диска, cryptsetup и mkfs "
+    "обычному пользователю недоступны. Закройте программу и запустите её от root "
+    "(например, «sudo portable-os-admin»), иначе установка прервётся на первой же команде. "
+    "Режим плана (без изменений) работает и без root."
+)
+
+
+def _is_root() -> bool:
+    # getuid is absent on Windows; this application only performs real installs
+    # on Linux, so treat "cannot tell" as root and let the OS refuse instead.
+    return getattr(os, "geteuid", lambda: 0)() == 0
 
 
 class InstallWizardFrame(WizardFrame):
@@ -233,6 +247,8 @@ class InstallWizardFrame(WizardFrame):
         if self.real_run_var.get():
             self.confirm_frame.pack(anchor="w", before=self.start_btn)
             self.start_btn.configure(text="ВЫПОЛНИТЬ РЕАЛЬНУЮ УСТАНОВКУ (необратимо)")
+            if not _is_root():
+                self.message_bar.error(NOT_ROOT_MESSAGE)
         else:
             self.confirm_frame.pack_forget()
             self.start_btn.configure(text="Начать (план, без изменений)")
@@ -282,6 +298,13 @@ class InstallWizardFrame(WizardFrame):
                 self.message_bar.error(
                     "Подтверждение устройства не совпадает с путём выше -- реальная установка отменена."
                 )
+                return
+            # Checked here rather than left to fail inside parted: without this
+            # the user completes the whole wizard, starts an irreversible-looking
+            # operation and gets a permission error from a tool they never
+            # invoked. Nothing has been written at this point, so refusing is free.
+            if not _is_root():
+                self.message_bar.error(NOT_ROOT_MESSAGE)
                 return
 
         try:

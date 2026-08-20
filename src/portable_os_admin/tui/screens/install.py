@@ -13,6 +13,8 @@ confirms one worked end to end.
 """
 from __future__ import annotations
 
+import os
+
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
@@ -135,6 +137,17 @@ class InstallScreen(Screen):
                 message.update(
                     "[red]Подтверждение устройства не совпадает с путём выше — "
                     "реальная установка отменена[/red]"
+                )
+                return
+            # Checked here rather than left to fail inside parted: otherwise the
+            # user fills in the whole screen, starts an irreversible-looking
+            # operation and gets a permission error from a tool they never
+            # invoked. Nothing has been written yet, so refusing costs nothing.
+            if getattr(os, "geteuid", lambda: 0)() != 0:
+                message.update(
+                    "[red]Реальная установка требует прав root: разметка диска, cryptsetup "
+                    "и mkfs обычному пользователю недоступны. Перезапустите программу от root "
+                    "(например, «sudo portable-os-admin-tui»). Режим плана работает и без root.[/red]"
                 )
                 return
 
