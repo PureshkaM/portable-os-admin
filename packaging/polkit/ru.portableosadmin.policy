@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+ "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<!--
+  Declares the privileged launch as a polkit action, so the desktop's own
+  authentication dialog describes this application instead of showing the bare
+  "run /usr/bin/env as the super user" that a plain `pkexec env ...` produces.
+
+  Who counts as an administrator is deliberately NOT defined here: that is the
+  machine's policy (on Debian, members of the sudo group), and an application
+  has no business redefining it.
+-->
+<policyconfig>
+
+  <vendor>Portable OS Admin</vendor>
+
+  <action id="ru.portableosadmin.run">
+    <description>Администрирование переносной операционной системы</description>
+    <description xml:lang="en">Portable operating system administration</description>
+    <message>Приложение размечает и шифрует внешние носители, поэтому требует прав администратора</message>
+    <message xml:lang="en">This application partitions and encrypts external media, so it requires administrator rights</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/lib/portable-os-admin/launch-root</annotate>
+    <annotate key="org.freedesktop.policykit.exec.allow_gui">true</annotate>
+  </action>
+
+</policyconfig>

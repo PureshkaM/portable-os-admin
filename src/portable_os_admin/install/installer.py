@@ -39,6 +39,15 @@ RECOVERY_KEYSLOT = 7
 #: metadata that lets the admin tool recognise this medium later.
 ESP_METADATA_DIR = "poa"
 
+#: Resolved once, here, on the main thread. `importlib.resources.files()` does a
+#: lazy import of its own machinery on first use, and the install runs in a
+#: worker thread -- doing it there raced the interpreter's import lock and
+#: aborted the whole process. Resolving a package path has no side effects, so
+#: doing it at import time costs nothing.
+RECOVERY_MODULE_SRC = str(
+    importlib.resources.files("portable_os_admin.recovery").joinpath("recovery_module.sh")
+)
+
 
 @dataclass
 class InstallResult:
@@ -316,8 +325,9 @@ class OSInstaller:
         target_dir = f"{layout.mount_root}/boot/efi/{ESP_METADATA_DIR}"
         self._run(["mkdir", "-p", target_dir], plan, dry_run, confirm_device)
 
-        script_src = importlib.resources.files("portable_os_admin.recovery").joinpath("recovery_module.sh")
-        self._run(["cp", str(script_src), f"{target_dir}/recovery_module.sh"], plan, dry_run, confirm_device)
+        self._run(
+            ["cp", RECOVERY_MODULE_SRC, f"{target_dir}/recovery_module.sh"], plan, dry_run, confirm_device
+        )
         self._write_file(f"{target_dir}/media_id.txt", media_id + "\n", plan, dry_run, confirm_device)
         self._write_file(
             f"{target_dir}/recovery_salt.bin", recovery_salt, plan, dry_run, confirm_device, binary=True

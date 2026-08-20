@@ -2,31 +2,46 @@ Source: portable-os-admin
 Section: admin
 Priority: optional
 Maintainer: PureshkaM <xripmax@gmail.com>
-Build-Depends: debhelper-compat (= 13)
+Build-Depends: debhelper-compat (= 13), dh-python, python3-all
 Standards-Version: 4.6.2
 Homepage: https://github.com/PureshkaM/portable-os-admin
 
 Package: portable-os-admin
 Architecture: all
-Depends: ${misc:Depends}, python3 (>= 3.9), python3-venv, python3-pip, python3-tk, parted, cryptsetup, debootstrap, dosfstools, gdisk
-Recommends: eatmydata
+Depends: ${misc:Depends}, ${python3:Depends},
+ python3 (>= 3.9),
+ python3-tk,
+ python3-cryptography,
+ pkexec,
+ parted,
+ gdisk,
+ dosfstools,
+ e2fsprogs,
+ util-linux,
+ udev,
+ cryptsetup,
+ debootstrap,
+ zstd,
+ ca-certificates
+Recommends: eatmydata, polkit-kde-agent-1 | lxpolkit | mate-polkit | policykit-1-gnome
 Description: Admin tool for portable LUKS-encrypted OS media
  Creates and administers an encrypted admin container, builds install
  configurations, installs Debian/Astra Linux or RedOS onto an external
- LUKS-encrypted medium, and manages its logs/exchange partition/recovery
- codes afterwards. Ships both a guided Tkinter GUI (`portable-os-admin`,
- the default) and a Textual TUI (`portable-os-admin-tui`) built on the
- same backend.
+ LUKS-encrypted medium, and manages its logs, exchange partition and
+ recovery codes afterwards. The interface is a guided Tkinter GUI.
  .
- The Python dependencies this project actually needs (textual>=0.58,
- cryptography>=41.0) are newer than Debian's own packaged versions
- (python3-textual in bookworm is 0.1.13, a pre-rewrite release with a
- different widget API), so this package installs them into a private
- virtualenv at /opt/portable-os-admin/venv during configuration instead
- of depending on the system packages -- see packaging/README.md in the
- source tree for why, and what that means for offline installs. The GUI's
- own dependency, Tkinter, is the one exception: it's a C extension bound
- to the system Python (confirmed present in Debian bookworm's own
- Packages.gz as python3-tk), not installable from PyPI, so it comes from
- this Depends line and the venv is created with --system-site-packages so
- it can see it.
+ Everything this package needs comes from the distribution: the only
+ third-party Python library is cryptography, and it is taken from
+ python3-cryptography rather than downloaded. Nothing is fetched at
+ install time, so the package installs on a machine with no route to the
+ internet -- which is the environment this tool is meant for.
+ .
+ The listed tools are all called directly during an installation: parted
+ and gdisk to partition, wipefs (util-linux) to erase the previous
+ contents, cryptsetup for the LUKS volume, mkfs.ext4 (e2fsprogs) and
+ mkfs.vfat (dosfstools) for the filesystems, udevadm to wait for the
+ kernel to see the new partitions, debootstrap to populate the medium,
+ and zstd to read RedOS repository metadata. pkexec is how the program
+ asks the desktop for administrator rights; the polkit agent that shows
+ the dialog normally comes with the desktop environment, hence the
+ alternatives in Recommends.

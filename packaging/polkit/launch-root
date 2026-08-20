@@ -1,0 +1,30 @@
+#!/bin/sh
+# Started by pkexec after polkit has authorised the caller.
+#
+# polkit clears the environment of the program it launches, so the session's
+# display is handed in as arguments -- without it the privileged copy has no
+# screen and dies with a Tk connection error that explains nothing.
+#
+# The path of this script is referenced verbatim by
+# /usr/share/polkit-1/actions/ru.portableosadmin.policy; moving one without the
+# other silently drops back to the generic "run /usr/bin/env" dialog.
+set -e
+
+[ -n "$1" ] && export DISPLAY="$1"
+[ -n "$2" ] && export XAUTHORITY="$2"
+
+# Tells the relaunched copy that it already has the rights it needs, so it does
+# not ask polkit again in an endless loop.
+export POA_ELEVATED=1
+
+# The .deb installs the application as a system Python package; the .rpm still
+# uses a private virtualenv, because the RHEL family does not package every
+# dependency this needs. One launcher serves both.
+if [ -x /opt/portable-os-admin/venv/bin/python ]; then
+    PYTHON=/opt/portable-os-admin/venv/bin/python
+else
+    PYTHON=/usr/bin/python3
+fi
+
+# No "$@": the arguments above are for this script, not for the application.
+exec "$PYTHON" -m portable_os_admin.gui.app

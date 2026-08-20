@@ -1,0 +1,25 @@
+/*
+ * Who may authorise this application's privileged launch.
+ *
+ * Scoped to this application's own action on purpose: it does not touch who
+ * counts as an administrator for anything else on the machine. Ordering
+ * matters -- polkit consults admin rules in filename order and takes the first
+ * that returns a non-empty list, so this file sorts before 50-default.rules;
+ * for every other action it returns nothing and the machine's own policy
+ * applies unchanged.
+ *
+ * Why root is listed at all: Debian ships "unix-group:sudo" as the sole admin
+ * identity, and on a system installed with a root password and no sudo user
+ * that group is empty. polkit then has nobody to ask, and the desktop shows no
+ * prompt whatsoever -- the application simply refuses to start with no way for
+ * the administrator to proceed. Offering the root password there is what every
+ * other administrative tool on Linux does.
+ *
+ * wheel is included for the RHEL family (RedOS, the production target), where
+ * that group plays the role Debian gives to sudo.
+ */
+polkit.addAdminRule(function(action, subject) {
+    if (action.id == "ru.portableosadmin.run") {
+        return ["unix-group:sudo", "unix-group:wheel", "unix-user:0"];
+    }
+});

@@ -8,37 +8,38 @@ URL:            https://github.com/PureshkaM/portable-os-admin
 Source0:        %{name}-%{version}.tar.gz
 BuildArch:      noarch
 
+BuildRequires:  python3-devel
+
 Requires:       python3 >= 3.9
-Requires:       python3-pip
 Requires:       python3-tkinter
+Requires:       python3-cryptography
+# pkexec, through which the application asks the desktop for administrator
+# rights. The agent that draws the dialog comes with the desktop environment.
+Requires:       polkit
 Requires:       parted
-Requires:       cryptsetup
-Requires:       dosfstools
 Requires:       gdisk
-# The installer creates the target's filesystems and bootloader itself, so the
-# admin host needs the userspace tools for them even though the *target* system
-# gets its own copies.
+Requires:       cryptsetup
+# The installer creates the target's filesystems and erases the medium itself,
+# so the admin host needs these even though the *target* system gets its own.
+Requires:       dosfstools
 Requires:       e2fsprogs
+Requires:       util-linux
+Requires:       systemd-udev
+# Reading RedOS repository metadata: its primary.xml is zstd-compressed.
+Requires:       zstd
+Requires:       ca-certificates
 
 %description
 Creates and administers an encrypted admin container, builds install
 configurations, installs Debian/Astra Linux or RedOS onto an external
-LUKS-encrypted medium, and manages its logs/exchange partition/recovery
-codes afterwards. Ships both a guided Tkinter GUI (portable-os-admin, the
-default) and a Textual TUI (portable-os-admin-tui) built on the same
-backend.
+LUKS-encrypted medium, and manages its logs, exchange partition and
+recovery codes afterwards. The interface is a guided Tkinter GUI.
 
-The Python dependencies this project actually needs (textual>=0.58,
-cryptography>=41.0) are not reliably available as matching system
-packages across RHEL-family hosts, so this package installs them into a
-private virtualenv at /opt/portable-os-admin/venv during %%post instead
-of declaring them as rpm Requires -- see packaging/README.md in the
-source tree for why, and what that means for offline installs. The GUI's
-own dependency, Tkinter, is the one exception: it's a C extension bound to
-the system Python (confirmed present in RedOS 8.0's own repodata as
-python3-tkinter), not installable from PyPI, so it comes from the
-Requires line above and the venv is created with --system-site-packages
-so it can see it.
+Everything this package needs comes from the distribution. The only
+third-party Python library is cryptography, taken from
+python3-cryptography rather than downloaded, so nothing is fetched at
+install time and the package installs on a machine with no route to the
+internet -- which is the environment this tool is meant for.
 
 Note: this spec targets RedOS/RHEL-family *admin hosts*. If your install
 configurations target Debian or Astra Linux media, the admin host still
@@ -50,23 +51,20 @@ carry it, so that has to come from elsewhere (see docs/ARCHITECTURE.md
 %setup -q
 
 %build
-# nothing to build -- pure Python, installed via pip into a private venv at %%post time
+# nothing to build: pure Python, and the only compiled dependency
+# (cryptography) comes from the distribution.
 
 %install
 rm -rf %{buildroot}
-mkdir -p %{buildroot}/usr/share/%{name}/app
-cp -r src pyproject.toml README.md %{buildroot}/usr/share/%{name}/app/
+mkdir -p %{buildroot}%{python3_sitelib}
+cp -r src/portable_os_admin %{buildroot}%{python3_sitelib}/
+find %{buildroot}%{python3_sitelib} -name __pycache__ -type d -exec rm -rf {} +
 mkdir -p %{buildroot}/usr/bin
 cat > %{buildroot}/usr/bin/portable-os-admin <<'EOF'
 #!/bin/sh
-exec /opt/portable-os-admin/venv/bin/portable-os-admin "$@"
+exec /usr/bin/python3 -m portable_os_admin.gui.app "$@"
 EOF
 chmod 755 %{buildroot}/usr/bin/portable-os-admin
-cat > %{buildroot}/usr/bin/portable-os-admin-tui <<'EOF'
-#!/bin/sh
-exec /opt/portable-os-admin/venv/bin/portable-os-admin-tui "$@"
-EOF
-chmod 755 %{buildroot}/usr/bin/portable-os-admin-tui
 mkdir -p %{buildroot}/usr/share/applications
 cat > %{buildroot}/usr/share/applications/portable-os-admin.desktop <<'EOF'
 [Desktop Entry]
@@ -79,45 +77,33 @@ Icon=utilities-terminal
 Terminal=false
 Categories=System;Settings;
 EOF
-
-%post
-VENV=/opt/portable-os-admin/venv
-APP=/usr/share/portable-os-admin/app
-if [ ! -x "$VENV/bin/python3" ]; then
-    # --system-site-packages: the GUI needs Tkinter (python3-tkinter Requires
-    # above), a C extension bound to the system Python that pip cannot
-    # install into an isolated venv.
-    python3 -m venv --system-site-packages "$VENV"
-fi
-"$VENV/bin/pip" install --upgrade pip --quiet
-# Build from a throwaway copy, never from $APP itself. Two reasons, both
-# observed rather than theoretical: setuptools builds in-tree and then reuses
-# its own build/ directory, so a second install of the same version installed
-# the *previous* sources and the update silently did nothing; and those build
-# artifacts landed in a directory the package manager owns, unrecorded.
-BUILD_DIR=$(mktemp -d)
-cp -a "$APP/." "$BUILD_DIR/"
-rm -rf "$BUILD_DIR/build"
-# --force-reinstall because pip compares version numbers only, and this
-# package's version does not change on every rebuild. --no-deps keeps it from
-# rebuilding cryptography's Rust extension each time; the second call resolves
-# dependencies normally.
-"$VENV/bin/pip" install --quiet --upgrade --force-reinstall --no-deps "$BUILD_DIR"
-"$VENV/bin/pip" install --quiet "$BUILD_DIR"
-rm -rf "$BUILD_DIR"
-
-%postun
-if [ "$1" = "0" ]; then
-    rm -rf /opt/portable-os-admin/venv
-fi
+# polkit action, the rule naming who may authorise it, and the launcher the
+# action points at. The path inside the .policy file is absolute and must match
+# where the launcher lands.
+mkdir -p %{buildroot}/usr/share/polkit-1/actions
+install -m 644 packaging/polkit/ru.portableosadmin.policy \
+    %{buildroot}/usr/share/polkit-1/actions/
+mkdir -p %{buildroot}/usr/share/polkit-1/rules.d
+install -m 644 packaging/polkit/49-portable-os-admin.rules \
+    %{buildroot}/usr/share/polkit-1/rules.d/
+mkdir -p %{buildroot}/usr/lib/portable-os-admin
+install -m 755 packaging/polkit/launch-root %{buildroot}/usr/lib/portable-os-admin/
 
 %files
 %license LICENSE
-/usr/share/%{name}/app
+%{python3_sitelib}/portable_os_admin
 /usr/bin/portable-os-admin
-/usr/bin/portable-os-admin-tui
 /usr/share/applications/portable-os-admin.desktop
+/usr/share/polkit-1/actions/ru.portableosadmin.policy
+/usr/share/polkit-1/rules.d/49-portable-os-admin.rules
+/usr/lib/portable-os-admin/launch-root
 
 %changelog
+* Wed Aug 20 2026 PureshkaM <xripmax@gmail.com> - 0.1.0-2
+- Install as a system Python package instead of a private virtualenv, so the
+  package no longer downloads anything at install time.
+- Drop the Textual TUI; the GUI is the only interface.
+- Ask the desktop for administrator rights through polkit.
+
 * Thu Jul 30 2026 PureshkaM <xripmax@gmail.com> - 0.1.0-1
 - Initial packaging.
