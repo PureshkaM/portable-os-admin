@@ -5,7 +5,9 @@
 дипломного проекта.
 
 Полное соответствие требованиям проекта и статус реализации —
-в [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+в [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Что где проверялось, что
+осталось непроверенным и как устроен тестовый контур —
+в [docs/HANDOVER.md](docs/HANDOVER.md).
 
 ## Что делает приложение
 
