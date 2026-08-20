@@ -86,9 +86,43 @@ class DeviceLister:
                 return device
         return None
 
-    def _lsblk_json(self) -> dict:
+    def describe(self, path: str) -> BlockDevice | None:
+        """Reads one device by path, bypassing the removable filter.
+
+        This is for a path the user typed in by hand -- which is precisely the
+        case where the removable heuristics already failed, so re-applying them
+        would just refuse the device again. What matters is that the caller
+        gets the device's *real* size and, above all, its real mountpoints: a
+        device object invented from a text field has none, and the installer's
+        unmount preflight would then silently do nothing and partition over a
+        live filesystem.
+
+        Whether the device is an acceptable install target remains the caller's
+        decision (and the user's, via the repeat-the-path confirmation).
+        """
+        try:
+            data = self._lsblk_json(path)
+        except (subprocess.SubprocessError, OSError, ValueError):
+            return None
+        entries = [e for e in data.get("blockdevices", []) if e.get("type") == "disk"]
+        if not entries:
+            return None
+        entry = entries[0]
+        return BlockDevice(
+            name=entry.get("name", ""),
+            path=entry.get("path") or path,
+            size_bytes=int(entry.get("size") or 0),
+            model=(entry.get("model") or "").strip(),
+            removable=True,
+            mountpoints=collect_mountpoints(entry),
+        )
+
+    def _lsblk_json(self, path: str | None = None) -> dict:
+        argv = ["lsblk", "-J", "-b", "-o", self.LSBLK_COLUMNS]
+        if path:
+            argv.append(path)
         proc = subprocess.run(
-            ["lsblk", "-J", "-b", "-o", self.LSBLK_COLUMNS],
+            argv,
             capture_output=True,
             text=True,
             timeout=15,

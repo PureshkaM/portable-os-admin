@@ -243,6 +243,34 @@ class InstallWizardFrame(WizardFrame):
         self.log_text.configure(state="disabled")
         self.log_text.see("end")
 
+    def _resolve_device(self, size_gb: float) -> BlockDevice:
+        """Describes the target as the system currently reports it, falling back
+        to the form fields only when it cannot be read at all.
+
+        Building the device purely from the text fields (as this used to do)
+        threw away its mountpoints, and the installer uses exactly those to
+        unmount the medium before repartitioning it. A desktop automounter
+        mounts a stick the moment it is plugged in, so the invented
+        "no mountpoints" device meant partitioning over a live filesystem --
+        precisely the situation this wizard is most often used in. It also
+        recovers the real byte count instead of a rounded gigabyte figure, and
+        the real model name for the record written into the container.
+        """
+        probed = DeviceLister().describe(self.device_path)
+        if probed is not None:
+            return probed
+        for device in getattr(self, "_devices", []):
+            if device.path == self.device_path:
+                return device
+        return BlockDevice(
+            name=self.device_path.rsplit("/", 1)[-1],
+            path=self.device_path,
+            size_bytes=int(size_gb * 1024**3),
+            model="(введено вручную)",
+            removable=True,
+            mountpoints=(),
+        )
+
     def _start_install(self) -> None:
         if self._running:
             return
@@ -262,14 +290,7 @@ class InstallWizardFrame(WizardFrame):
             self.message_bar.error("Некорректный размер устройства.")
             return
 
-        device = BlockDevice(
-            name=self.device_path.rsplit("/", 1)[-1],
-            path=self.device_path,
-            size_bytes=int(size_gb * 1024**3),
-            model="(введено вручную)",
-            removable=True,
-            mountpoints=(None,),
-        )
+        device = self._resolve_device(size_gb)
 
         self._running = True
         self.start_btn.configure(state="disabled")

@@ -105,12 +105,13 @@ def test_target_system_is_actually_written_onto_the_medium(session):
     mapper = argvs[open_idx][3]
     mkfs_idx = next(i for i, a in enumerate(argvs) if a[0] == "mkfs.ext4" and a[-1].endswith(mapper))
     mount_idx = next(i for i, a in enumerate(argvs) if a[0] == "mount" and a[1].endswith(mapper))
-    bootstrap_idx = next(i for i, a in enumerate(argvs) if a[0] == "debootstrap")
+    # "debootstrap" is not necessarily argv[0] -- it may be wrapped in eatmydata
+    bootstrap_idx = next(i for i, a in enumerate(argvs) if "debootstrap" in a)
 
     # unlock -> make a filesystem -> mount it -> only then install into it
     assert open_idx < mkfs_idx < mount_idx < bootstrap_idx
     mount_root = argvs[mount_idx][2]
-    assert argvs[bootstrap_idx][-2] == mount_root or mount_root in argvs[bootstrap_idx]
+    assert mount_root in argvs[bootstrap_idx], "bootstrap does not target the mounted medium"
 
     # the medium is unmounted first: a stick is automounted by the desktop the
     # moment it is plugged in, and partitioning under a live filesystem corrupts it

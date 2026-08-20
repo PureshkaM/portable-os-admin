@@ -10,6 +10,7 @@ by both families, so it lives here once.
 from __future__ import annotations
 
 import platform
+import shutil
 from abc import ABC, abstractmethod
 
 from ...config.schema import InstallConfig
@@ -25,6 +26,26 @@ EXCHANGE_MOUNTPOINT = "/mnt/exchange"
 
 def host_arch() -> str:
     return platform.machine()
+
+
+def maybe_eatmydata(argv: list[str]) -> list[str]:
+    """Prefixes `eatmydata` when the host has it, otherwise returns argv as is.
+
+    Bootstrapping is dominated by dpkg's fsync() after every unpacked file,
+    which on USB flash turns a ten-minute job into an hour -- measured, not
+    guessed: the same debootstrap run took ~55 minutes on a slow port.
+    debootstrap does not disable that itself (checked on Debian trixie: it
+    leaves /etc/dpkg/dpkg.cfg.d empty), and the dpkg config this project drops
+    in only covers the package installs that happen *after* bootstrap, since
+    the target's /etc does not exist before it.
+
+    eatmydata is therefore an optional accelerator rather than a requirement --
+    a medium interrupted mid-install is unusable regardless of whether the
+    writes were synced, and the installer ends with an explicit `sync`.
+    """
+    if shutil.which("eatmydata"):
+        return ["eatmydata", *argv]
+    return argv
 
 
 class InstallBackend(ABC):

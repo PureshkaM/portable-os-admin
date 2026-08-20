@@ -8,7 +8,8 @@ Homepage: https://github.com/PureshkaM/portable-os-admin
 
 Package: portable-os-admin
 Architecture: all
-Depends: ${misc:Depends}, python3 (>= 3.9), python3-venv, python3-pip, python3-tk, parted, cryptsetup, debootstrap
+Depends: ${misc:Depends}, python3 (>= 3.9), python3-venv, python3-pip, python3-tk, parted, cryptsetup, debootstrap, dosfstools, gdisk
+Recommends: eatmydata
 Description: Admin tool for portable LUKS-encrypted OS media
  Creates and administers an encrypted admin container, builds install
  configurations, installs Debian/Astra Linux or RedOS onto an external

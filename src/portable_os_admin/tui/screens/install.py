@@ -138,13 +138,19 @@ class InstallScreen(Screen):
                 )
                 return
 
-        device = BlockDevice(
+        # Describe the target as the system currently reports it. Building it
+        # from the form fields alone throws away its mountpoints, and those are
+        # what the installer uses to unmount the medium before repartitioning:
+        # a desktop automounter mounts a stick as soon as it is plugged in, so
+        # an invented "no mountpoints" device meant partitioning over a live
+        # filesystem. Falls back to the typed values only if it cannot be read.
+        device = DeviceLister().describe(device_path) or BlockDevice(
             name=device_path.rsplit("/", 1)[-1],
             path=device_path,
             size_bytes=int(size_gb * 1024**3),
             model="(введено вручную)",
             removable=True,
-            mountpoints=(None,),
+            mountpoints=(),
         )
 
         installer = OSInstaller(self.app.session)

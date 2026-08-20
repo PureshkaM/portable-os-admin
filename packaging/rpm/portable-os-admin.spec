@@ -13,6 +13,12 @@ Requires:       python3-pip
 Requires:       python3-tkinter
 Requires:       parted
 Requires:       cryptsetup
+Requires:       dosfstools
+Requires:       gdisk
+# The installer creates the target's filesystems and bootloader itself, so the
+# admin host needs the userspace tools for them even though the *target* system
+# gets its own copies.
+Requires:       e2fsprogs
 
 %description
 Creates and administers an encrypted admin container, builds install

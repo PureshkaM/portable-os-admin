@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from ...config.schema import InstallConfig
 from ..disk import MediaLayout
-from .base import InstallBackend
+from .base import InstallBackend, maybe_eatmydata
 
 
 class DebianInstallBackend(InstallBackend):
@@ -29,7 +29,7 @@ class DebianInstallBackend(InstallBackend):
         argv = ["debootstrap", f"--arch={self.normalize_arch(config.arch)}", config.release, mount_root]
         if config.mirror:
             argv.append(config.mirror)
-        return argv
+        return maybe_eatmydata(argv)
 
     def package_install_command(self, mount_root: str, packages: list[str]) -> list[str] | None:
         if not packages:

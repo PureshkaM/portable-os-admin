@@ -200,6 +200,63 @@ def test_install_wizard_dry_run_records_media(gui_app, tmp_path):
     assert "dry-run" in wizard.message_bar.var.get()
 
 
+def test_install_wizard_passes_the_real_device_not_the_form_fields(gui_app, tmp_path, monkeypatch):
+    """The wizard used to hand OSInstaller a device invented from its own text
+    fields, with no mountpoints. The installer unmounts the medium using
+    exactly those, so an automounted stick -- the normal state of a stick a
+    desktop has just seen appear -- got repartitioned underneath a live
+    filesystem, and the container recorded "(введено вручную)" as its label.
+    """
+    from portable_os_admin.install.devices import BlockDevice
+    from portable_os_admin.gui.screens import install_wizard as install_wizard_module
+
+    real_device = BlockDevice(
+        name="sdb",
+        path="/dev/sdb",
+        size_bytes=32_000_000_000,
+        model="Cruzer Blade",
+        removable=True,
+        mountpoints=("/media/user/flash",),
+    )
+
+    class FakeLister:
+        def list_removable(self):
+            return [real_device]
+
+        def describe(self, path):
+            return real_device if path == real_device.path else None
+
+    monkeypatch.setattr(install_wizard_module, "DeviceLister", FakeLister)
+
+    app = gui_app
+    _open_container(app, tmp_path)
+    _make_validated_debian_config(app)
+
+    app.show_frame(InstallWizardFrame)
+    wizard = app._current_frame
+    wizard.config_table.selection_set(wizard.config_table.get_children()[0])
+    wizard._go_next()
+    app.update()
+
+    # the size field is deliberately left at a rounded, slightly wrong value:
+    # the real byte count has to come from the system, not from this text
+    wizard.device_path_var.set("/dev/sdb")
+    wizard.device_size_var.set("29")
+    wizard._go_next()
+    app.update()
+    wizard.passphrase_var.set("user-passphrase-123")
+    wizard.passphrase_confirm_var.set("user-passphrase-123")
+    wizard._go_next()
+    app.update()
+
+    wizard._start_install()
+    _pump(app, lambda: not wizard._running)
+
+    log = wizard.log_text.get("1.0", "end")
+    assert "umount /media/user/flash" in log, "the medium is never unmounted before repartitioning"
+    assert app.session.container.data.media_records[0].label == "Cruzer Blade"
+
+
 def test_install_wizard_blocks_mismatched_confirmation_before_real_run(gui_app, tmp_path):
     app = gui_app
     _open_container(app, tmp_path)
