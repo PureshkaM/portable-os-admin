@@ -26,6 +26,12 @@ from pathlib import Path
 
 from ..errors import InstallError
 
+DEFAULT_TIMEOUT = 600
+# debootstrap/dnf pull a whole base system over the network onto slow USB
+# flash; ten minutes is routinely not enough, and being killed halfway leaves
+# a half-written medium, so bootstrapping gets its own much larger budget.
+BOOTSTRAP_TIMEOUT = 7200
+
 
 @dataclass
 class CommandResult:
@@ -58,6 +64,7 @@ class CommandRunner:
         dry_run: bool,
         confirm_device: str | None,
         input_bytes: bytes | None = None,
+        timeout: int = DEFAULT_TIMEOUT,
     ) -> CommandResult:
         if not dry_run:
             if confirm_device != plan.device:
@@ -66,7 +73,7 @@ class CommandRunner:
                     f"(ожидалось {plan.device!r}, получено {confirm_device!r})"
                 )
             proc = subprocess.run(
-                argv, input=input_bytes, capture_output=True, timeout=600, check=False
+                argv, input=input_bytes, capture_output=True, timeout=timeout, check=False
             )
             result = CommandResult(
                 argv=argv,

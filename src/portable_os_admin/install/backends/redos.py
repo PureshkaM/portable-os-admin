@@ -27,7 +27,14 @@ generic RHEL assumptions:
 from __future__ import annotations
 
 from ...config.schema import InstallConfig
+from ..disk import MediaLayout
 from .base import InstallBackend
+
+# NOT VERIFIED ON REAL HARDWARE: the kernel/bootloader half of this backend has
+# never been executed against a real RedOS host. It follows RHEL-family
+# conventions and the package names exist in RedOS's own 8.0 repository
+# metadata, but grub2-install/dracut behaviour on RedOS specifically is
+# unconfirmed -- unlike the Debian backend, which has been run end to end.
 
 
 class RedOSInstallBackend(InstallBackend):
@@ -36,14 +43,61 @@ class RedOSInstallBackend(InstallBackend):
     ssh_service = "sshd"
     sudo_group = "wheel"
 
+    ARCH_NAMES = {
+        "x86_64": "x86_64",
+        "amd64": "x86_64",
+        "aarch64": "aarch64",
+        "arm64": "aarch64",
+    }
+    GRUB_TARGETS = {"x86_64": "x86_64-efi", "aarch64": "arm64-efi"}
+
+    #: RHEL-family EFI package suffixes, which do not match the arch name
+    EFI_SUFFIX = {"x86_64": "x64", "aarch64": "aa64"}
+
     def bootstrap_command(self, mount_root: str, config: InstallConfig) -> list[str]:
         argv = ["dnf", "--installroot", mount_root, "--releasever", config.release, "-y"]
         if config.mirror:
             argv += [f"--repofrompath=poa-repo,{config.mirror}", "--repo=poa-repo"]
-        argv += ["install", "@core"]
+        argv += ["--forcearch", self.normalize_arch(config.arch), "install", "@core"]
         return argv
 
     def package_install_command(self, mount_root: str, packages: list[str]) -> list[str] | None:
         if not packages:
             return None
         return ["dnf", "--installroot", mount_root, "-y", "install", *packages]
+
+    def boot_packages(self, config: InstallConfig) -> list[str]:
+        arch = self.normalize_arch(config.arch)
+        suffix = self.EFI_SUFFIX[arch]
+        return [
+            "kernel",
+            f"grub2-efi-{suffix}",
+            # the -modules package is what makes grub2-install able to build an
+            # EFI image; without it grub2-install fails on RHEL-family systems.
+            f"grub2-efi-{suffix}-modules",
+            "grub2-tools",
+            "grub2-tools-extra",
+            f"shim-{suffix}",
+            "efibootmgr",
+            "dracut",
+            "cryptsetup",
+            self.syslog_package,
+        ]
+
+    def initramfs_command(self, mount_root: str) -> list[str]:
+        return self.chroot(mount_root, "dracut", "--force", "--regenerate-all")
+
+    def bootloader_commands(self, layout: MediaLayout, config: InstallConfig) -> list[list[str]]:
+        return [
+            self.chroot(
+                layout.mount_root,
+                "grub2-install",
+                f"--target={self.grub_target(config.arch)}",
+                "--efi-directory=/boot/efi",
+                "--boot-directory=/boot",
+                "--removable",
+                "--no-nvram",
+                "--recheck",
+            ),
+            self.chroot(layout.mount_root, "grub2-mkconfig", "-o", "/boot/grub2/grub.cfg"),
+        ]

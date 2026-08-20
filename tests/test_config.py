@@ -27,7 +27,9 @@ def test_valid_config_passes_builtin_validation():
     [
         (lambda c: setattr(c, "target_os", "windows"), "целевая ОС"),
         (lambda c: setattr(c, "release", ""), "релиз"),
-        (lambda c: setattr(c.disk, "boot_partition_mb", 10), "загрузочного раздела"),
+        (lambda c: setattr(c.disk, "boot_partition_mb", 10), "/boot"),
+        (lambda c: setattr(c.disk, "esp_partition_mb", 10), "EFI-раздела"),
+        (lambda c: setattr(c, "arch", "sparc"), "архитектура"),
         (lambda c: setattr(c.luks, "failed_attempts_limit", 0), "лимит попыток"),
         (lambda c: setattr(c.account, "username", "1bad name"), "имя пользователя"),
         (lambda c: setattr(c.remote_access, "enabled", True) or setattr(c.remote_access, "port", 0), "порт"),

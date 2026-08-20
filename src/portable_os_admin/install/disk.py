@@ -48,24 +48,65 @@ class PartitionPlan:
         return f"{self.device}{spec.number}"
 
 
+@dataclass
+class MediaLayout:
+    """Concrete device/partition/mapper paths for one install, plus the UUIDs
+    discovered after the filesystems exist. Passed to the backend so it can
+    render fstab/crypttab against real UUIDs instead of guessed device names
+    (which reorder the moment the stick is plugged into another port)."""
+
+    device: str
+    esp_partition: str
+    boot_partition: str
+    system_partition: str  # the raw partition holding the LUKS container
+    logs_partition: str
+    exchange_partition: str
+    mapper_name: str
+    mapper_path: str
+    mount_root: str
+    esp_uuid: str = ""
+    boot_uuid: str = ""
+    root_uuid: str = ""
+    luks_uuid: str = ""
+    logs_uuid: str = ""
+    exchange_uuid: str = ""
+
+
 def plan_partitions(device: str, layout: DiskLayoutConfig) -> PartitionPlan:
-    boot_end = layout.boot_partition_mb
+    esp_end = layout.esp_partition_mb
+    boot_end = esp_end + layout.boot_partition_mb
     log_size = layout.log_partition_mb
     exchange_size = layout.exchange_partition_mb
 
-    # The LUKS/system partition eats everything between the boot partition
-    # and the two trailing service partitions, whose sizes are fixed by the
-    # config -- so they are carved out from the *end* of the disk first and
-    # the system partition's end is expressed as a negative offset.
+    # The LUKS/system partition eats everything between /boot and the two
+    # trailing service partitions, whose sizes are fixed by the config -- so
+    # they are carved out from the *end* of the disk first and the system
+    # partition's end is expressed as a negative offset.
     trailing_reserved_mib = log_size + exchange_size
 
     partitions = (
-        PartitionSpec(1, "POA_BOOT", "fat32", 1, boot_end),
-        PartitionSpec(2, "POA_SYSTEM", "", boot_end, NegativeOffset(trailing_reserved_mib)),
-        PartitionSpec(3, "POA_LOGS", "ext4", NegativeOffset(trailing_reserved_mib), NegativeOffset(exchange_size)),
-        PartitionSpec(4, "POA_EXCHANGE", "ext4", NegativeOffset(exchange_size), None),
+        PartitionSpec(1, "POA_ESP", "fat32", 1, esp_end),
+        PartitionSpec(2, "POA_BOOT", "ext4", esp_end, boot_end),
+        PartitionSpec(3, "POA_SYSTEM", "", boot_end, NegativeOffset(trailing_reserved_mib)),
+        PartitionSpec(4, "POA_LOGS", "ext4", NegativeOffset(trailing_reserved_mib), NegativeOffset(exchange_size)),
+        PartitionSpec(5, "POA_EXCHANGE", "ext4", NegativeOffset(exchange_size), None),
     )
     return PartitionPlan(device=device, partitions=partitions)
+
+
+def build_media_layout(plan: PartitionPlan, mapper_name: str, mount_root: str) -> MediaLayout:
+    esp, boot, system, logs, exchange = (plan.partition_path(spec) for spec in plan.partitions)
+    return MediaLayout(
+        device=plan.device,
+        esp_partition=esp,
+        boot_partition=boot,
+        system_partition=system,
+        logs_partition=logs,
+        exchange_partition=exchange,
+        mapper_name=mapper_name,
+        mapper_path=f"/dev/mapper/{mapper_name}",
+        mount_root=mount_root,
+    )
 
 
 def _format_position(position: "int | NegativeOffset") -> str:
@@ -79,17 +120,36 @@ class DiskManager:
         self.runner = runner or CommandRunner()
 
     def commands_for(self, plan: PartitionPlan) -> list[list[str]]:
-        cmds = [["parted", "--script", plan.device, "--", "mklabel", "gpt"]]
+        # wipefs first: leftover filesystem/RAID signatures from whatever the
+        # stick held before survive a new partition table and then confuse
+        # blkid, the initramfs and the bootloader into finding two candidate
+        # filesystems on the same offsets.
+        cmds = [
+            ["wipefs", "--all", plan.device],
+            ["parted", "--script", plan.device, "--", "mklabel", "gpt"],
+        ]
         for spec in plan.partitions:
             start = _format_position(spec.start_mib)
             end = "100%" if spec.end_mib is None else _format_position(spec.end_mib)
             fs_arg = [spec.fs_hint] if spec.fs_hint else []
             cmds.append(["parted", "--script", plan.device, "--", "mkpart", spec.label, *fs_arg, start, end])
         cmds.append(["parted", "--script", plan.device, "set", "1", "esp", "on"])
+        # The kernel does not necessarily see the new partitions the instant
+        # parted returns; without these, the mkfs calls that follow can hit a
+        # /dev/sdaN node that does not exist yet.
+        cmds.append(["partprobe", plan.device])
+        cmds.append(["udevadm", "settle"])
         return cmds
 
-    def apply(self, plan: PartitionPlan, *, dry_run: bool = True, confirm_device: str | None = None) -> CommandPlan:
-        command_plan = CommandPlan(device=plan.device)
+    def apply(
+        self,
+        plan: PartitionPlan,
+        *,
+        dry_run: bool = True,
+        confirm_device: str | None = None,
+        command_plan: CommandPlan | None = None,
+    ) -> CommandPlan:
+        command_plan = command_plan if command_plan is not None else CommandPlan(device=plan.device)
         for argv in self.commands_for(plan):
             self.runner.run(argv, command_plan, dry_run=dry_run, confirm_device=confirm_device)
         return command_plan

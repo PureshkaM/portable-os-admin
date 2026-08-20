@@ -192,8 +192,19 @@ class ConfigWizardFrame(WizardFrame):
         form.pack(anchor="w", fill="x")
         disk = self.config.disk
         luks = self.config.luks
+        self.esp_mb_var = tk.StringVar(value=str(disk.esp_partition_mb))
+        _, row = add_field(
+            form, 0, "EFI-раздел (МБ):", self.esp_mb_var, hint="не менее 128 МБ; сюда ставится загрузчик", width=10
+        )
         self.boot_mb_var = tk.StringVar(value=str(disk.boot_partition_mb))
-        _, row = add_field(form, 0, "Загрузочный раздел (МБ):", self.boot_mb_var, hint="не менее 256 МБ", width=10)
+        _, row = add_field(
+            form,
+            row,
+            "Раздел /boot (МБ):",
+            self.boot_mb_var,
+            hint="не менее 512 МБ; незашифрованный, хранит ядро и initramfs",
+            width=10,
+        )
         self.log_mb_var = tk.StringVar(value=str(disk.log_partition_mb))
         _, row = add_field(form, row, "Раздел логов (МБ):", self.log_mb_var, hint="не менее 64 МБ", width=10)
         self.exchange_mb_var = tk.StringVar(value=str(disk.exchange_partition_mb))
@@ -222,6 +233,7 @@ class ConfigWizardFrame(WizardFrame):
         disk = self.config.disk
         luks = self.config.luks
         for var, attr, default in (
+            (self.esp_mb_var, "esp_partition_mb", 0),
             (self.boot_mb_var, "boot_partition_mb", 0),
             (self.log_mb_var, "log_partition_mb", 0),
             (self.exchange_mb_var, "exchange_partition_mb", 0),
@@ -243,8 +255,11 @@ class ConfigWizardFrame(WizardFrame):
     def _validate_step_disk(self) -> bool:
         disk = self.config.disk
         luks = self.config.luks
-        if disk.boot_partition_mb < 256:
-            self.message_bar.error("Размер загрузочного раздела должен быть не менее 256 МБ.")
+        if disk.esp_partition_mb < 128:
+            self.message_bar.error("Размер EFI-раздела должен быть не менее 128 МБ.")
+            return False
+        if disk.boot_partition_mb < 512:
+            self.message_bar.error("Размер раздела /boot должен быть не менее 512 МБ.")
             return False
         if disk.log_partition_mb < 64:
             self.message_bar.error("Размер раздела логов должен быть не менее 64 МБ.")
@@ -457,7 +472,8 @@ class ConfigWizardFrame(WizardFrame):
             f"Релиз: {self.config.release}   Зеркало: {self.config.mirror or '(не задано)'}\n"
             f"Пользователь: {self.config.account.username} "
             f"(sudo: {'да' if self.config.account.sudo else 'нет'})\n"
-            f"Разделы (МБ): загрузочный {self.config.disk.boot_partition_mb}, "
+            f"Разделы (МБ): EFI {self.config.disk.esp_partition_mb}, "
+            f"/boot {self.config.disk.boot_partition_mb}, "
             f"логи {self.config.disk.log_partition_mb}, обмен {self.config.disk.exchange_partition_mb}\n"
             f"LUKS: {self.config.luks.cipher}, {self.config.luks.key_size_bits} бит, "
             f"лимит попыток {self.config.luks.failed_attempts_limit}\n"

@@ -4,12 +4,19 @@ from portable_os_admin.install.luks import LuksManager
 
 
 def test_plan_partitions_layout_order_and_sizes():
-    layout = DiskLayoutConfig(boot_partition_mb=512, log_partition_mb=256, exchange_partition_mb=1024)
+    layout = DiskLayoutConfig(
+        esp_partition_mb=512, boot_partition_mb=1024, log_partition_mb=256, exchange_partition_mb=1024
+    )
     plan = plan_partitions("/dev/sdb", layout)
     labels = [p.label for p in plan.partitions]
-    assert labels == ["POA_BOOT", "POA_SYSTEM", "POA_LOGS", "POA_EXCHANGE"]
+    assert labels == ["POA_ESP", "POA_BOOT", "POA_SYSTEM", "POA_LOGS", "POA_EXCHANGE"]
     assert plan.partitions[0].start_mib == 1
     assert plan.partitions[0].end_mib == 512
+    # /boot is its own unencrypted partition after the ESP -- GRUB cannot read
+    # a LUKS2/argon2id volume, so the kernel cannot live inside the container.
+    assert plan.partitions[1].start_mib == 512
+    assert plan.partitions[1].end_mib == 1536
+    assert plan.partitions[2].fs_hint == ""  # the LUKS container itself
 
 
 def test_partition_path_for_plain_and_numbered_devices():
@@ -27,8 +34,13 @@ def test_disk_manager_commands_are_well_formed_and_not_executed_by_default():
     dm = DiskManager()
     commands = dm.commands_for(plan)
 
-    assert commands[0] == ["parted", "--script", "/dev/sdb", "--", "mklabel", "gpt"]
-    assert commands[-1] == ["parted", "--script", "/dev/sdb", "set", "1", "esp", "on"]
+    assert commands[0] == ["wipefs", "--all", "/dev/sdb"]
+    assert commands[1] == ["parted", "--script", "/dev/sdb", "--", "mklabel", "gpt"]
+    assert ["parted", "--script", "/dev/sdb", "set", "1", "esp", "on"] in commands
+    # the kernel must be given a chance to notice the new partitions before
+    # anything tries to mkfs /dev/sdbN
+    assert commands[-2] == ["partprobe", "/dev/sdb"]
+    assert commands[-1] == ["udevadm", "settle"]
     assert any("POA_EXCHANGE" in c for c in commands)
 
     result = dm.apply(plan, dry_run=True)

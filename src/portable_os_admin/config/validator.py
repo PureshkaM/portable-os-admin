@@ -16,7 +16,7 @@ import subprocess
 from dataclasses import dataclass
 from typing import Protocol
 
-from .schema import SUPPORTED_TARGET_OS, InstallConfig
+from .schema import SUPPORTED_ARCH, SUPPORTED_TARGET_OS, InstallConfig
 
 _USERNAME_RE = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
 
@@ -49,12 +49,23 @@ class BuiltinConfigValidator:
             errors.append("не задан релиз/версия устанавливаемой ОС")
 
         disk = config.disk
-        if disk.boot_partition_mb < 256:
-            errors.append("размер загрузочного раздела должен быть не менее 256 МБ")
+        if disk.esp_partition_mb < 128:
+            errors.append("размер EFI-раздела должен быть не менее 128 МБ")
+        # A kernel plus its initramfs is ~100 MB on both families, and package
+        # upgrades keep several generations around; anything under 512 MB fills
+        # up and breaks the next kernel update on the medium.
+        if disk.boot_partition_mb < 512:
+            errors.append("размер раздела /boot должен быть не менее 512 МБ")
         if disk.log_partition_mb < 64:
             errors.append("размер раздела логов должен быть не менее 64 МБ")
         if disk.exchange_partition_mb < 64:
             errors.append("размер раздела обмена должен быть не менее 64 МБ")
+
+        if config.arch and config.arch not in SUPPORTED_ARCH:
+            errors.append(
+                f"неподдерживаемая архитектура: {config.arch!r} "
+                f"(ожидается одно из {SUPPORTED_ARCH} или пусто — как у текущей машины)"
+            )
 
         luks = config.luks
         if luks.key_size_bits not in (256, 512):

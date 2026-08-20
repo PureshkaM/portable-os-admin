@@ -26,6 +26,29 @@ class BlockDevice:
     def is_mounted(self) -> bool:
         return any(m for m in self.mountpoints if m)
 
+    @property
+    def active_mountpoints(self) -> tuple[str, ...]:
+        return tuple(m for m in self.mountpoints if m)
+
+
+def collect_mountpoints(entry: dict) -> tuple[str, ...]:
+    """Gathers mountpoints from a whole lsblk subtree, not just its root node.
+
+    This matters more than it looks: a USB stick is virtually never mounted at
+    the *disk* level -- the desktop automounter mounts its partitions
+    (`/dev/sda1` -> `/media/user/flash`), so a check that only inspected the
+    disk's own "mountpoints" array saw an empty list on every real machine and
+    silently let the installer partition a device with live filesystems on it.
+    Deepest-first ordering matters for unmounting, so children come first.
+    """
+    found: list[str] = []
+    for child in entry.get("children") or []:
+        found.extend(collect_mountpoints(child))
+    for mountpoint in entry.get("mountpoints") or []:
+        if mountpoint:
+            found.append(mountpoint)
+    return tuple(found)
+
 
 class DeviceLister:
     LSBLK_COLUMNS = "NAME,PATH,SIZE,MODEL,RM,TRAN,TYPE,MOUNTPOINTS"
@@ -50,10 +73,18 @@ class DeviceLister:
                     size_bytes=int(entry.get("size") or 0),
                     model=(entry.get("model") or "").strip(),
                     removable=True,
-                    mountpoints=tuple(entry.get("mountpoints") or []),
+                    mountpoints=collect_mountpoints(entry),
                 )
             )
         return devices
+
+    def find(self, path: str) -> BlockDevice | None:
+        """Re-reads one device's current state by path, so a caller can verify
+        (rather than assume) that something like an unmount actually took."""
+        for device in self.list_removable():
+            if device.path == path:
+                return device
+        return None
 
     def _lsblk_json(self) -> dict:
         proc = subprocess.run(
@@ -74,14 +105,21 @@ def _truthy(value) -> bool:
     return bool(value)
 
 
-def check_install_eligible(device: BlockDevice, required_bytes: int) -> None:
+def check_install_eligible(
+    device: BlockDevice, required_bytes: int, *, require_unmounted: bool = True
+) -> None:
     """Implements "Установка.Проверка.Носитель" / "Установка.Проверка.ДоИзменения":
-    a read-only sanity check performed before any data on the device changes."""
+    a read-only sanity check performed before any data on the device changes.
+
+    `require_unmounted=False` is for the installer itself, which unmounts the
+    device as an explicit, logged preflight step instead of refusing outright --
+    the user has already confirmed they are about to erase it.
+    """
     if not device.removable:
         raise DeviceNotEligibleError(f"устройство {device.path} не является съёмным")
-    if device.is_mounted:
+    if require_unmounted and device.is_mounted:
         raise DeviceNotEligibleError(
-            f"устройство {device.path} смонтировано ({', '.join(m for m in device.mountpoints if m)}); "
+            f"устройство {device.path} смонтировано ({', '.join(device.active_mountpoints)}); "
             "отмонтируйте перед установкой"
         )
     if device.size_bytes < required_bytes:
