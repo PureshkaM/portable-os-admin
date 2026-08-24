@@ -9,16 +9,41 @@ is usable standalone.
 """
 from __future__ import annotations
 
+import importlib.resources
 import json
+import os
 import re
 import shutil
 import subprocess
+import sys
 from dataclasses import dataclass
 from typing import Protocol
 
 from .schema import LUKS_CIPHERS, LUKS_KDFS, SUPPORTED_ARCH, SUPPORTED_TARGET_OS, InstallConfig
 
 _USERNAME_RE = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
+
+#: Resolved at import, on the main thread. importlib.resources performs a lazy
+#: import and races the import lock when first called from a worker thread --
+#: which aborted the interpreter outright when the installer did it that way.
+KICKSTART_RUNNER = str(
+    importlib.resources.files("portable_os_admin.config").joinpath("kickstart_runner.py")
+)
+
+#: Families whose automated-install format is kickstart, and whose syntax
+#: versions pykickstart names RHEL<major>. Used to *ask* for a version; when
+#: the parser does not implement it, the runner falls back to the newest one
+#: it does, so a wrong guess degrades instead of failing.
+KICKSTART_SYNTAX_PREFIX = {"redos": "RHEL", "rhel": "RHEL", "centos": "RHEL", "almalinux": "RHEL"}
+
+
+def kickstart_syntax_version(family: str, release: str) -> str:
+    """"RHEL8" from ("redos", "8.0") -- derived from the image, not fixed here."""
+    prefix = KICKSTART_SYNTAX_PREFIX.get((family or "").strip().lower())
+    major = (release or "").strip().split(".")[0]
+    if not prefix or not major.isdigit():
+        return ""
+    return f"{prefix}{major}"
 
 
 @dataclass
@@ -142,24 +167,39 @@ class NativeToolValidator:
     live outside the LUKS volume, which key sizes a cipher accepts), so
     validation runs it alongside BuiltinConfigValidator.
 
-    When the tool is missing the result says so rather than quietly passing:
-    pykickstart is not packaged for Debian, so a RedOS configuration authored on
-    a Debian workstation genuinely cannot be checked this way, and pretending
-    otherwise would be worse than admitting it.
+    The parser is preferably taken from the installation image itself (see
+    image_validator.py): it is the version that image's own installer uses, and
+    for the RHEL family it is the only copy available at all on a Debian
+    workstation. Only when no image is at hand does this fall back to a tool
+    installed on the administrator's machine.
+
+    When neither exists the result says so rather than quietly passing --
+    pretending a configuration was checked would be worse than admitting it
+    was not.
     """
+
+    def __init__(self, image_mountpoint: str = "", image_family: str = "", image_release: str = ""):
+        #: A mounted installation image to take the parser from. Empty means
+        #: "no image chosen yet", which is the normal case while editing a
+        #: configuration, before any image has been picked.
+        self.image_mountpoint = image_mountpoint
+        self.image_family = image_family
+        self.image_release = image_release
 
     def validate(self, config: InstallConfig) -> ValidationResult:
         from . import native
 
         fmt, text = native.render(config)
+        if fmt == "kickstart" and self.image_mountpoint:
+            return self._validate_from_image(text)
         tool, argv, verdict_from = NATIVE_VALIDATORS[fmt]
         if shutil.which(tool) is None:
             raise ConfigValidationUnavailableError(
                 f"средство проверки {tool} не установлено, поэтому конфигурация проверена "
                 "только внутренними правилами. "
                 + (
-                    "pykickstart нет в репозиториях Debian — конфигурации для RedOS этим "
-                    "средством проверяются на машине с RedOS."
+                    "pykickstart нет в репозиториях Debian. Проверка станет возможной, "
+                    "когда будет выбран установочный образ: разбор берётся с него самого."
                     if fmt == "kickstart"
                     else "Установите пакет, который его предоставляет."
                 )
@@ -187,6 +227,75 @@ class NativeToolValidator:
             ok=False,
             errors=[f"{tool}: {line.strip()}" for line in details.splitlines() if line.strip()]
             or [f"{tool} отклонил конфигурацию (код {proc.returncode})"],
+        )
+
+
+    def _validate_from_image(self, text: str) -> ValidationResult:
+        """Runs the parser unpacked from the image, in its own interpreter.
+
+        Out of process on purpose: it is third-party code of an unknown
+        version, it needs compatibility shims to import on newer Pythons, and
+        a bad enough input can end the process it runs in. None of that may
+        take the application down with it.
+        """
+        import tempfile
+        from pathlib import Path
+
+        from . import image_validator
+
+        with tempfile.TemporaryDirectory(prefix="poa-ksval-") as tmp:
+            config_path = Path(tmp) / "config.ks"
+            config_path.write_text(text, encoding="utf-8")
+            unpacked = Path(tmp) / "parser"
+            try:
+                search_path = image_validator.prepare(self.image_mountpoint, str(unpacked))
+            except image_validator.ValidatorNotOnImageError as exc:
+                raise ConfigValidationUnavailableError(
+                    f"{exc}. Конфигурация проверена только внутренними правилами."
+                ) from exc
+
+            env = dict(os.environ, PYTHONPATH=search_path, PYTHONDONTWRITEBYTECODE="1")
+            wanted = kickstart_syntax_version(self.image_family, self.image_release)
+            try:
+                proc = subprocess.run(
+                    [sys.executable, KICKSTART_RUNNER, str(config_path), wanted],
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
+                    env=env,
+                    check=False,
+                )
+            except (OSError, subprocess.SubprocessError) as exc:
+                raise ConfigValidationUnavailableError(
+                    f"не удалось запустить разбор конфигурации: {exc}"
+                ) from exc
+
+        report = {}
+        for line in reversed(proc.stdout.splitlines()):
+            if line.strip().startswith("{"):
+                try:
+                    report = json.loads(line)
+                except ValueError:
+                    report = {}
+                break
+        if not report:
+            raise ConfigValidationUnavailableError(
+                "разбор конфигурации средствами образа не дал результата "
+                f"(код {proc.returncode}); конфигурация проверена только внутренними правилами"
+            )
+        if not report.get("available", False):
+            raise ConfigValidationUnavailableError(
+                str(report.get("reason", "средство проверки с образа недоступно"))
+                + "; конфигурация проверена только внутренними правилами"
+            )
+        if report.get("ok"):
+            return ValidationResult(ok=True, errors=[])
+        version = report.get("version", "")
+        label = f"pykickstart с образа ({version})" if version else "pykickstart с образа"
+        return ValidationResult(
+            ok=False,
+            errors=[f"{label}: {message}" for message in report.get("errors", [])]
+            or [f"{label} отклонил конфигурацию"],
         )
 
 

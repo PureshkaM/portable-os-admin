@@ -15,10 +15,16 @@ polkit knows the machine's own policy on who counts as an administrator, shows
 the desktop's native dialog, and reports the real reason. Nothing here handles
 a password.
 
-Requires a polkit authentication agent in the session; every mainstream desktop
-runs one. Without it (a bare X session, a remote shell) `pkexec` falls back to
-its text-mode agent, which is why the program can still be started directly as
-root instead.
+polkit itself is desktop-agnostic, but the piece that actually shows the
+password prompt -- the *authentication agent* -- is not: KDE, GNOME, MATE,
+XFCE and LXQt each ship their own, and a session that runs none of them gets
+no dialog at all. `pkexec` then falls back to a text-mode agent, which needs a
+terminal; started from a desktop menu there is none, so the program would
+appear to do nothing.
+
+So the agent is detected before asking, and when it is missing the message
+names the package for *this* desktop instead of a generic complaint. The
+program can also be started directly as root, which is the honest fallback.
 """
 from __future__ import annotations
 
@@ -42,6 +48,91 @@ PACKAGED_LAUNCHER = "/usr/lib/portable-os-admin/launch-root"
 #: pkexec's own exit codes (see pkexec(1)).
 DISMISSED = 126
 NOT_AUTHORISED = 127
+
+#: Authentication agents by desktop: what the process is called, and which
+#: package provides it on each family. Used only to make the "no agent" message
+#: specific -- nothing here is required for the normal path, and a desktop
+#: missing from this table simply gets the generic advice.
+POLKIT_AGENTS = {
+    "kde": ("polkit-kde-authentication-agent-1", "polkit-kde-agent-1", "polkit-kde"),
+    "plasma": ("polkit-kde-authentication-agent-1", "polkit-kde-agent-1", "polkit-kde"),
+    "gnome": ("polkit-gnome-authentication-agent-1", "policykit-1-gnome", "polkit-gnome"),
+    "cinnamon": ("polkit-gnome-authentication-agent-1", "policykit-1-gnome", "polkit-gnome"),
+    "mate": ("polkit-mate-authentication-agent-1", "mate-polkit", "mate-polkit"),
+    "xfce": ("xfce-polkit", "xfce-polkit", "xfce-polkit"),
+    "lxqt": ("lxqt-policykit-agent", "lxqt-policykit", "lxqt-policykit"),
+}
+
+
+def current_desktop() -> str:
+    """Lowercased desktop name, or "" when there is nothing to go on.
+
+    XDG_CURRENT_DESKTOP may hold several colon-separated names ("ubuntu:GNOME"),
+    so every part is considered rather than just the first.
+    """
+    for variable in ("XDG_CURRENT_DESKTOP", "XDG_SESSION_DESKTOP", "DESKTOP_SESSION"):
+        value = os.environ.get(variable, "")
+        for part in value.replace(";", ":").split(":"):
+            name = part.strip().lower()
+            if name in POLKIT_AGENTS:
+                return name
+            if name:
+                for known in POLKIT_AGENTS:
+                    if known in name:
+                        return known
+    return ""
+
+
+def authentication_agent_running(proc_dir: str = "/proc") -> bool:
+    """Whether some polkit authentication agent is alive in this session.
+
+    Found by name in /proc rather than over D-Bus: this must work with no
+    optional Python packages installed, on both families, and a false negative
+    only costs an extra hint in an error message.
+
+    `proc_dir` exists so a test can point at a directory of its own instead of
+    monkeypatching os.listdir and open, which would affect every other thing
+    running in the same process.
+    """
+    try:
+        pids = [name for name in os.listdir(proc_dir) if name.isdigit()]
+    except OSError:
+        return False
+    for pid in pids:
+        try:
+            with open(os.path.join(proc_dir, pid, "comm"), encoding="utf-8", errors="replace") as handle:
+                comm = handle.read().strip().lower()
+        except OSError:
+            continue
+        if "polkit" in comm and "agent" in comm:
+            return True
+        if comm in ("xfce-polkit", "lxqt-policykit-agent"):
+            return True
+    return False
+
+
+def missing_agent_message() -> str:
+    """Explains what to install, for the desktop actually in use."""
+    desktop = current_desktop()
+    if desktop:
+        process, deb, rpm = POLKIT_AGENTS[desktop]
+        specific = (
+            f"Рабочий стол определён как {desktop}, для него нужен агент {process}: "
+            f"пакет {deb} (Debian/Astra) или {rpm} (RedOS/RHEL)."
+        )
+    else:
+        specific = (
+            "Определить рабочий стол не удалось. Нужный агент зависит от среды: "
+            + ", ".join(sorted({deb for _, deb, _ in POLKIT_AGENTS.values()}))
+            + " — установите тот, что соответствует вашей."
+        )
+    return (
+        "В текущем сеансе не запущена служба, которая показывает системный запрос "
+        "пароля (агент аутентификации polkit), поэтому окно не появится.\n\n"
+        + specific
+        + "\n\nЛибо запустите программу из терминала — тогда пароль будет запрошен "
+        "текстом, — либо напрямую от root."
+    )
 
 
 def is_root() -> bool:
@@ -95,9 +186,11 @@ def build_privileged_argv(environment: dict[str, str] | None = None) -> list[str
     environment = dict(os.environ if environment is None else environment)
     display = environment.get("DISPLAY", "")
     xauthority = environment.get("XAUTHORITY", "")
+    wayland = environment.get("WAYLAND_DISPLAY", "")
+    runtime_dir = environment.get("XDG_RUNTIME_DIR", "")
 
     if os.path.exists(PACKAGED_LAUNCHER):
-        return ["pkexec", PACKAGED_LAUNCHER, display, xauthority]
+        return ["pkexec", PACKAGED_LAUNCHER, display, xauthority, wayland, runtime_dir]
 
     environment[ELEVATED_MARKER] = "1"
     passthrough = [
@@ -134,6 +227,14 @@ def elevate_or_exit() -> None:
 
     if shutil.which("pkexec") is None:
         _report(NO_PKEXEC)
+        sys.exit(1)
+
+    # Without an agent and without a terminal there is nothing that could ask
+    # for a password: pkexec's text-mode fallback needs a tty, and a program
+    # started from a desktop menu has none. Saying so beats a window that
+    # silently never appears.
+    if not authentication_agent_running() and not sys.stdin.isatty():
+        _report(missing_agent_message())
         sys.exit(1)
 
     try:

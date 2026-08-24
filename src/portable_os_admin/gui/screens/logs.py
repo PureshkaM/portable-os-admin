@@ -1,17 +1,25 @@
 """UC-5 "Просмотр журналов операционной системы".
 
-Operates on an already-mounted log-partition directory (the admin mounts
-POA_LOGS beforehand); see docs/ARCHITECTURE.md for why this doesn't drive
-real mount/umount itself.
+The log volume is encrypted and can only be opened with the key kept in the
+administrator container, so this screen no longer asks for a mount point the
+administrator prepared by hand -- there is no way to prepare one. It picks a
+registered medium, opens that medium's log volume read-only for as long as it
+takes to read it, and closes it again.
+
+Read-only is enforced here as well as in the mount options: the specification
+requires that the logs cannot be altered from the portable system, and an
+administrator tool that opened them writable would be the obvious way around
+that requirement.
 """
 from __future__ import annotations
 
 import tkinter as tk
 from tkinter import ttk
 
-from ...admin import LogViewer, find_media_by_boot_metadata
-from ...errors import LogsCorruptedError, LogsUnavailableError, MediaNotRegisteredError
-from ..widgets import MessageBar, add_field
+from ...admin import LogViewer
+from ...admin.service_volumes import ServiceVolumeError, open_logs
+from ...errors import LogsCorruptedError, LogsUnavailableError
+from ..widgets import MessageBar, add_field, run_in_background, widget_alive
 
 
 class LogsFrame(ttk.Frame):
@@ -22,22 +30,32 @@ class LogsFrame(ttk.Frame):
         ttk.Label(self, text="Просмотр журналов операционной системы", font=("TkDefaultFont", 13, "bold")).pack(
             anchor="w", padx=16, pady=(16, 8)
         )
+        ttk.Label(
+            self,
+            text=(
+                "Раздел журналов зашифрован и открывается ключом из контейнера "
+                "администратора. Пароль пользователя носителя для этого не нужен."
+            ),
+            wraplength=760,
+            justify="left",
+        ).pack(anchor="w", padx=16)
 
         form = ttk.Frame(self)
-        form.pack(anchor="w", padx=16)
-        self.boot_mount_var = tk.StringVar()
-        _, row = add_field(
-            form, 0, "Точка монтирования загрузочного раздела:", self.boot_mount_var,
-            hint="необязательно -- для сопоставления носителя", width=40,
-        )
-        self.logs_mount_var = tk.StringVar()
-        _, row = add_field(form, row, "Точка монтирования раздела логов:", self.logs_mount_var, width=40)
+        form.pack(anchor="w", padx=16, pady=(8, 0))
+        ttk.Label(form, text="Носитель:").grid(row=0, column=0, sticky="w", pady=4)
+        self.media_var = tk.StringVar()
+        self.media_box = ttk.Combobox(form, textvariable=self.media_var, width=52, state="readonly")
+        self.media_box.grid(row=0, column=1, sticky="w", padx=(8, 0), pady=4)
         self.filter_var = tk.StringVar()
-        add_field(form, row, "Фильтр (необязательно):", self.filter_var, width=40)
+        add_field(form, 1, "Фильтр (необязательно):", self.filter_var, width=40)
 
         actions = ttk.Frame(self)
         actions.pack(anchor="w", padx=16, pady=8)
-        ttk.Button(actions, text="Загрузить журналы", command=self._load).pack(side="left")
+        self.load_btn = ttk.Button(actions, text="Загрузить журналы", command=self._load)
+        self.load_btn.pack(side="left")
+        ttk.Button(actions, text="Обновить список носителей", command=self._refresh_media).pack(
+            side="left", padx=(8, 0)
+        )
         ttk.Button(actions, text="Назад", command=self.app.show_dashboard).pack(side="left", padx=(8, 0))
 
         self.message_bar = MessageBar(self)
@@ -46,34 +64,70 @@ class LogsFrame(ttk.Frame):
         self.log_view = tk.Text(self, height=20, state="disabled")
         self.log_view.pack(fill="both", expand=True, padx=16, pady=(4, 16))
 
+        self._records = []
+        self._refresh_media()
+
+    def _refresh_media(self) -> None:
+        self._records = list(getattr(self.app.session.container, "media_records", []))
+        self.media_box["values"] = [f"{r.media_id} — {r.label} ({r.config_name})" for r in self._records]
+        if self._records and not self.media_var.get():
+            self.media_box.current(0)
+        if not self._records:
+            self.message_bar.error(
+                "В контейнере нет ни одного носителя. Журналы читаются только "
+                "с носителя, созданного этой программой."
+            )
+
+    def _selected_record(self):
+        index = self.media_box.current()
+        if index < 0 or index >= len(self._records):
+            return None
+        return self._records[index]
+
     def _load(self) -> None:
+        record = self._selected_record()
+        if record is None:
+            self.message_bar.error("Выберите носитель.")
+            return
+
         self.log_view.configure(state="normal")
         self.log_view.delete("1.0", "end")
         self.log_view.configure(state="disabled")
-
-        boot_mount = self.boot_mount_var.get().strip()
-        logs_mount = self.logs_mount_var.get().strip()
         filter_text = self.filter_var.get().strip() or None
 
-        if boot_mount:
-            try:
-                record = find_media_by_boot_metadata(self.app.session.container, boot_mount)
-            except MediaNotRegisteredError as exc:
-                self.message_bar.error(str(exc))
-                return
-            self.message_bar.success(f"Носитель опознан: {record.media_id} ({record.label})")
+        self.load_btn.configure(state="disabled")
+        self.message_bar.info(f"Открывается том журналов носителя {record.media_id}…")
 
-        if not logs_mount:
-            self.message_bar.error("Укажите точку монтирования раздела логов.")
+        # Opening a LUKS volume and reading it are both blocking, and the
+        # medium may be a slow stick. On the UI thread that freezes the window
+        # for as long as it takes.
+        run_in_background(
+            self,
+            lambda: self._read(record, filter_text),
+            on_success=self._show,
+            on_error=self._failed,
+        )
+
+    @staticmethod
+    def _read(record, filter_text):
+        with open_logs(record) as volume:
+            return LogViewer().read_logs(volume.mountpoint, filter_substring=filter_text)
+
+    def _show(self, lines) -> None:
+        if not widget_alive(self):
             return
-
-        try:
-            lines = LogViewer().read_logs(logs_mount, filter_substring=filter_text)
-        except (LogsUnavailableError, LogsCorruptedError) as exc:
-            self.message_bar.error(str(exc))
-            return
-
+        self.load_btn.configure(state="normal")
         self.log_view.configure(state="normal")
         for line in lines:
             self.log_view.insert("end", line + "\n")
         self.log_view.configure(state="disabled")
+        self.message_bar.success(f"Прочитано строк: {len(lines)}. Том закрыт.")
+
+    def _failed(self, exc: BaseException) -> None:
+        if not widget_alive(self):
+            return
+        self.load_btn.configure(state="normal")
+        if isinstance(exc, (ServiceVolumeError, LogsUnavailableError, LogsCorruptedError)):
+            self.message_bar.error(str(exc))
+        else:
+            self.message_bar.error(f"Не удалось прочитать журналы: {exc}")

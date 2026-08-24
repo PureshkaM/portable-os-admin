@@ -23,6 +23,21 @@ from ..disk import MediaLayout
 LOG_MOUNTPOINT = "/var/log"
 EXCHANGE_MOUNTPOINT = "/mnt/exchange"
 
+#: Key file that opens the log and exchange volumes at boot. It lives on the
+#: encrypted root, so it is only readable once the root has been unlocked with
+#: the user's passphrase -- the volumes are not protected *from* that user,
+#: they are protected from whoever finds the medium.
+SERVICE_KEY_DIR = "etc/poa"
+SERVICE_KEY_PATH = f"{SERVICE_KEY_DIR}/service.key"
+
+#: Where the recovery module, its salt and its settings are placed inside the
+#: installed system. They live on the encrypted root and are copied into the
+#: initramfs when it is built, which is the only place they are needed: the
+#: recovery flow runs before the root has been unlocked.
+RECOVERY_DIR = "etc/poa/recovery"
+#: Where the same files end up inside the initramfs.
+RECOVERY_INITRAMFS_DIR = "/poa"
+
 
 def host_arch() -> str:
     return platform.machine()
@@ -106,9 +121,56 @@ class InstallBackend(ABC):
         medium."""
         return [*self.COMMON_TOOLS, *self.EXTRA_TOOLS]
 
-    def sources_list(self, config: InstallConfig, release: str) -> str | None:
+    #: The repository this install draws packages from, bound once by the
+    #: installer before anything runs. It matters for a family whose package
+    #: manager is invoked from *outside* the chroot -- dnf --installroot does
+    #: not inherit the target's own configuration, so without this it would
+    #: reach for whatever repositories the host has, which on an isolated
+    #: network answer nothing and are in any case not the chosen image.
+    install_source_url: str = ""
+    install_release: str = ""
+
+    def bind_install_source(self, source_url: str, release: str) -> None:
+        self.install_source_url = source_url
+        self.install_release = release
+
+    #: Where this family keeps the package sources this program writes.
+    #: Debian has one file; the RHEL family has a directory of them, so a
+    #: distinct name is used there rather than overwriting what the
+    #: distribution's own release package installs.
+    sources_path: str = "etc/apt/sources.list"
+
+    def install_time_sources(
+        self, release: str, source_url: str, components: tuple[str, ...]
+    ) -> tuple[str, str] | None:
+        """(relative path, content) telling the *target's* package manager
+        where to get packages from while it is being installed, or None if the
+        family does not need it.
+
+        Distinct from sources_list(), which is what the finished medium keeps.
+        This one exists only for the duration of the install and points at the
+        image as seen from inside the chroot.
+        """
+        return None
+
+    def recovery_boot_files(self, layout: MediaLayout, config: InstallConfig) -> dict[str, tuple[str, int | None]]:
+        """Relative path -> (content, mode) wiring the recovery module into
+        this family's boot environment.
+
+        Empty by default: a family with no integration written simply boots
+        without recovery rather than with a half-working one.
+        """
+        return {}
+
+    def sources_list(self, config: InstallConfig, release: str, image_mountpoint: str = "") -> str | None:
         """Package sources to leave behind in the installed system, or None if
-        the family needs nothing written."""
+        the family needs nothing written.
+
+        `image_mountpoint` is the mounted installation image, when there is
+        one. It lets a backend read settings off the image -- the signing key,
+        for instance -- instead of this project writing down values that are
+        right for one release and wrong for the next.
+        """
         return None
 
     def temporary_files(self) -> dict[str, tuple[str, int | None]]:
@@ -202,10 +264,10 @@ class InstallBackend(ABC):
             "etc/hostname": "portable-os\n",
             "etc/hosts": "127.0.0.1\tlocalhost\n127.0.1.1\tportable-os\n",
             "etc/fstab": self._fstab(layout),
-            "etc/crypttab": self._crypttab(layout),
+            "etc/crypttab": self._crypttab(layout, config),
             "etc/rsyslog.d/10-poa.conf": (
-                "# Portable OS admin: mirror everything into a plain-text file on the\n"
-                "# unencrypted log partition so the administrator can read it later\n"
+                "# Portable OS admin: mirror everything into a file on the separate\n"
+                "# log volume, which the administrator can open with their own key\n"
                 "# without the user's LUKS passphrase (see admin/logs.py).\n"
                 "*.*\t-/var/log/poa-system.log\n"
             ),
@@ -224,19 +286,42 @@ class InstallBackend(ABC):
             ("UUID=" + layout.root_uuid, "/", "ext4", "errors=remount-ro", "0", "1"),
             ("UUID=" + layout.boot_uuid, "/boot", "ext4", "defaults", "0", "2"),
             ("UUID=" + layout.esp_uuid, "/boot/efi", "vfat", "umask=0077", "0", "2"),
-            # nofail on the service partitions: a medium whose log or exchange
-            # partition got damaged must still boot, not drop to an emergency
-            # shell the user has no password for.
-            ("UUID=" + layout.logs_uuid, LOG_MOUNTPOINT, "ext4", "defaults,nofail", "0", "2"),
-            ("UUID=" + layout.exchange_uuid, EXCHANGE_MOUNTPOINT, "ext4", "defaults,nofail", "0", "2"),
+            # The service volumes are addressed by their mapper name, not by a
+            # filesystem UUID: that filesystem does not exist until crypttab
+            # has opened the container, and systemd orders the mount after the
+            # cryptsetup unit precisely because the source is /dev/mapper/*.
+            #
+            # nofail on both: a medium whose log or exchange volume got damaged
+            # must still boot, not drop to an emergency shell the user has no
+            # password for.
+            (layout.logs_mapper_path, LOG_MOUNTPOINT, "ext4", "defaults,nofail", "0", "2"),
+            (layout.exchange_mapper_path, EXCHANGE_MOUNTPOINT, "ext4", "defaults,nofail", "0", "2"),
         ]
         lines = ["# generated by portable-os-admin", "# <file system> <mount point> <type> <options> <dump> <pass>"]
         lines += ["\t".join(row) for row in rows]
         return "\n".join(lines) + "\n"
 
-    def _crypttab(self, layout: MediaLayout) -> str:
+    def _crypttab(self, layout: MediaLayout, config: InstallConfig) -> str:
+        """Root asks for a passphrase; the service volumes never do.
+
+        The log and exchange volumes are opened from a key file on the root,
+        which by then is already unlocked. That is what lets the user see the
+        exchange folder as an ordinary directory without a second password,
+        while the medium stays unreadable to anyone who merely holds it.
+
+        nofail keeps a damaged service volume from stopping the boot -- the
+        user has no account password to get out of an emergency shell with.
+        """
+        key = f"/{SERVICE_KEY_PATH}"
+        # tries=N is what makes the recovery module reachable: cryptroot asks
+        # this many times and then gives up, which is when the recovery hook
+        # takes over. Without it the limit configured by the administrator was
+        # only ever validated in the interface and never reached the medium.
+        tries = max(1, int(getattr(config.luks, "failed_attempts_limit", 3) or 3))
         return (
             "# generated by portable-os-admin\n"
             "# <target name> <source device> <key file> <options>\n"
-            f"{layout.mapper_name}\tUUID={layout.luks_uuid}\tnone\tluks,discard\n"
+            f"{layout.mapper_name}\tUUID={layout.luks_uuid}\tnone\tluks,discard,tries={tries}\n"
+            f"{layout.logs_mapper_name}\tUUID={layout.logs_luks_uuid}\t{key}\tluks,discard,nofail\n"
+            f"{layout.exchange_mapper_name}\tUUID={layout.exchange_luks_uuid}\t{key}\tluks,discard,nofail\n"
         )

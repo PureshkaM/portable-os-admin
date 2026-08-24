@@ -88,3 +88,27 @@ def test_something_that_is_not_an_installation_image_is_refused(tmp_path):
 
     with pytest.raises(InstallError, match="не удалось распознать образ"):
         inspect_mounted("/images/holiday-photos.iso", str(tmp_path))
+
+
+def test_components_over_declared_by_the_release_file_are_dropped(tmp_path):
+    """apt drops the whole repository when one declared component has no index
+    for the architecture in use, which would cost the entire install. Better to
+    quietly not offer that component."""
+    from portable_os_admin.install.image_source import _usable_components
+
+    suite = tmp_path / "dists" / "trixie"
+    (suite / "main" / "binary-amd64").mkdir(parents=True)
+    (suite / "contrib" / "binary-amd64").mkdir(parents=True)
+    # declared but carries nothing for this architecture
+    (suite / "non-free" / "binary-i386").mkdir(parents=True)
+
+    fields = {"Components": "main contrib non-free"}
+    assert _usable_components(str(suite), fields, ("amd64",)) == ("main", "contrib")
+
+
+def test_components_fall_back_to_main_when_nothing_matches(tmp_path):
+    from portable_os_admin.install.image_source import _usable_components
+
+    suite = tmp_path / "dists" / "trixie"
+    suite.mkdir(parents=True)
+    assert _usable_components(str(suite), {"Components": "weird"}, ("amd64",)) == ("main",)

@@ -577,3 +577,34 @@ def test_configurations_are_marked_against_the_chosen_image(gui_app, tmp_path, m
     app.update()
     assert wizard.step_titles[wizard.step_index] == "Конфигурация"
     assert "не подходит" in wizard.message_bar.var.get()
+
+
+def test_leaving_a_screen_does_not_leave_tk_variables_for_another_thread(gui_app, tmp_path):
+    """A tk.Variable finalises by calling into Tcl, and Python's cyclic
+    collector runs on whichever thread trips its threshold. An orphan Variable
+    left by a destroyed screen can therefore be finalised on a worker thread,
+    which calls Tcl from the wrong thread and blocks that thread permanently --
+    observed as an install parked in tkinter's __del__ while the window went on
+    responding, so the install neither finished nor failed.
+
+    The fix is to finalise them on the UI thread, right where they are
+    orphaned. This checks that nothing of Tk's is left uncollected afterwards.
+    """
+    import gc
+    import tkinter as tk
+
+    app = gui_app
+    _open_container(app, tmp_path)
+
+    def live_variables():
+        return sum(1 for obj in gc.get_objects() if isinstance(obj, tk.Variable))
+
+    app.show_dashboard()
+    before = live_variables()
+    for _ in range(3):
+        app.show_dashboard()
+    after = live_variables()
+
+    # Screens are rebuilt, so their variables must not pile up: without the
+    # sweep each round leaves another set behind for some thread to finalise.
+    assert after <= before, f"{after - before} tk.Variable objects left behind by screen changes"

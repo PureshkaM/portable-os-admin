@@ -23,7 +23,10 @@ Depends: ${misc:Depends}, ${python3:Depends},
  debootstrap,
  zstd,
  ca-certificates
-Recommends: eatmydata, polkit-kde-agent-1 | lxpolkit | mate-polkit | policykit-1-gnome
+Recommends: eatmydata,
+ polkit-kde-agent-1 | policykit-1-gnome | mate-polkit | xfce-polkit | lxqt-policykit | lxpolkit,
+ libarchive-tools | rpm
+Suggests: qemu-user-static, binfmt-support
 Description: Admin tool for portable LUKS-encrypted OS media
  Creates and administers an encrypted admin container, builds install
  configurations, installs Debian/Astra Linux or RedOS onto an external
@@ -44,4 +47,12 @@ Description: Admin tool for portable LUKS-encrypted OS media
  and zstd to read RedOS repository metadata. pkexec is how the program
  asks the desktop for administrator rights; the polkit agent that shows
  the dialog normally comes with the desktop environment, hence the
- alternatives in Recommends.
+ alternatives in Recommends -- one per mainstream desktop, since polkit
+ itself is desktop-agnostic but its password prompt is not.
+ .
+ bsdtar (libarchive-tools) or rpm is what unpacks the target
+ distribution's own kickstart parser off an installation image, which is
+ how RedOS configurations are checked on a Debian workstation.
+ qemu-user-static is only needed to build a medium for another
+ architecture, so it is suggested rather than required; without it such
+ an install is refused before the medium is touched.

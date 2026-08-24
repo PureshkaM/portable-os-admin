@@ -143,6 +143,17 @@ def short_checksum(*parts: str, length: int = 8) -> str:
     return digest[:length]
 
 
+def new_volume_key(length: int = 64) -> bytes:
+    """A random key for a LUKS keyslot that a human never types.
+
+    Used for the log and exchange volumes, which are opened by the portable
+    system from a key file and by the administrator from the key kept in the
+    administrator container -- never from a passphrase. 64 bytes of entropy
+    because nothing has to remember it.
+    """
+    return secrets.token_bytes(length)
+
+
 def new_media_id() -> str:
     return secrets.token_hex(4)
 

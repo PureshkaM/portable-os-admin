@@ -8,6 +8,7 @@ the private venv at install time.
 """
 from __future__ import annotations
 
+import gc
 import queue
 import threading
 import tkinter as tk
@@ -90,6 +91,21 @@ def run_in_background(
     (device listing, repository browsing, the real install run) goes through
     this helper for exactly that reason.
     """
+    # Collect now, on the UI thread, before another thread exists.
+    #
+    # A tk.Variable finalises by calling into Tcl. Python's cyclic collector
+    # runs on whichever thread happens to trip the allocation threshold, so an
+    # orphaned Variable left over from a destroyed screen can be finalised on a
+    # *worker* thread -- which calls Tcl from the wrong thread and blocks
+    # forever. Observed exactly that way: an install thread parked in
+    # tkinter/__init__.py __del__ while the window kept running, so the install
+    # neither finished nor failed.
+    #
+    # Sweeping here means the worker starts with nothing of Tk's left to
+    # collect. _render_step and show_frame sweep for the same reason, right
+    # after they destroy widgets.
+    gc.collect()
+
     result_queue: "queue.Queue[tuple[str, object]]" = queue.Queue(maxsize=1)
 
     def worker() -> None:
@@ -403,6 +419,9 @@ class WizardFrame(ttk.Frame):
     def _render_step(self) -> None:
         for child in self.body.winfo_children():
             child.destroy()
+        # Finalise what those widgets left behind while still on the UI thread
+        # -- see the note in run_in_background about tk.Variable.__del__.
+        gc.collect()
         self.message_bar.clear()
         total = len(self.step_titles)
         self.step_title_var.set(f"Шаг {self.step_index + 1} из {total}: {self.step_titles[self.step_index]}")

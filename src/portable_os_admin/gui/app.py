@@ -10,6 +10,7 @@ alongside the TUI rather than replacing it.
 """
 from __future__ import annotations
 
+import gc
 import tkinter as tk
 from pathlib import Path
 from tkinter import ttk
@@ -57,6 +58,11 @@ class PortableOSAdminGUI(tk.Tk):
     def show_frame(self, frame_cls, **kwargs) -> None:
         if self._current_frame is not None:
             self._current_frame.destroy()
+            # On the UI thread, deliberately: a screen leaves tk.Variable
+            # objects behind, and finalising one from a worker thread calls
+            # Tcl from the wrong thread and hangs that thread for good. See
+            # gui/widgets.py run_in_background.
+            gc.collect()
         self._current_frame = frame_cls(self._content, self, **kwargs)
         self._current_frame.pack(fill="both", expand=True)
 

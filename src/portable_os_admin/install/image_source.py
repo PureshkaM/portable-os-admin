@@ -48,6 +48,11 @@ class ImageInfo:
     architectures: tuple[str, ...]
     #: Human-readable name, taken from the image itself rather than the filename.
     label: str
+    #: Repository components the image publishes ("main", "contrib", ...),
+    #: read from its own Release file. Needed to point the target's package
+    #: manager at the image, and read rather than assumed because an image may
+    #: carry only main, or main plus firmware, depending on how it was built.
+    components: tuple[str, ...] = ("main",)
     #: Whether a complete system can be installed from this image with no
     #: network at all. False for network-install images.
     complete: bool = True
@@ -166,11 +171,30 @@ def _inspect_debian(path: str, mountpoint: str) -> ImageInfo | None:
             family="debian",
             release=fields.get("Codename") or entry,
             architectures=architectures,
+            components=_usable_components(suite_dir, fields, architectures),
             label=_disk_info(mountpoint) or f"Debian {fields.get('Version', '')}".strip(),
             complete=complete,
             incomplete_reason=reason,
         )
     return None
+
+
+def _usable_components(suite_dir: str, fields: dict, architectures: tuple[str, ...]) -> tuple[str, ...]:
+    """Components the image declares *and* actually carries for this
+    architecture.
+
+    apt drops a whole repository when one declared component has no index for
+    the architecture in use, so a Release file that over-declares would cost
+    the entire install. Filtering here rather than trusting the declaration
+    turns that into a component quietly not being offered.
+    """
+    declared = fields.get("Components", "main").split()
+    arch = architectures[0] if architectures else ""
+    usable = [
+        name for name in declared
+        if os.path.isdir(os.path.join(suite_dir, name, f"binary-{arch}"))
+    ]
+    return tuple(usable) or ("main",)
 
 
 def _package_index(suite_dir: str, architectures: tuple[str, ...]) -> str | None:

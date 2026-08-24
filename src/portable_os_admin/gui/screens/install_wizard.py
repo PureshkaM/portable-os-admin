@@ -25,6 +25,7 @@ from tkinter import filedialog
 from ...errors import DeviceNotEligibleError, InstallError
 from ...install import BlockDevice, DeviceLister, OSInstaller
 from ...install import image_source, leftovers
+from ...install.emulation import probe as probe_emulation
 from ...install.installer import IMAGE_FAMILY
 from ..elevate import invoking_user_home
 from ..widgets import KNOWN_ERRORS, UiMailbox, WizardFrame, add_field, run_in_background, widget_alive
@@ -204,7 +205,14 @@ class InstallWizardFrame(WizardFrame):
         form = ttk.Frame(body)
         form.pack(anchor="w", fill="x", pady=(10, 0))
         self.image_path_var = tk.StringVar(value=self.image_path)
-        add_field(form, 0, "Файл образа:", self.image_path_var, width=52)
+        add_field(
+            form,
+            0,
+            "Файл образа:",
+            self.image_path_var,
+            hint="оставьте пустым, чтобы ставить из сетевого репозитория конфигурации (медленнее)",
+            width=52,
+        )
         ttk.Button(form, text="Выбрать образ…", command=self._choose_image).grid(
             row=0, column=2, sticky="w", padx=(8, 0)
         )
@@ -291,8 +299,17 @@ class InstallWizardFrame(WizardFrame):
 
     def _validate_step_image(self) -> bool:
         if not self.image_path:
-            self.message_bar.error("Укажите установочный образ — система ставится с него.")
-            return False
+            # Leaving this empty is the explicit "install from the network"
+            # choice, not an omission -- but it only works if a configuration
+            # with a repository address is picked on the next step, so it is
+            # allowed through with the trade-off stated rather than refused.
+            self.message_bar.info(
+                "Образ не выбран: система будет установлена из сетевого репозитория, "
+                "заданного в конфигурации. Это медленнее и требует доступа к сети; "
+                "установка с локального образа предпочтительнее."
+            )
+            self.image_info = None
+            return True
         if not Path(self.image_path).is_file():
             self.message_bar.error(f"Файл не найден: {self.image_path}")
             return False
@@ -429,6 +446,25 @@ class InstallWizardFrame(WizardFrame):
             wraplength=760,
             justify="left",
         ).pack(anchor="w")
+
+        self._emulation = probe_emulation(cfg.arch) if cfg.arch else None
+        if self._emulation is not None and not self._emulation.native:
+            box = ttk.LabelFrame(body, text=" Архитектура носителя отличается от этой машины ")
+            box.pack(fill="x", pady=(10, 0))
+            if self._emulation.available:
+                notice = (
+                    "Все шаги установки будут выполнены под эмуляцией, но ни одна "
+                    "программа целевой системы не запустится на настоящем процессоре "
+                    "этой архитектуры. Установка может занять заметно больше времени, "
+                    "и возможны сбои, которых не бывает при обычной установке.\n"
+                    f"Обязательно проверьте загрузку готового носителя на машине "
+                    f"с архитектурой {self._emulation.target_arch}, прежде чем выдавать его."
+                )
+            else:
+                notice = self._emulation.reason + "\nУстановка невозможна."
+            ttk.Label(
+                box, text=notice, foreground=DANGER_COLOR, wraplength=760, justify="left"
+            ).pack(anchor="w", padx=10, pady=8)
 
         device = self._resolve_device(self._parsed_size_gb())
         self._confirmed_device = device
@@ -572,6 +608,14 @@ class InstallWizardFrame(WizardFrame):
             self.message_bar.error(NOT_ROOT_MESSAGE)
             return
 
+        # Building for another architecture is supported, but only where the
+        # kernel can actually execute the target's binaries. Refusing here
+        # costs nothing; refusing after wipefs costs the medium's contents.
+        emulation = getattr(self, "_emulation", None)
+        if emulation is not None and not emulation.native and not emulation.available:
+            self.message_bar.error(emulation.reason)
+            return
+
         # An install already in flight -- or the wreckage of one that was
         # interrupted -- means the medium is mounted and its volume open.
         # Starting a second run on top of that corrupts both.
@@ -692,10 +736,16 @@ class InstallWizardFrame(WizardFrame):
                     line += f" stderr: {entry.stderr.strip()}"
             self._log(line)
         self.app.save_container()
+        # Warnings are put in front of the success text, not appended to it: a
+        # medium built under emulation has to be tried on the target
+        # architecture, and that is the part a person must not skim past.
+        for warning in getattr(result, "warnings", ()):
+            self._log("ВНИМАНИЕ: " + warning)
         self.message_bar.success(
             f"Установка завершена. media_id={result.media_record.media_id}, "
             f"код восстановления: {result.recovery_record.code} — запишите его, "
             "он также сохранён в контейнере администратора."
+            + ("  " + " ".join(result.warnings) if getattr(result, "warnings", ()) else "")
         )
 
     def _on_install_error(self, exc: BaseException) -> None:

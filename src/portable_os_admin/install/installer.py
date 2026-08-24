@@ -25,17 +25,29 @@ from ..container.models import MediaRecord, RecoveryRecord
 from ..errors import ConfigValidationError, InstallError
 from ..session import AdminSession
 from .backends import get_backend
-from .backends.base import EXCHANGE_MOUNTPOINT, host_arch
+from .backends.base import (
+    EXCHANGE_MOUNTPOINT,
+    RECOVERY_DIR,
+    SERVICE_KEY_DIR,
+    SERVICE_KEY_PATH,
+)
 from .command_runner import BOOTSTRAP_TIMEOUT, CommandPlan, CommandResult, CommandRunner
 from .devices import BlockDevice, check_install_eligible
 from .disk import DiskManager, MediaLayout, build_media_layout, plan_partitions
 from .image_source import MountedImage, inspect_mounted
 from .luks import LuksManager
+from .emulation import probe as probe_emulation
 from .tooling import check_tools_available, resolve_argv
 
 MIB = 1024 * 1024
 MIN_SYSTEM_PARTITION_MB = 4096
 RECOVERY_KEYSLOT = 7
+#: Keyslot the day-to-day user password lives in. cryptsetup puts the first
+#: passphrase in slot 0; recovery needs to name it to replace it.
+USER_KEYSLOT = 0
+#: Keyslot on the log/exchange volumes holding the administrator's key. A fixed
+#: slot so a medium can be re-keyed later without guessing which one it is.
+ADMIN_KEYSLOT = 7
 
 #: Which image family can install which target. Astra Linux is a Debian
 #: derivative, so its images look like Debian images.
@@ -60,6 +72,10 @@ class InstallResult:
     media_record: MediaRecord
     recovery_record: RecoveryRecord
     plan: CommandPlan
+    #: Things that went right but the operator still has to know about --
+    #: currently a medium built under emulation, which has to be tried on a
+    #: machine of the target architecture before it is handed to anyone.
+    warnings: tuple[str, ...] = ()
 
 
 class OSInstaller:
@@ -122,7 +138,8 @@ class OSInstaller:
             )
 
         backend = get_backend(config.target_os)
-        self._check_arch(backend, config)
+        self._source_components: tuple[str, ...] = ("main",)
+        warnings = self._check_arch(backend, config)
         if not dry_run:
             check_tools_available(backend.required_tools())
 
@@ -145,10 +162,13 @@ class OSInstaller:
         state.image = image
 
         try:
-            release = self._prepare_image(image, image_path, config, backend, dry_run=dry_run)
-            recovery_code, recovery_salt = self._install(
+            release, source_url = self._prepare_source(image, image_path, config, backend, dry_run=dry_run)
+            # Every later package command draws from this same repository, not
+            # from whatever the administrator's own machine has configured.
+            backend.bind_install_source(source_url, release)
+            recovery_code, recovery_salt, service_key = self._install(
                 device, config, backend, layout, media_id, user_passphrase, plan, state,
-                image_url=image.url, release=release, dry_run=dry_run, confirm_device=confirm_device,
+                image_url=source_url, release=release, dry_run=dry_run, confirm_device=confirm_device,
             )
         except Exception as exc:
             # "Установка.Ошибка.Сохранение": nothing below this point runs, so
@@ -169,6 +189,12 @@ class OSInstaller:
             label=device.model or device.path,
             config_name=config.name,
             target_os=config.target_os,
+            # Without this key the log and exchange volumes of this medium can
+            # never be opened from an administrator machine again -- there is
+            # no second copy anywhere.
+            service_key_b64=base64.b64encode(service_key).decode("ascii"),
+            logs_luks_uuid=layout.logs_luks_uuid,
+            exchange_luks_uuid=layout.exchange_luks_uuid,
         )
         recovery_record = RecoveryRecord(
             media_id=media_id,
@@ -182,31 +208,61 @@ class OSInstaller:
         self.session.container.add_media_record(media_record)
         self.session.container.add_recovery_record(recovery_record)
 
-        return InstallResult(media_record=media_record, recovery_record=recovery_record, plan=plan)
+        return InstallResult(
+            media_record=media_record,
+            recovery_record=recovery_record,
+            plan=plan,
+            warnings=warnings,
+        )
 
     # ------------------------------------------------------------------
     # The installation image
     # ------------------------------------------------------------------
-    def _prepare_image(
+    def _prepare_source(
         self, image: MountedImage, image_path: str, config: InstallConfig, backend, *, dry_run: bool
-    ) -> str:
-        """Mounts the image, checks it can install what was asked, and reports
-        which release it turned out to hold.
+    ) -> tuple[str, str]:
+        """Decides where the base system comes from, and reports the release
+        together with the repository URL to install from.
 
-        The release comes from the image rather than from the configuration on
-        purpose: it keeps configurations free of distribution version numbers,
-        so the same configuration works with next year's image without being
-        edited. Everything checked here would otherwise surface as a failure
-        deep inside debootstrap or dnf, tens of minutes in, as a complaint about
-        a missing Release file rather than about the image being the wrong one.
+        A local image is the intended source and the recommended one: the tool
+        is meant for networks with no route to the internet, and an image on
+        disk is a fixed, inspectable thing. A network mirror is supported as
+        the fallback, for a machine that does have a repository available and
+        no image at hand -- it is a choice the administrator makes explicitly
+        by leaving the image empty and configuring a mirror, never a silent
+        substitution when the image turns out to be missing.
+
+        With an image, the release comes from the image rather than from the
+        configuration: that keeps configurations free of distribution version
+        numbers, so the same configuration works with next year's image
+        without being edited. Everything checked here would otherwise surface
+        as a failure deep inside debootstrap or dnf, tens of minutes in, as a
+        complaint about a missing Release file rather than about the image
+        being the wrong one.
         """
-        self._progress.step("Подключение установочного образа")
         if dry_run:
-            return config.release
+            self._progress.step("Подключение установочного образа")
+            return config.release, image.url if image_path else config.mirror
 
         if not image_path:
-            raise InstallError("не указан установочный образ ОС")
+            if not config.mirror:
+                raise InstallError(
+                    "не указан установочный образ ОС. Установка возможна либо с локального "
+                    "образа (рекомендуется), либо из сетевого репозитория — но тогда в "
+                    "конфигурации должен быть задан адрес репозитория."
+                )
+            self._progress.step(f"Установка из сетевого репозитория {config.mirror}")
+            # No image means nothing to inspect, so the release can only come
+            # from the configuration here -- the one case where a configuration
+            # does have to name a version.
+            if not config.release:
+                raise InstallError(
+                    "для установки из сети в конфигурации должен быть указан выпуск "
+                    "дистрибутива: без образа его неоткуда взять"
+                )
+            return config.release, config.mirror
 
+        self._progress.step("Подключение установочного образа")
         image.mount()
         info = inspect_mounted(image_path, image.mountpoint)
 
@@ -218,13 +274,17 @@ class OSInstaller:
             )
         if not info.complete:
             raise InstallError(f"образ не подходит: {info.incomplete_reason}")
+        self._validate_against_image(config, image.mountpoint, info)
+        # Kept for the install-time sources written into the chroot further
+        # down, which need the components the image actually publishes.
+        self._source_components = info.components
         wanted_arch = backend.normalize_arch(config.arch)
         if info.architectures and wanted_arch not in info.architectures:
             raise InstallError(
                 f"образ не подходит: эта машина ставит систему для {wanted_arch}, "
                 f"а образ собран для {', '.join(info.architectures)}"
             )
-        return info.release or config.release
+        return info.release or config.release, image.url
 
     # ------------------------------------------------------------------
     # The pipeline itself
@@ -244,7 +304,7 @@ class OSInstaller:
         release: str,
         dry_run: bool,
         confirm_device: str | None,
-    ) -> tuple[str, bytes]:
+    ) -> tuple[str, bytes, bytes]:
         run = lambda argv, **kw: self._run(argv, plan, dry_run, confirm_device, **kw)  # noqa: E731
 
         self._progress.step("Отключение носителя от системы")
@@ -299,6 +359,54 @@ class OSInstaller:
         )
         state.mapper_opened = True
 
+        # The log and exchange volumes. Two keys, and the difference between
+        # them is the whole design:
+        #
+        #   boot_key    -- a key *file* placed on the encrypted root. The
+        #                  portable system opens both volumes with it at boot,
+        #                  so the user sees the exchange folder as an ordinary
+        #                  directory and never types a second passphrase. It is
+        #                  reachable only after the root itself was unlocked.
+        #   service_key -- kept in the administrator container and nowhere else.
+        #                  It lets the administrator read the logs and the
+        #                  exchange volume on their own machine without the
+        #                  user's LUKS passphrase.
+        #
+        # A stolen medium yields neither, so it is ciphertext to an outsider.
+        # It is deliberately not proof against the medium's own user, who holds
+        # the LUKS passphrase -- that was the chosen threat model, and claiming
+        # more would be false.
+        self._progress.step("Шифрование разделов журналов и обмена")
+        service_key = crypto.new_volume_key()
+        boot_key = crypto.new_volume_key()
+        for partition, mapper in (
+            (layout.logs_partition, layout.logs_mapper_name),
+            (layout.exchange_partition, layout.exchange_mapper_name),
+        ):
+            self.luks_manager.format(
+                partition,
+                boot_key,
+                cipher=config.luks.cipher,
+                key_size=config.luks.key_size_bits,
+                kdf=config.luks.kdf,
+                dry_run=dry_run,
+                confirm_device=confirm_device,
+                plan=plan,
+            )
+            self.luks_manager.add_keyslot(
+                partition,
+                boot_key,
+                service_key,
+                slot=ADMIN_KEYSLOT,
+                dry_run=dry_run,
+                confirm_device=confirm_device,
+                plan=plan,
+            )
+            self.luks_manager.open(
+                partition, mapper, boot_key, dry_run=dry_run, confirm_device=confirm_device, plan=plan
+            )
+            state.service_mappers.append(mapper)
+
         # Filesystems. The root filesystem goes *inside* the opened LUKS
         # mapping, which is the step whose absence made every earlier install
         # write the target system into a directory on the admin host instead.
@@ -306,8 +414,8 @@ class OSInstaller:
         run(["mkfs.ext4", "-F", "-L", "POA_ROOT", layout.mapper_path])
         run(["mkfs.vfat", "-F", "32", "-n", "POA_ESP", layout.esp_partition])
         run(["mkfs.ext4", "-F", "-L", "POA_BOOT", layout.boot_partition])
-        run(["mkfs.ext4", "-F", "-L", "POA_LOGS", layout.logs_partition])
-        run(["mkfs.ext4", "-F", "-L", "POA_EXCHANGE", layout.exchange_partition])
+        run(["mkfs.ext4", "-F", "-L", "POA_LOGS", layout.logs_mapper_path])
+        run(["mkfs.ext4", "-F", "-L", "POA_EXCHANGE", layout.exchange_mapper_path])
 
         self._progress.step("Монтирование носителя")
         # Mount the target tree, outermost first.
@@ -339,6 +447,36 @@ class OSInstaller:
             run(argv)
             state.mounts.append(target)
 
+        # The image, visible from inside the chroot at the same path it has
+        # outside it.
+        #
+        # debootstrap writes the target's /etc/apt/sources.list pointing at the
+        # URL it was given -- file:///mnt/poa-image-<id> -- and that path exists
+        # only on this machine. Without this bind mount `apt-get update` inside
+        # the chroot finds nothing and every package install fails with
+        # "Unable to locate package linux-image-amd64", which is to say the
+        # medium gets no kernel, no bootloader and no way to unlock itself.
+        # Found by running an install from a local image to the end for the
+        # first time; the earlier successful run had used a network mirror,
+        # where the URL means the same thing on both sides.
+        if image_url.startswith("file://"):
+            image_inside = image_url[len("file://"):]
+            target = f"{layout.mount_root}{image_inside}"
+            run(["mkdir", "-p", target])
+            run(["mount", "--bind", image_inside, target])
+            state.mounts.append(target)
+
+        # Where the target's package manager looks while it is being built.
+        # debootstrap leaves /etc/apt/sources.list empty for a file:// mirror
+        # -- checked on the medium afterwards -- so without this apt in the
+        # chroot has no repository at all and cannot install a kernel.
+        sources = backend.install_time_sources(release, image_url, self._source_components)
+        if sources is not None:
+            relative, content = sources
+            target = f"{layout.mount_root}/{relative}"
+            run(["mkdir", "-p", target.rsplit("/", 1)[0]])
+            self._write_file(target, content, plan, dry_run, confirm_device)
+
         # A freshly bootstrapped tree has no resolver configuration, so every
         # package download inside the chroot would fail to resolve a hostname.
         self._write_file(
@@ -360,7 +498,32 @@ class OSInstaller:
             run(["mkdir", "-p", target.rsplit("/", 1)[0]])
             self._write_file(target, content, plan, dry_run, confirm_device)
 
+        # The key file crypttab uses to open the log and exchange volumes at
+        # boot. It sits on the encrypted root, so it is only reachable once the
+        # root itself has been unlocked with the user's passphrase; 0400 and
+        # root-owned, because nothing in the running system needs to read it
+        # except systemd-cryptsetup.
+        run(["mkdir", "-p", f"{layout.mount_root}/{SERVICE_KEY_DIR}"])
+        self._write_file(
+            f"{layout.mount_root}/{SERVICE_KEY_PATH}",
+            boot_key,
+            plan,
+            dry_run,
+            confirm_device,
+            binary=True,
+            mode=0o400,
+        )
+
+        # Mounted here and not only at boot, so the volume's root directory can
+        # be made writable for whoever ends up using the portable system. 1777
+        # (like /tmp) rather than an owner: the account is created later, in the
+        # chroot, and its uid is not known at this point. The volume is
+        # encrypted, and inside a booted portable system there is exactly one
+        # user, so a permissive mode there costs nothing.
         run(["mkdir", "-p", f"{layout.mount_root}{EXCHANGE_MOUNTPOINT}"])
+        run(["mount", layout.exchange_mapper_path, f"{layout.mount_root}{EXCHANGE_MOUNTPOINT}"])
+        state.mounts.append(f"{layout.mount_root}{EXCHANGE_MOUNTPOINT}")
+        run(["chmod", "1777", f"{layout.mount_root}{EXCHANGE_MOUNTPOINT}"])
 
         refresh = backend.package_refresh_command(layout.mount_root)
         if refresh is not None:
@@ -374,6 +537,14 @@ class OSInstaller:
         self._progress.step("Создание учётной записи и служб")
         for argv in backend.chroot_setup_commands(layout.mount_root, config):
             run(argv, timeout=BOOTSTRAP_TIMEOUT)
+
+        # Before the initramfs is built, never after: the hooks below are what
+        # copy the recovery flow *into* that image, so writing them afterwards
+        # would leave a medium that boots without any recovery at all.
+        self._progress.step("Подключение модуля восстановления к загрузке")
+        self._install_recovery_boot(
+            backend, layout, config, media_id, recovery_salt, plan, dry_run=dry_run, confirm_device=confirm_device
+        )
 
         self._progress.step("Сборка initramfs с разблокировкой диска")
         # crypttab/fstab are in place by now, so the initramfs built here is the
@@ -392,21 +563,68 @@ class OSInstaller:
         # The image is mounted here, on this machine, and will not exist once the
         # medium is unplugged. Leaving it in the installed system's sources means
         # every apt command there fails on a dead file:// path.
-        sources = backend.sources_list(config, release)
+        # The image is still mounted at this point, so a backend can read its
+        # own repository settings off it rather than this project writing down
+        # values that are right for one release and wrong for the next.
+        image_mountpoint = image_url[len("file://"):] if image_url.startswith("file://") else ""
+        sources = backend.sources_list(config, release, image_mountpoint)
         if sources is not None:
-            target = f"{layout.mount_root}/etc/apt/sources.list"
-            run(["mkdir", "-p", f"{layout.mount_root}/etc/apt"])
+            target = f"{layout.mount_root}/{backend.sources_path}"
+            run(["mkdir", "-p", target.rsplit("/", 1)[0]])
             self._write_file(target, sources, plan, dry_run, confirm_device)
 
         self._progress.step("Завершение записи и отключение носителя")
         if temporary_paths:
             run(["rm", "-f", *temporary_paths])
         run(["sync"])
-        return recovery_code, recovery_salt
+        return recovery_code, recovery_salt, service_key
 
     def _run_bootstrap(self, backend, config, layout, image_url, release, plan, dry_run, confirm_device) -> None:
         argv = backend.bootstrap_command(layout.mount_root, config, image_url, release)
         self._run(argv, plan, dry_run, confirm_device, timeout=BOOTSTRAP_TIMEOUT)
+
+    def _install_recovery_boot(
+        self, backend, layout: MediaLayout, config: InstallConfig, media_id: str, recovery_salt: bytes,
+        plan: CommandPlan, *, dry_run, confirm_device,
+    ) -> None:
+        """Puts the recovery flow where the boot environment can reach it.
+
+        The module, its salt and its settings go onto the encrypted root; the
+        family-specific hooks copy them into the initramfs when it is built.
+        That is the only place they can be useful, because recovery happens
+        before the root has been unlocked -- and it is why the medium keeps no
+        second copy of the salt anywhere an attacker could read it.
+        """
+        target_dir = f"{layout.mount_root}/{RECOVERY_DIR}"
+        self._run(["mkdir", "-p", target_dir], plan, dry_run, confirm_device)
+        self._run(["cp", RECOVERY_MODULE_SRC, f"{target_dir}/recovery_module.sh"], plan, dry_run, confirm_device)
+        self._run(["chmod", "0755", f"{target_dir}/recovery_module.sh"], plan, dry_run, confirm_device)
+        self._write_file(
+            f"{target_dir}/recovery_salt.bin", recovery_salt, plan, dry_run, confirm_device,
+            binary=True, mode=0o400,
+        )
+        # Everything the module needs to know about this particular medium.
+        # The device is named by UUID: the medium boots on machines where the
+        # disk ordering is different, and /dev/sda2 would be someone else's.
+        self._write_file(
+            f"{target_dir}/env",
+            (
+                "# generated by portable-os-admin\n"
+                f"POA_MEDIA_ID={media_id}\n"
+                f"POA_LUKS_UUID={layout.luks_uuid}\n"
+                f"POA_RECOVERY_SLOT={RECOVERY_KEYSLOT}\n"
+                f"POA_USER_SLOT={USER_KEYSLOT}\n"
+                f"POA_SCRYPT_N={crypto.RECOVERY_SCRYPT_N}\n"
+                f"POA_SCRYPT_R={crypto.SCRYPT_R}\n"
+                f"POA_SCRYPT_P={crypto.SCRYPT_P}\n"
+            ),
+            plan, dry_run, confirm_device, mode=0o400,
+        )
+
+        for relative, (content, mode) in backend.recovery_boot_files(layout, config).items():
+            path = f"{layout.mount_root}/{relative}"
+            self._run(["mkdir", "-p", path.rsplit("/", 1)[0]], plan, dry_run, confirm_device)
+            self._write_file(path, content, plan, dry_run, confirm_device, mode=mode)
 
     def _install_recovery_module(
         self, layout: MediaLayout, media_id: str, recovery_salt: bytes, plan: CommandPlan, *, dry_run, confirm_device
@@ -450,6 +668,9 @@ class OSInstaller:
         for mountpoint in reversed(state.mounts):
             self._try(["umount", "-l", mountpoint], plan, dry_run, confirm_device)
         state.mounts.clear()
+        for mapper in reversed(state.service_mappers):
+            self._try(["cryptsetup", "luksClose", mapper], plan, dry_run, confirm_device)
+        state.service_mappers.clear()
         if state.mapper_opened:
             self._try(["cryptsetup", "luksClose", layout.mapper_name], plan, dry_run, confirm_device)
             state.mapper_opened = False
@@ -464,18 +685,68 @@ class OSInstaller:
         except Exception:  # noqa: BLE001 - see _teardown docstring
             pass
 
+    def _validate_against_image(self, config: InstallConfig, mountpoint: str, info) -> None:
+        """Asks the target distribution's own parser about the configuration.
+
+        Done here rather than in the interface because the image is already
+        mounted at this point -- and because this runs before a single byte of
+        the medium has been touched, which is the only moment when refusing is
+        free.
+
+        Being unable to check is not a refusal. The built-in rules have already
+        passed, and blocking an install because an image happens not to carry a
+        parser would invent a requirement the distribution does not have; it is
+        reported as a step instead, so it shows up in the log rather than
+        vanishing.
+        """
+        from ..config.validator import ConfigValidationUnavailableError, NativeToolValidator
+
+        try:
+            result = NativeToolValidator(mountpoint, info.family, info.release).validate(config)
+        except ConfigValidationUnavailableError as exc:
+            self._progress.step(f"Проверка конфигурации средством дистрибутива не выполнена: {exc}")
+            return
+        except Exception as exc:  # noqa: BLE001 - never fail an install on the checker itself
+            self._progress.step(f"Проверка конфигурации средством дистрибутива не выполнена: {exc}")
+            return
+
+        if not result.ok:
+            raise InstallError(
+                "средство проверки самого дистрибутива отклонило конфигурацию: "
+                + "; ".join(result.errors)
+            )
+
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
-    def _check_arch(self, backend, config: InstallConfig) -> None:
+    def _check_arch(self, backend, config: InstallConfig) -> tuple[str, ...]:
+        """Decides whether this machine can build the medium, before erasing it.
+
+        Building for another architecture is allowed: every chroot step runs
+        under the emulator the kernel dispatches to through binfmt_misc, which
+        was measured end to end (see install/emulation.py). What is not allowed
+        is *starting* when no emulator is registered -- that would destroy the
+        medium's contents and then fail with "Exec format error" somewhere deep
+        inside a bootstrap.
+
+        The caller gets a warning back rather than nothing, because a medium
+        assembled under emulation has never executed on real target hardware
+        and must be tried there before it is relied on.
+        """
         if not config.arch:
-            return
-        if backend.normalize_arch(config.arch) != backend.normalize_arch(host_arch()):
-            raise InstallError(
-                f"архитектура цели ({config.arch}) не совпадает с архитектурой этой машины "
-                f"({host_arch()}); установка в чужую архитектуру требует qemu-user-static "
-                "и здесь не поддерживается"
-            )
+            return ()
+        emulation = probe_emulation(config.arch)
+        if emulation.native:
+            return ()
+        if not emulation.available:
+            raise InstallError(emulation.reason)
+        return (
+            f"Носитель собран под эмуляцией: {emulation.describe()}. "
+            "Все шаги установки выполнены, но ни одна программа целевой системы "
+            "ни разу не запускалась на настоящем процессоре этой архитектуры. "
+            "Обязательно проверьте загрузку носителя на машине "
+            f"с архитектурой {emulation.target_arch}, прежде чем выдавать его.",
+        )
 
     def _run(
         self, argv: list[str], plan: CommandPlan, dry_run: bool, confirm_device: str | None, timeout: int | None = None
@@ -521,20 +792,26 @@ class OSInstaller:
             layout.logs_uuid = str(uuid.uuid4())
             layout.exchange_uuid = str(uuid.uuid4())
             layout.luks_uuid = str(uuid.uuid4())
+            layout.logs_luks_uuid = str(uuid.uuid4())
+            layout.exchange_luks_uuid = str(uuid.uuid4())
             return
 
         layout.esp_uuid = _blkid_uuid(layout.esp_partition)
         layout.boot_uuid = _blkid_uuid(layout.boot_partition)
         layout.root_uuid = _blkid_uuid(layout.mapper_path)
-        layout.logs_uuid = _blkid_uuid(layout.logs_partition)
-        layout.exchange_uuid = _blkid_uuid(layout.exchange_partition)
+        layout.logs_uuid = _blkid_uuid(layout.logs_mapper_path)
+        layout.exchange_uuid = _blkid_uuid(layout.exchange_mapper_path)
         layout.luks_uuid = _read_output(LuksManager.uuid_command(layout.system_partition))
+        layout.logs_luks_uuid = _read_output(LuksManager.uuid_command(layout.logs_partition))
+        layout.exchange_luks_uuid = _read_output(LuksManager.uuid_command(layout.exchange_partition))
 
 
 @dataclass
 class _TeardownState:
     mounts: list[str] = field(default_factory=list)
     mapper_opened: bool = False
+    #: log/exchange mappings opened during the install, closed in reverse
+    service_mappers: list[str] = field(default_factory=list)
     image: "MountedImage | None" = None
 
 
@@ -544,7 +821,7 @@ class _Progress:
 
     #: Stages the pipeline reports. A constant so the first stage already shows
     #: a sensible total rather than counting up from one out of one.
-    EXPECTED_STAGES = 17
+    EXPECTED_STAGES = 18
 
     def __init__(self, callback):
         self._callback = callback

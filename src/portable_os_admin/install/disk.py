@@ -68,8 +68,30 @@ class MediaLayout:
     boot_uuid: str = ""
     root_uuid: str = ""
     luks_uuid: str = ""
+    #: filesystem UUIDs *inside* the opened mappings
     logs_uuid: str = ""
     exchange_uuid: str = ""
+    #: LUKS container UUIDs of the two service partitions. Separate from the
+    #: filesystem UUIDs above because crypttab addresses the container and
+    #: fstab addresses what is inside it.
+    logs_luks_uuid: str = ""
+    exchange_luks_uuid: str = ""
+
+    @property
+    def logs_mapper_name(self) -> str:
+        return f"{self.mapper_name}-logs"
+
+    @property
+    def exchange_mapper_name(self) -> str:
+        return f"{self.mapper_name}-exch"
+
+    @property
+    def logs_mapper_path(self) -> str:
+        return f"/dev/mapper/{self.logs_mapper_name}"
+
+    @property
+    def exchange_mapper_path(self) -> str:
+        return f"/dev/mapper/{self.exchange_mapper_name}"
 
 
 def plan_partitions(device: str, layout: DiskLayoutConfig) -> PartitionPlan:

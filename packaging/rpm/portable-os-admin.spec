@@ -8,6 +8,12 @@ URL:            https://github.com/PureshkaM/portable-os-admin
 Source0:        %{name}-%{version}.tar.gz
 BuildArch:      noarch
 
+# python3-devel supplies this macro on the RHEL family. Defining a fallback
+# lets the spec be built -- and therefore checked -- on a machine that has
+# rpmbuild but not the RHEL Python macros, which is the only way this package
+# gets verified without a RedOS host to hand.
+%{!?python3_sitelib: %global python3_sitelib %(python3 -c "import sysconfig; print(sysconfig.get_paths()['purelib'])")}
+
 BuildRequires:  python3-devel
 
 Requires:       python3 >= 3.9
@@ -28,6 +34,16 @@ Requires:       systemd-udev
 # Reading RedOS repository metadata: its primary.xml is zstd-compressed.
 Requires:       zstd
 Requires:       ca-certificates
+# rpm2cpio, used to read the target distribution's own kickstart parser out of
+# an installation image. It is part of a RHEL-family base system, but naming it
+# keeps a minimal install from surprising us.
+Requires:       rpm
+# polkit is desktop-agnostic; the agent that draws the password prompt is not.
+# One per mainstream desktop, so whichever is installed brings its own.
+Recommends:     (polkit-kde or polkit-gnome or mate-polkit or lxqt-policykit)
+# Only needed to build a medium for another architecture. Without it such an
+# install is refused before the medium is touched, so it is not required.
+Suggests:       qemu-user-static
 
 %description
 Creates and administers an encrypted admin container, builds install
@@ -99,7 +115,7 @@ install -m 755 packaging/polkit/launch-root %{buildroot}/usr/lib/portable-os-adm
 /usr/lib/portable-os-admin/launch-root
 
 %changelog
-* Wed Aug 20 2026 PureshkaM <xripmax@gmail.com> - 0.1.0-2
+* Thu Aug 20 2026 PureshkaM <xripmax@gmail.com> - 0.1.0-2
 - Install as a system Python package instead of a private virtualenv, so the
   package no longer downloads anything at install time.
 - Drop the Textual TUI; the GUI is the only interface.

@@ -10,21 +10,22 @@
 # other silently drops back to the generic "run /usr/bin/env" dialog.
 set -e
 
+# Four positional arguments, in this order. Wayland sessions matter as much as
+# X ones: Tk itself goes through XWayland (so DISPLAY is set), but without
+# XDG_RUNTIME_DIR the privileged copy has no session directory to work in.
 [ -n "$1" ] && export DISPLAY="$1"
 [ -n "$2" ] && export XAUTHORITY="$2"
+[ -n "$3" ] && export WAYLAND_DISPLAY="$3"
+[ -n "$4" ] && export XDG_RUNTIME_DIR="$4"
 
 # Tells the relaunched copy that it already has the rights it needs, so it does
 # not ask polkit again in an endless loop.
 export POA_ELEVATED=1
 
-# The .deb installs the application as a system Python package; the .rpm still
-# uses a private virtualenv, because the RHEL family does not package every
-# dependency this needs. One launcher serves both.
-if [ -x /opt/portable-os-admin/venv/bin/python ]; then
-    PYTHON=/opt/portable-os-admin/venv/bin/python
-else
-    PYTHON=/usr/bin/python3
-fi
-
+# Both packages install the application as a system Python package, so the
+# distribution's own interpreter runs it -- no virtualenv, and no version
+# pinned here: /usr/bin/python3 is 3.9 on an older RHEL and 3.13 on Debian
+# trixie, and the application supports both.
+#
 # No "$@": the arguments above are for this script, not for the application.
-exec "$PYTHON" -m portable_os_admin.gui.app
+exec /usr/bin/python3 -m portable_os_admin.gui.app
