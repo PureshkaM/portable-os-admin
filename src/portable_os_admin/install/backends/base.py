@@ -10,10 +10,13 @@ by both families, so it lives here once.
 from __future__ import annotations
 
 import platform
+import shlex
 import shutil
 from abc import ABC, abstractmethod
 
 from ...config.schema import InstallConfig
+from .. import autoupdate
+from .. import kiosk as kiosk_mode
 from ..disk import MediaLayout
 
 # Where the two unencrypted service partitions end up inside the installed
@@ -69,6 +72,10 @@ class InstallBackend(ABC):
     ssh_service: str = "ssh"
     sudo_group: str = "sudo"
     syslog_package: str = "rsyslog"
+    #: systemd unit of the display manager this family uses for the kiosk
+    #: session. Empty means the family has no kiosk support wired up, and a
+    #: kiosk configuration is refused for it rather than half-built.
+    display_manager_service: str = ""
 
     # ------------------------------------------------------------------
     # Architecture
@@ -185,6 +192,67 @@ class InstallBackend(ABC):
         it, or None if the family's installer does not need one."""
         return None
 
+    # ------------------------------------------------------------------
+    # Unattended updates on the finished medium
+    # ------------------------------------------------------------------
+    # These three run *on the medium*, long after this program is done, so they
+    # carry no chroot prefix and no reference to the install-time repository.
+    def update_refresh_command(self) -> list[str]:
+        """Refreshes the package index on the running portable system."""
+        raise NotImplementedError
+
+    def update_upgrade_command(self, *, include_kernel: bool) -> list[str]:
+        """Installs available upgrades, optionally leaving the kernel alone."""
+        raise NotImplementedError
+
+    def update_hold_commands(self, *, include_kernel: bool) -> list[str]:
+        """Shell lines pinning packages before the upgrade runs.
+
+        Returned as text rather than argv because they are written straight
+        into the update script; a family that expresses exclusions as flags on
+        the upgrade command itself returns nothing here.
+        """
+        return []
+
+    def optional_package_command(self, mount_root: str, packages: list[str]) -> list[str] | None:
+        """Installs packages whose absence must not abort the install.
+
+        An installation image carries a subset of its distribution's archive,
+        and which subset differs per image. firejail is the live example: it is
+        in the RED OS image and not on the Debian DVD. Requiring it would mean
+        an administrator who ticks "песочница" gets a failed install rather
+        than a medium without that one extra layer.
+
+        The wrapping shell is what makes the failure survivable -- the runner
+        raises on a non-zero exit, and `|| true` is what keeps a missing
+        optional package from looking like a broken medium.
+        """
+        argv = self.package_install_command(mount_root, packages)
+        if argv is None:
+            return None
+        return ["sh", "-c", f"{shlex.join(argv)} || true"]
+
+    def desktop_packages(self, config: InstallConfig) -> list[str]:
+        """Packages the restricted desktop needs, or [] for a console system.
+
+        Deliberately a hand-picked list rather than the distribution's desktop
+        task/group: `task-mate-desktop` and RED OS's `mate-desktop` group each
+        pull in around a hundred packages, among them a terminal, the MATE
+        control centre, a system monitor and a text editor -- precisely the
+        tools the kiosk exists to withhold. Not installing them is this mode's
+        strongest restriction, so the list is chosen here and not delegated.
+        """
+        return []
+
+    def display_manager_files(self, config: InstallConfig) -> dict[str, str]:
+        """Display-manager configuration granting the kiosk account autologin.
+
+        The account's password is locked (see chroot_setup_commands), so this
+        is not a convenience: without autologin the medium boots to a login
+        prompt no one can satisfy. It replaces the getty autologin a console
+        system gets."""
+        return {}
+
     @abstractmethod
     def boot_packages(self, config: InstallConfig) -> list[str]:
         """Kernel, bootloader, initramfs generator and LUKS tooling.
@@ -242,6 +310,13 @@ class InstallBackend(ABC):
 
         commands.append(self.systemctl_enable(mount_root, "rsyslog"))
 
+        commands += autoupdate.chroot_commands(mount_root, config, self)
+
+        # After config.packages above, never before: the whitelist hides the
+        # desktop entries that exist at the moment it runs, and a package
+        # installed afterwards would arrive with its launchers still visible.
+        commands += kiosk_mode.chroot_commands(mount_root, config, self)
+
         for task in config.system_tasks:
             commands.append(self.chroot(mount_root, "sh", "-c", task))
 
@@ -263,7 +338,7 @@ class InstallBackend(ABC):
         files = {
             "etc/hostname": "portable-os\n",
             "etc/hosts": "127.0.0.1\tlocalhost\n127.0.1.1\tportable-os\n",
-            "etc/fstab": self._fstab(layout),
+            "etc/fstab": self._fstab(layout, config),
             "etc/crypttab": self._crypttab(layout, config),
             "etc/rsyslog.d/10-poa.conf": (
                 "# Portable OS admin: mirror everything into a file on the separate\n"
@@ -271,17 +346,51 @@ class InstallBackend(ABC):
                 "# without the user's LUKS passphrase (see admin/logs.py).\n"
                 "*.*\t-/var/log/poa-system.log\n"
             ),
-            "etc/systemd/system/getty@tty1.service.d/autologin.conf": (
+        }
+
+        if kiosk_mode.is_enabled(config):
+            # A kiosk logs in through the display manager instead, and its
+            # getty units are masked -- writing a console autologin override
+            # here would leave a text login the whole mode exists to remove.
+            files.update(self.display_manager_files(config))
+        else:
+            files["etc/systemd/system/getty@tty1.service.d/autologin.conf"] = (
                 "# The account's password is deliberately locked; the LUKS passphrase is\n"
                 "# the single front-door secret, so the console logs the user in directly.\n"
                 "[Service]\n"
                 "ExecStart=\n"
                 f"ExecStart=-/sbin/agetty --autologin {account.username} --noclear %I $TERM\n"
-            ),
-        }
+            )
         return files
 
-    def _fstab(self, layout: MediaLayout) -> str:
+    def scripted_files(
+        self, config: InstallConfig, layout: MediaLayout
+    ) -> dict[str, tuple[str, int | None]]:
+        """Relative path -> (content, mode) for files that need an explicit mode.
+
+        Separate from config_files() because that one writes plain
+        configuration and leaves the mode to the default. A script written 0644
+        is a script that never runs, and the failure is silent: the medium
+        installs, boots, and simply never applies the kiosk whitelist or takes
+        an update.
+        """
+        files: dict[str, tuple[str, int | None]] = {}
+        files.update(kiosk_mode.config_files(config))
+        files.update(autoupdate.config_files(config, self))
+        return files
+
+    def _fstab(self, layout: MediaLayout, config: InstallConfig) -> str:
+        kiosk = kiosk_mode.is_enabled(config)
+        # The exchange volume is the one place a user of the portable system can
+        # put a file of their own, so in kiosk mode it is also the one place a
+        # brought-in binary would be run from.
+        exchange_options = (
+            f"{kiosk_mode.HARDENED_OPTS},nofail" if kiosk else "defaults,nofail"
+        )
+        # Nothing in /var/log is ever meant to be executed, on any profile, but
+        # it is only hardened in kiosk mode -- a console system's administrator
+        # may legitimately want to run something from there while debugging.
+        log_options = f"{kiosk_mode.HARDENED_OPTS},nofail" if kiosk else "defaults,nofail"
         rows = [
             ("UUID=" + layout.root_uuid, "/", "ext4", "errors=remount-ro", "0", "1"),
             ("UUID=" + layout.boot_uuid, "/boot", "ext4", "defaults", "0", "2"),
@@ -294,9 +403,13 @@ class InstallBackend(ABC):
             # nofail on both: a medium whose log or exchange volume got damaged
             # must still boot, not drop to an emergency shell the user has no
             # password for.
-            (layout.logs_mapper_path, LOG_MOUNTPOINT, "ext4", "defaults,nofail", "0", "2"),
-            (layout.exchange_mapper_path, EXCHANGE_MOUNTPOINT, "ext4", "defaults,nofail", "0", "2"),
+            (layout.logs_mapper_path, LOG_MOUNTPOINT, "ext4", log_options, "0", "2"),
+            (layout.exchange_mapper_path, EXCHANGE_MOUNTPOINT, "ext4", exchange_options, "0", "2"),
         ]
+        # The kiosk takes execution away from everything the user can write to.
+        # This is the one restriction of the mode that no desktop setting can
+        # undo -- it is the kernel refusing execve on a file the user supplied.
+        rows += kiosk_mode.hardening_fstab_rows() if kiosk else []
         lines = ["# generated by portable-os-admin", "# <file system> <mount point> <type> <options> <dump> <pass>"]
         lines += ["\t".join(row) for row in rows]
         return "\n".join(lines) + "\n"

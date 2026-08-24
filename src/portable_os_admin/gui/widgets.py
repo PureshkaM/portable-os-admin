@@ -18,6 +18,7 @@ from typing import Callable
 
 from ..config.validator import ConfigValidationUnavailableError
 from ..errors import PortableOSAdminError
+from . import theme
 
 # Every exception type any backend call in this project is documented to
 # raise on an expected failure (bad password, device not eligible, repo
@@ -33,13 +34,19 @@ class MessageBar(ttk.Frame):
     Rich markup, always in the same place on every screen so the user learns
     one spot to look at rather than hunting for where an error landed."""
 
-    COLORS = {"info": "#2b5fad", "success": "#1a7f37", "error": "#c0362c"}
+    COLORS = {"info": theme.INFO, "success": theme.SUCCESS, "error": theme.DANGER}
 
-    def __init__(self, parent: tk.Widget):
-        super().__init__(parent)
+    def __init__(self, parent: tk.Widget, on_card: bool = False):
+        """`on_card=True` where the bar sits inside a white card rather than on
+        the window behind it -- otherwise it draws a grey band across it."""
+        frame_style = "Card.TFrame" if on_card else "Window.TFrame"
+        self._label_style = "Card.TLabel" if on_card else "Window.TLabel"
+        super().__init__(parent, style=frame_style)
         self.var = tk.StringVar()
-        self.label = ttk.Label(self, textvariable=self.var, wraplength=760, justify="left")
-        self.label.pack(anchor="w", pady=(4, 4))
+        self.label = ttk.Label(
+            self, textvariable=self.var, style=self._label_style, wraplength=860, justify="left"
+        )
+        self.label.pack(anchor="w", pady=theme.SPACE_XS)
 
     def clear(self) -> None:
         self.var.set("")
@@ -165,14 +172,18 @@ class ScrollableArea(ttk.Frame):
     itself.
     """
 
-    def __init__(self, parent: tk.Widget):
-        super().__init__(parent)
-        self._canvas = tk.Canvas(self, highlightthickness=0, borderwidth=0)
+    def __init__(self, parent: tk.Widget, background: str = theme.SURFACE):
+        super().__init__(parent, style="Card.TFrame")
+        # The canvas draws its own background, and left at Tk's default grey it
+        # showed as a rectangle behind the card the step is drawn on.
+        self._canvas = tk.Canvas(
+            self, highlightthickness=0, borderwidth=0, background=background
+        )
         self._scrollbar = ttk.Scrollbar(self, orient="vertical", command=self._canvas.yview)
         self._canvas.configure(yscrollcommand=self._scrollbar.set)
         self._canvas.pack(side="left", fill="both", expand=True)
 
-        self.content = ttk.Frame(self._canvas)
+        self.content = ttk.Frame(self._canvas, style="Card.TFrame")
         self._window = self._canvas.create_window((0, 0), window=self.content, anchor="nw")
 
         self.content.bind("<Configure>", self._on_content_resize)
@@ -275,17 +286,24 @@ def add_field(
     hint: str | None = None,
     show: str | None = None,
     width: int = 34,
+    label_style: str = "Card.TLabel",
+    hint_style: str = "Hint.TLabel",
 ) -> tuple[ttk.Entry, int]:
     """Places one label+entry(+hint) pair on `parent`'s grid starting at
     `row`; returns the entry and the next free row so callers can chain
     several fields without hand-tracking row numbers."""
-    ttk.Label(parent, text=label_text).grid(row=row, column=0, sticky="ne", padx=(0, 10), pady=4)
+    # sticky="e" rather than "ne": the label sits on the same baseline as the
+    # field it names. Anchored to the top it floated above the entry, which
+    # read as a caption for the group rather than a name for the field.
+    ttk.Label(parent, text=label_text, style=label_style).grid(
+        row=row, column=0, sticky="e", padx=(0, theme.SPACE_MD), pady=theme.SPACE_XS
+    )
     entry = ttk.Entry(parent, textvariable=var, show=show or "", width=width)
-    entry.grid(row=row, column=1, sticky="w", pady=4)
+    entry.grid(row=row, column=1, sticky="w", pady=theme.SPACE_XS)
     next_row = row + 1
     if hint:
-        ttk.Label(parent, text=hint, foreground="#777777", font=("TkDefaultFont", 9)).grid(
-            row=next_row, column=1, sticky="w"
+        ttk.Label(parent, text=hint, style=hint_style, wraplength=theme.TEXT_WRAP, justify="left").grid(
+            row=next_row, column=1, sticky="w", pady=(0, theme.SPACE_XS)
         )
         next_row += 1
     return entry, next_row
@@ -301,6 +319,8 @@ def add_choice(
     width: int = 32,
     editable: bool = False,
     on_change=None,
+    label_style: str = "Card.TLabel",
+    hint_style: str = "Hint.TLabel",
 ) -> tuple[ttk.Combobox, int]:
     """Like `add_field`, but the value is picked from a list.
 
@@ -309,7 +329,9 @@ def add_choice(
     (distribution releases, cipher key sizes), so an unusual but valid value
     is not made impossible by the UI.
     """
-    ttk.Label(parent, text=label_text).grid(row=row, column=0, sticky="ne", padx=(0, 10), pady=4)
+    ttk.Label(parent, text=label_text, style=label_style).grid(
+        row=row, column=0, sticky="e", padx=(0, theme.SPACE_MD), pady=theme.SPACE_XS
+    )
     combo = ttk.Combobox(
         parent,
         textvariable=var,
@@ -317,15 +339,86 @@ def add_choice(
         width=width,
         state="normal" if editable else "readonly",
     )
-    combo.grid(row=row, column=1, sticky="w", pady=4)
+    combo.grid(row=row, column=1, sticky="w", pady=theme.SPACE_XS)
     if on_change is not None:
         combo.bind("<<ComboboxSelected>>", lambda _event: on_change())
     next_row = row + 1
     if hint:
-        ttk.Label(parent, text=hint, foreground="#777777", font=("TkDefaultFont", 9), wraplength=520,
-                  justify="left").grid(row=next_row, column=1, sticky="w")
+        ttk.Label(parent, text=hint, style=hint_style, wraplength=theme.TEXT_WRAP, justify="left").grid(
+            row=next_row, column=1, sticky="w", pady=(0, theme.SPACE_XS)
+        )
         next_row += 1
     return combo, next_row
+
+
+class _StepRail(ttk.Frame):
+    """The list of steps down the left-hand side.
+
+    Answers three questions a progress bar cannot: which step is this, what has
+    been done, and what is still coming. The last one is the reason it exists
+    -- a wizard that only says "step 3 of 7" makes the user click forward to
+    find out whether the thing they are looking for is in it.
+
+    Drawn with plain tk widgets rather than ttk: each row needs its own
+    background colour to show state, and ttk would need a named style per
+    state per row.
+    """
+
+    #: Wide enough for the longest step name at the wrapping width below.
+    WIDTH = 220
+
+    def __init__(self, parent: tk.Widget, step_titles: list[str]):
+        super().__init__(parent, width=self.WIDTH, style="Window.TFrame")
+        # Without this the frame collapses to whatever the labels need, and the
+        # content column shifts sideways as the user moves between steps.
+        self.pack_propagate(False)
+        self._rows: list[tuple[tk.Frame, tk.Label, tk.Label]] = []
+
+        for index, title in enumerate(step_titles):
+            row = tk.Frame(self, background=theme.BACKGROUND)
+            row.pack(fill="x", pady=(0, 2))
+            marker = tk.Label(
+                row,
+                text=str(index + 1),
+                width=2,
+                background=theme.BACKGROUND,
+                foreground=theme.TEXT_MUTED,
+                font=theme.FONT_SMALL,
+            )
+            marker.pack(side="left", padx=(theme.SPACE_SM, theme.SPACE_SM), pady=theme.SPACE_SM)
+            label = tk.Label(
+                row,
+                text=title,
+                background=theme.BACKGROUND,
+                foreground=theme.TEXT_MUTED,
+                font=theme.FONT_BODY,
+                anchor="w",
+                justify="left",
+                wraplength=self.WIDTH - 56,
+            )
+            label.pack(side="left", fill="x", expand=True, pady=theme.SPACE_SM)
+            self._rows.append((row, marker, label))
+
+    def set_current(self, current: int) -> None:
+        for index, (row, marker, label) in enumerate(self._rows):
+            if index < current:
+                # Done. The tick is the whole point: it distinguishes "behind
+                # me" from "ahead of me", which grey alone does not.
+                background, foreground, text = theme.BACKGROUND, theme.SUCCESS, "✓"
+                font = theme.FONT_BODY
+            elif index == current:
+                background, foreground, text = theme.SURFACE, theme.ACCENT, str(index + 1)
+                font = theme.FONT_SECTION
+            else:
+                background, foreground, text = theme.BACKGROUND, theme.TEXT_DISABLED, str(index + 1)
+                font = theme.FONT_BODY
+            row.configure(background=background)
+            marker.configure(background=background, foreground=foreground, text=text)
+            label.configure(
+                background=background,
+                foreground=theme.TEXT if index == current else foreground,
+                font=font,
+            )
 
 
 class WizardFrame(ttk.Frame):
@@ -352,44 +445,75 @@ class WizardFrame(ttk.Frame):
         step_hints: list[str] | None = None,
         finish_label: str = "Готово",
     ):
-        super().__init__(parent)
+        super().__init__(parent, style="Window.TFrame")
         self.app = app
         self.step_titles = step_titles
         self.step_hints = step_hints or [""] * len(step_titles)
         self.finish_label = finish_label
         self.step_index = 0
 
-        # Three layers, packed in this order on purpose. Tk's packer hands out
-        # space to whatever was packed first, so the footer and the message bar
-        # claim theirs before the body does. A step tall enough to overflow the
-        # screen then scrolls inside its own area instead of pushing the
-        # navigation buttons past the bottom edge, where they became
-        # unreachable.
-        footer = ttk.Frame(self)
-        footer.pack(side="bottom", fill="x", padx=16, pady=16)
-        self.cancel_btn = ttk.Button(footer, text="Отмена", command=self._cancel)
+        # Layout, outermost first:
+        #
+        #   +----------------------------------------------------+
+        #   | rail  |  card: title, hint, ------------- separator |
+        #   | 1 ... |        the step's own widgets (scrolls)     |
+        #   | 2 ... |                                             |
+        #   +----------------------------------------------------+
+        #   | message bar                                        |
+        #   | Отмена            < Назад  [ Далее > ]             |
+        #   +----------------------------------------------------+
+        #
+        # The rail replaced a bare progress bar. A bar says how far along the
+        # user is; it does not say what the remaining steps are, so "can I
+        # finish this now, or is there a repository to connect to first?" had
+        # no answer until they got there.
+        #
+        # Footer and message bar are packed before the body on purpose. Tk's
+        # packer serves whoever asks first, so a step too tall for the window
+        # scrolls inside its own area instead of pushing the navigation buttons
+        # off the bottom edge, where they became unreachable.
+        footer = ttk.Frame(self, style="Window.TFrame")
+        footer.pack(side="bottom", fill="x", padx=theme.SPACE_LG, pady=(0, theme.SPACE_LG))
+        # Leaving, back, forward -- and only the one that continues the work is
+        # accented. Three equally weighted buttons make the user read all three
+        # every time.
+        self.cancel_btn = ttk.Button(footer, text="Отмена", style="Quiet.TButton", command=self._cancel)
         self.cancel_btn.pack(side="left")
-        self.back_btn = ttk.Button(footer, text="< Назад", command=self._go_back)
-        self.back_btn.pack(side="left", padx=(8, 0))
-        self.next_btn = ttk.Button(footer, text="Далее >", command=self._go_next)
+        self.next_btn = ttk.Button(footer, text="Далее", style="Accent.TButton", command=self._go_next)
         self.next_btn.pack(side="right")
+        self.back_btn = ttk.Button(footer, text="Назад", command=self._go_back)
+        self.back_btn.pack(side="right", padx=(0, theme.SPACE_SM))
 
         self.message_bar = MessageBar(self)
-        self.message_bar.pack(side="bottom", fill="x", padx=16)
+        self.message_bar.pack(side="bottom", fill="x", padx=theme.SPACE_LG, pady=(0, theme.SPACE_SM))
 
-        header = ttk.Frame(self)
-        header.pack(side="top", fill="x", padx=16, pady=(16, 4))
+        columns = ttk.Frame(self, style="Window.TFrame")
+        columns.pack(side="top", fill="both", expand=True, padx=theme.SPACE_LG, pady=theme.SPACE_LG)
+
+        self._rail = _StepRail(columns, step_titles)
+        self._rail.pack(side="left", fill="y", padx=(0, theme.SPACE_LG))
+
+        card = ttk.Frame(columns, style="Card.TFrame")
+        card.pack(side="left", fill="both", expand=True)
+
+        header = ttk.Frame(card, style="Card.TFrame")
+        header.pack(side="top", fill="x", padx=theme.SPACE_LG, pady=(theme.SPACE_LG, theme.SPACE_SM))
         self.step_title_var = tk.StringVar()
-        ttk.Label(header, textvariable=self.step_title_var, font=("TkDefaultFont", 13, "bold")).pack(anchor="w")
+        ttk.Label(header, textvariable=self.step_title_var, style="Title.TLabel").pack(anchor="w")
         self.hint_var = tk.StringVar()
-        ttk.Label(header, textvariable=self.hint_var, foreground="#555555", wraplength=760, justify="left").pack(
-            anchor="w", pady=(2, 0)
-        )
-        self.progress = ttk.Progressbar(header, maximum=max(len(step_titles) - 1, 1))
-        self.progress.pack(fill="x", pady=(8, 0))
+        ttk.Label(
+            header,
+            textvariable=self.hint_var,
+            style="Muted.TLabel",
+            wraplength=theme.TEXT_WRAP,
+            justify="left",
+        ).pack(anchor="w", pady=(theme.SPACE_XS, 0))
+        ttk.Separator(card, orient="horizontal").pack(fill="x", padx=theme.SPACE_LG)
 
-        self._scroller = ScrollableArea(self)
-        self._scroller.pack(side="top", fill="both", expand=True, padx=16, pady=8)
+        self._scroller = ScrollableArea(card)
+        self._scroller.pack(
+            side="top", fill="both", expand=True, padx=theme.SPACE_LG, pady=theme.SPACE_MD
+        )
         self.body = self._scroller.content
 
         self._render_step()
@@ -424,13 +548,16 @@ class WizardFrame(ttk.Frame):
         gc.collect()
         self.message_bar.clear()
         total = len(self.step_titles)
-        self.step_title_var.set(f"Шаг {self.step_index + 1} из {total}: {self.step_titles[self.step_index]}")
+        # Just the name: which number it is, and how many remain, is what the
+        # rail beside it shows. Repeating "Шаг 6 из 7" here spent the most
+        # prominent line on the screen restating the navigation.
+        self.step_title_var.set(self.step_titles[self.step_index])
         self.hint_var.set(self.step_hints[self.step_index])
-        self.progress.configure(value=self.step_index)
+        self._rail.set_current(self.step_index)
         self.build_step(self.step_index, self.body)
         self.back_btn.configure(state=("normal" if self.step_index > 0 else "disabled"))
         is_last = self.step_index == total - 1
-        self.next_btn.configure(text=(self.finish_label if is_last else "Далее >"))
+        self.next_btn.configure(text=(self.finish_label if is_last else "Далее"))
 
     def _go_back(self) -> None:
         if self.step_index == 0:

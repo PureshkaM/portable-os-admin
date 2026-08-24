@@ -26,6 +26,7 @@ from ...config.schema import (
 )
 from ...config.validator import ConfigValidationUnavailableError
 from ...errors import RepoBrowseError
+from .. import theme
 from ..widgets import KNOWN_ERRORS, WizardFrame, add_choice, add_field, run_in_background
 
 OS_LABELS = {
@@ -68,6 +69,7 @@ class ConfigWizardFrame(WizardFrame):
                 "Диск и шифрование",
                 "Удалённый доступ",
                 "Пакеты для предустановки",
+                "Режим системы и обновления",
                 "Проверка и сохранение",
             ],
             step_hints=[
@@ -76,6 +78,8 @@ class ConfigWizardFrame(WizardFrame):
                 "Размеры служебных разделов и параметры шифрования системного раздела (LUKS).",
                 "Необязательно: доступ по SSH на установленной системе.",
                 "Необязательно: подключитесь к репозиторию выбранной ОС и выберите пакеты.",
+                "Обычная консольная система или киоск с ограниченным набором приложений; "
+                "нужно ли носителю обновляться самому.",
                 "Проверьте конфигурацию целиком, при необходимости поправьте вручную, затем сохраните.",
             ],
             finish_label="Сохранить конфигурацию",
@@ -561,6 +565,306 @@ class ConfigWizardFrame(WizardFrame):
     def _save_step_packages(self) -> None:
         return  # config.packages is kept in sync live by _add_package/_remove_package
 
+    # -- step 5: system profile and updates ----------------------------------
+    def _build_step_profile(self, body: ttk.Frame) -> None:
+        """Placed after the package step on purpose.
+
+        The kiosk whitelist names desktop entries, and which ones exist depends
+        on what was chosen there -- so the administrator arrives here already
+        knowing what is going onto the medium, and can be offered the selected
+        packages as candidates rather than a blank field.
+        """
+        kiosk = self.config.kiosk
+
+        mode = ttk.LabelFrame(body, text="Режим работы установленной системы", padding=theme.SPACE_SM)
+        mode.pack(fill="x", pady=(0, theme.SPACE_MD))
+        self.profile_var = tk.StringVar(value=self.config.profile)
+        ttk.Radiobutton(
+            mode,
+            text="Консольная система — текстовый вход, без графики (как было раньше)",
+            value="console",
+            variable=self.profile_var,
+            command=self._on_profile_changed,
+        ).pack(anchor="w", pady=(theme.SPACE_XS, 0))
+        ttk.Radiobutton(
+            mode,
+            text="Режим киоска — урезанный рабочий стол только с разрешёнными приложениями",
+            value="kiosk",
+            variable=self.profile_var,
+            command=self._on_profile_changed,
+        ).pack(anchor="w", pady=(0, theme.SPACE_XS))
+
+        backend_supported = self.config.target_os in ("debian", "redos")
+        if not backend_supported:
+            ttk.Label(
+                mode,
+                text=f"Режим киоска недоступен для {self.config.target_os}: "
+                "реализован и проверен только для debian и redos.",
+                style="Warning.TLabel",
+                wraplength=theme.TEXT_WRAP,
+            ).pack(anchor="w", pady=(0, theme.SPACE_XS))
+
+        self.kiosk_frame = ttk.LabelFrame(
+            body, text="Разрешённые приложения и ограничения", padding=theme.SPACE_SM
+        )
+        self.kiosk_frame.pack(fill="both", expand=True, pady=(0, theme.SPACE_MD))
+        inner = ttk.Frame(self.kiosk_frame)
+        inner.pack(fill="both", expand=True)
+
+        ttk.Label(
+            inner,
+            text="Имена desktop-записей без «.desktop» — так же, как их задаёт РЕД ОС "
+            "(например: mate-calc, libreoffice-writer, firefox-esr).",
+            style="Hint.TLabel",
+            wraplength=theme.TEXT_WRAP,
+        ).pack(anchor="w", pady=(0, theme.SPACE_SM))
+
+        # Field first, its actions directly beneath it. Four controls on one
+        # line ran past the edge of the card and clipped the last button.
+        entry_row = ttk.Frame(inner)
+        entry_row.pack(fill="x")
+        self.app_entry_var = tk.StringVar()
+        entry = ttk.Entry(entry_row, textvariable=self.app_entry_var, width=30)
+        entry.pack(side="left")
+        # Enter is how anyone types a list of short names; making them reach
+        # for the mouse between each one is the difference between adding six
+        # applications and adding two.
+        entry.bind("<Return>", lambda _event: self._add_allowed_app())
+        ttk.Button(entry_row, text="Добавить", command=self._add_allowed_app).pack(
+            side="left", padx=(theme.SPACE_SM, 0)
+        )
+
+        self.allowed_list = tk.Listbox(
+            inner,
+            height=5,
+            selectmode="extended",
+            exportselection=False,
+            background=theme.SURFACE,
+            foreground=theme.TEXT,
+            highlightthickness=1,
+            highlightbackground=theme.BORDER,
+            selectbackground=theme.ACCENT,
+            selectforeground=theme.TEXT_ON_ACCENT,
+            borderwidth=0,
+        )
+        self.allowed_list.pack(fill="both", expand=True, pady=(theme.SPACE_SM, theme.SPACE_XS))
+        for name in kiosk.allowed_apps:
+            self.allowed_list.insert("end", name)
+
+        list_actions = ttk.Frame(inner)
+        list_actions.pack(fill="x", pady=(0, theme.SPACE_SM))
+        ttk.Button(list_actions, text="Удалить выбранное", command=self._remove_allowed_app).pack(
+            side="left"
+        )
+        ttk.Button(
+            list_actions, text="Подставить из пакетов", command=self._suggest_allowed_apps
+        ).pack(side="left", padx=(theme.SPACE_SM, 0))
+
+        options = ttk.Frame(inner)
+        options.pack(fill="x", pady=(theme.SPACE_SM, 0))
+        self.autostart_var = tk.StringVar(value=kiosk.autostart_app)
+        add_field(options, 0, "Запускать при входе:", self.autostart_var, width=26,
+                  hint="Необязательно. Должно быть в списке выше.")
+        self.blank_var = tk.StringVar(value=str(kiosk.screen_blank_minutes))
+        add_field(
+            options,
+            2,
+            "Гасить экран через, мин:",
+            self.blank_var,
+            width=8,
+            hint="0 — не гасить. Экран именно гаснет, а не блокируется: пароль учётной записи "
+            "заблокирован, вход автоматический, и разблокировать экран было бы нечем.",
+        )
+
+        self.allow_shutdown_var = tk.BooleanVar(value=kiosk.allow_shutdown)
+        ttk.Checkbutton(
+            inner,
+            text="Разрешить выключение и перезагрузку машины",
+            variable=self.allow_shutdown_var,
+        ).pack(anchor="w", pady=(theme.SPACE_SM, 0))
+        self.allow_media_var = tk.BooleanVar(value=kiosk.allow_removable_media)
+        ttk.Checkbutton(
+            inner,
+            text="Разрешить подключение съёмных носителей",
+            variable=self.allow_media_var,
+        ).pack(anchor="w")
+        self.firejail_var = tk.BooleanVar(value=kiosk.firejail)
+        ttk.Checkbutton(
+            inner,
+            text="Запускать приложения в песочнице firejail, если она есть в образе",
+            variable=self.firejail_var,
+        ).pack(anchor="w")
+        # Directly under the checkbox it belongs to. In the grid above it sat
+        # three rows away from its own switch.
+        firejail_row = ttk.Frame(inner)
+        firejail_row.pack(fill="x", padx=(theme.SPACE_LG, 0))
+        self.firejail_opts_var = tk.StringVar(value=kiosk.firejail_options)
+        add_field(firejail_row, 0, "Параметры firejail:", self.firejail_opts_var, width=26)
+
+        updates = ttk.LabelFrame(body, text="Автоматические обновления", padding=theme.SPACE_SM)
+        updates.pack(fill="x")
+        settings = self.config.auto_update
+        self.update_enabled_var = tk.BooleanVar(value=settings.enabled)
+        ttk.Checkbutton(
+            updates,
+            text="Обновлять систему при каждой загрузке носителя",
+            variable=self.update_enabled_var,
+        ).pack(anchor="w")
+        ttk.Label(
+            updates,
+            text="Обновления берутся из репозитория, указанного на шаге 1. Без него "
+            "обновляться неоткуда: установочный образ на носителе недоступен.",
+            style="Hint.TLabel",
+            wraplength=theme.TEXT_WRAP,
+        ).pack(anchor="w", padx=(theme.SPACE_LG, 0))
+        self.update_kernel_var = tk.BooleanVar(value=settings.include_kernel)
+        ttk.Checkbutton(
+            updates,
+            text="Обновлять ядро и загрузчик",
+            variable=self.update_kernel_var,
+        ).pack(anchor="w", pady=(theme.SPACE_XS, 0))
+        update_opts = ttk.Frame(updates)
+        update_opts.pack(anchor="w", pady=(theme.SPACE_XS, 0))
+        self.update_delay_var = tk.StringVar(value=str(settings.delay_minutes))
+        add_field(
+            update_opts,
+            0,
+            "Начинать через, мин:",
+            self.update_delay_var,
+            width=8,
+            hint="Пауза после загрузки, чтобы обновление не соперничало с рабочим столом "
+            "за ту же флешку.",
+        )
+
+        self._on_profile_changed()
+
+    def _on_profile_changed(self) -> None:
+        """Greys out the kiosk options when a console system is selected."""
+        enabled = self.profile_var.get() == "kiosk"
+        state = "normal" if enabled else "disabled"
+        for child in self._all_children(self.kiosk_frame):
+            try:
+                child.configure(state=state)
+            except tk.TclError:
+                # Frames and labels have no -state option; nothing to grey out.
+                pass
+
+    def _all_children(self, widget: tk.Widget) -> list[tk.Widget]:
+        found: list[tk.Widget] = []
+        for child in widget.winfo_children():
+            found.append(child)
+            found += self._all_children(child)
+        return found
+
+    def _add_allowed_app(self) -> None:
+        name = self.app_entry_var.get().strip()
+        if not name:
+            return
+        # Typing the filename rather than the entry name is the obvious slip,
+        # and it is silently wrong -- so it is corrected here instead of being
+        # reported as a validation error three steps later.
+        if name.endswith(".desktop"):
+            name = name[: -len(".desktop")]
+        if name in self.allowed_list.get(0, "end"):
+            self.message_bar.error(f"Приложение «{name}» уже разрешено.")
+            return
+        self.allowed_list.insert("end", name)
+        self.app_entry_var.set("")
+
+    def _remove_allowed_app(self) -> None:
+        for index in reversed(self.allowed_list.curselection()):
+            self.allowed_list.delete(index)
+
+    def _suggest_allowed_apps(self) -> None:
+        """Offers the selected packages as candidate entry names.
+
+        A guess, and said to be one: a package usually installs a desktop entry
+        of the same name, but not always, and one package can install several.
+        The install writes a warning into the medium's log for any allowed name
+        that turns out to have no entry, so a wrong guess is visible rather
+        than silent.
+        """
+        existing = set(self.allowed_list.get(0, "end"))
+        added = 0
+        for package in self.config.packages:
+            if package not in existing:
+                self.allowed_list.insert("end", package)
+                existing.add(package)
+                added += 1
+        if added:
+            self.message_bar.info(
+                f"Добавлено имён: {added}. Это предположение по именам пакетов — "
+                "проверьте их и уберите лишние."
+            )
+        else:
+            self.message_bar.info("Нечего подставлять: пакеты не выбраны или уже добавлены.")
+
+    def _save_step_profile(self) -> None:
+        self.config.profile = self.profile_var.get()
+        kiosk = self.config.kiosk
+        kiosk.enabled = self.config.profile == "kiosk"
+        kiosk.allowed_apps = list(self.allowed_list.get(0, "end"))
+        kiosk.autostart_app = self.autostart_var.get().strip()
+        kiosk.allow_shutdown = self.allow_shutdown_var.get()
+        kiosk.allow_removable_media = self.allow_media_var.get()
+        kiosk.firejail = self.firejail_var.get()
+        kiosk.firejail_options = self.firejail_opts_var.get().strip()
+        try:
+            kiosk.screen_blank_minutes = int(self.blank_var.get().strip() or 0)
+        except ValueError:
+            kiosk.screen_blank_minutes = -1  # reported by _validate_step_profile
+
+        settings = self.config.auto_update
+        settings.enabled = self.update_enabled_var.get()
+        settings.include_kernel = self.update_kernel_var.get()
+        try:
+            settings.delay_minutes = int(self.update_delay_var.get().strip() or 0)
+        except ValueError:
+            settings.delay_minutes = -1
+
+    def _validate_step_profile(self) -> bool:
+        kiosk = self.config.kiosk
+        if self.config.profile == "kiosk":
+            if self.config.target_os not in ("debian", "redos"):
+                self.message_bar.error(
+                    f"Режим киоска не поддерживается для {self.config.target_os}. "
+                    "Выберите консольную систему или другую целевую ОС."
+                )
+                return False
+            if not kiosk.allowed_apps:
+                self.message_bar.error(
+                    "Разрешите хотя бы одно приложение — иначе пользователь получит "
+                    "рабочий стол, с которого нечего запустить."
+                )
+                return False
+            if kiosk.autostart_app and kiosk.autostart_app not in kiosk.allowed_apps:
+                self.message_bar.error(
+                    f"Приложение автозапуска «{kiosk.autostart_app}» не входит в список "
+                    "разрешённых — после установки оно было бы скрыто."
+                )
+                return False
+            if kiosk.screen_blank_minutes < 0:
+                self.message_bar.error("Время до гашения экрана — целое число минут, 0 или больше.")
+                return False
+            if kiosk.firejail_options and not kiosk.firejail:
+                self.message_bar.error(
+                    "Заданы параметры firejail, но сама песочница выключена."
+                )
+                return False
+
+        settings = self.config.auto_update
+        if settings.enabled:
+            if not self.config.mirror:
+                self.message_bar.error(
+                    "Для автообновления нужен адрес репозитория — задайте его на первом шаге. "
+                    "Установочный образ на носителе недоступен, обновляться будет неоткуда."
+                )
+                return False
+            if settings.delay_minutes < 0:
+                self.message_bar.error("Задержка перед обновлением — целое число минут, 0 или больше.")
+                return False
+        return True
+
     # -- step 5: review + edit + save --------------------------------------
     def _build_step_review(self, body: ttk.Frame) -> None:
         """The whole configuration, editable.
@@ -574,8 +878,8 @@ class ConfigWizardFrame(WizardFrame):
         ttk.Label(
             body,
             text="Файл конфигурации целиком. Можно править прямо здесь — изменения применятся по кнопке ниже.",
-            foreground="#555555",
-            wraplength=740,
+            style="Hint.TLabel",
+            wraplength=theme.TEXT_WRAP,
             justify="left",
         ).pack(anchor="w")
 
@@ -690,6 +994,7 @@ class ConfigWizardFrame(WizardFrame):
         _build_step_disk,
         _build_step_remote,
         _build_step_packages,
+        _build_step_profile,
         _build_step_review,
     ]
     _STEP_SAVERS = [
@@ -698,6 +1003,7 @@ class ConfigWizardFrame(WizardFrame):
         _save_step_disk,
         _save_step_remote,
         _save_step_packages,
+        _save_step_profile,
         _save_step_review,
     ]
     _STEP_VALIDATORS = [
@@ -706,6 +1012,7 @@ class ConfigWizardFrame(WizardFrame):
         _validate_step_disk,
         _validate_step_remote,
         None,
+        _validate_step_profile,
         None,
     ]
 

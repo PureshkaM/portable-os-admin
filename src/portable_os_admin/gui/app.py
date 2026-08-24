@@ -20,6 +20,7 @@ from tkinter import messagebox
 from ..config import ConfigManager
 from ..container import AdminContainer, ContainerManager
 from ..session import AdminSession
+from . import theme
 from .elevate import elevate_or_exit
 
 
@@ -27,16 +28,22 @@ class PortableOSAdminGUI(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
         self.title("Portable OS Admin")
-        self.geometry("880x640")
-        self.minsize(760, 560)
+        # Wider than before: the wizard now shows its step list alongside the
+        # content instead of a bare progress bar, and the form needs the same
+        # room it always did next to it.
+        self.geometry("1040x700")
+        self.minsize(900, 600)
 
-        style = ttk.Style(self)
-        # "clam" renders consistently across the Linux desktops this app
-        # actually targets (RedOS/Astra/Debian window managers); left
-        # unset, Tk falls back to a platform default that can look
-        # inconsistent between them. Fall back silently if unavailable.
-        if "clam" in style.theme_names():
-            style.theme_use("clam")
+        # One call decides colours, fonts and spacing everywhere -- see
+        # gui/theme.py. It selects "clam" for the same reason this code always
+        # did: it is the one built-in theme that renders consistently across
+        # the Linux desktops this application targets, and the only one that
+        # honours the colours set on it.
+        try:
+            theme.apply(self)
+        except tk.TclError:
+            # A Tk without the clam theme still has to run, just plainer.
+            pass
 
         self.container_manager = ContainerManager()
         self.config_manager = ConfigManager()

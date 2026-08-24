@@ -53,6 +53,25 @@ def _pump(app, condition, timeout=20.0, interval=0.05):
     assert condition(), "timed out waiting for background operation to complete"
 
 
+def _advance_to(app, wizard, title: str, limit: int = 12):
+    """Walks the wizard forward until the named step, then stops.
+
+    By title rather than by a count of clicks: the step list grows, and a test
+    that says `range(5)` starts failing the moment a step is inserted -- which
+    tells you nothing about the step that was added and hides whatever the test
+    was actually checking.
+    """
+    for _ in range(limit):
+        if wizard.step_titles[wizard.step_index] == title:
+            return
+        wizard._go_next()
+        app.update()
+    raise AssertionError(
+        f"шаг {title!r} не достигнут; остановились на "
+        f"{wizard.step_titles[wizard.step_index]!r}"
+    )
+
+
 def _open_container(app, tmp_path):
     startup = app._current_frame
     assert isinstance(startup, StartupFrame)
@@ -95,10 +114,7 @@ def test_config_wizard_creates_and_validates(gui_app, tmp_path):
     wizard._on_target_os_changed()
     assert wizard.release_var.get() == "8.0"
 
-    for _ in range(5):  # basics -> account, disk, remote, packages -> review
-        wizard._go_next()
-        app.update()
-    assert wizard.step_titles[wizard.step_index] == "Проверка и сохранение"
+    _advance_to(app, wizard, "Проверка и сохранение")
 
     wizard._run_validation()
     app.update()
@@ -121,10 +137,7 @@ def test_config_wizard_final_step_edits_are_applied_or_refused(gui_app, tmp_path
     app.show_frame(ConfigWizardFrame)
     wizard = app._current_frame
     wizard.name_var.set("stick1")
-    for _ in range(5):
-        wizard._go_next()
-        app.update()
-    assert wizard.step_titles[wizard.step_index] == "Проверка и сохранение"
+    _advance_to(app, wizard, "Проверка и сохранение")
 
     text = wizard.config_text.get("1.0", "end")
     wizard.config_text.delete("1.0", "end")
@@ -189,10 +202,7 @@ def test_config_wizard_package_picker_add_and_remove(gui_app, tmp_path, monkeypa
     wizard = app._current_frame
     wizard.name_var.set("stick1")
 
-    for _ in range(4):  # basics -> account, disk, remote -> packages
-        wizard._go_next()
-        app.update()
-    assert wizard.step_titles[wizard.step_index] == "Пакеты для предустановки"
+    _advance_to(app, wizard, "Пакеты для предустановки")
 
     wizard._connect_repo()
     _pump(app, lambda: bool(wizard._catalog))
@@ -223,9 +233,7 @@ def test_config_wizard_package_list_sorts_by_any_column(gui_app, tmp_path, monke
     app.show_frame(ConfigWizardFrame)
     wizard = app._current_frame
     wizard.name_var.set("stick1")
-    for _ in range(4):
-        wizard._go_next()
-        app.update()
+    _advance_to(app, wizard, "Пакеты для предустановки")
 
     wizard._connect_repo()
     _pump(app, lambda: bool(wizard._catalog))
@@ -608,3 +616,28 @@ def test_leaving_a_screen_does_not_leave_tk_variables_for_another_thread(gui_app
     # Screens are rebuilt, so their variables must not pile up: without the
     # sweep each round leaves another set behind for some thread to finalise.
     assert after <= before, f"{after - before} tk.Variable objects left behind by screen changes"
+
+
+def test_dashboard_state_check_reports_instead_of_crashing(gui_app, tmp_path, monkeypatch):
+    """Regression: the button raised instead of answering.
+
+    `_check_leftovers` called `self.message_bar`, `leftovers` and `messagebox`
+    -- none of which the dashboard created or imported. So the one control that
+    exists to tell an administrator whether an interrupted install left the
+    medium mounted and its encrypted volume open failed with an AttributeError
+    the moment it was pressed, and did so in the situation where it was needed
+    most.
+    """
+    from portable_os_admin.gui.screens import dashboard as dashboard_module
+
+    app = gui_app
+    _open_container(app, tmp_path)
+    app.show_dashboard()
+    app.update()
+    frame = app._current_frame
+
+    monkeypatch.setattr(dashboard_module.leftovers, "find", lambda: None)
+    frame._check_leftovers()
+    app.update()
+
+    assert "Незавершённых установок нет" in frame.message_bar.var.get()

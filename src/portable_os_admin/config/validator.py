@@ -22,6 +22,11 @@ from typing import Protocol
 from .schema import LUKS_CIPHERS, LUKS_KDFS, SUPPORTED_ARCH, SUPPORTED_TARGET_OS, InstallConfig
 
 _USERNAME_RE = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
+#: A desktop-entry name as RED OS's `kiosk-mode-on -a` takes it: the basename
+#: of a file in /usr/share/applications without the ".desktop" suffix. No path
+#: separators -- the name is interpolated into shell inside the target, and a
+#: name that cannot contain a slash or a quote cannot escape it.
+_DESKTOP_ENTRY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$")
 
 #: Resolved at import, on the main thread. importlib.resources performs a lazy
 #: import and races the import lock when first called from a worker thread --
@@ -135,7 +140,91 @@ class BuiltinConfigValidator:
         if remote.enabled and not (0 < remote.port <= 65535):
             errors.append("некорректный порт удалённого доступа")
 
+        errors += self._kiosk_errors(config)
+        errors += self._auto_update_errors(config)
+
         return ValidationResult(ok=not errors, errors=errors)
+
+    def _auto_update_errors(self, config: InstallConfig) -> list[str]:
+        errors: list[str] = []
+        settings = getattr(config, "auto_update", None)
+        if settings is None or not settings.enabled:
+            return errors
+
+        # The one check that matters. The installation image lives on the
+        # administrator's machine and is gone once the stick is unplugged, so a
+        # medium with no mirror has no package source at all: the update
+        # service would install cleanly and then fail on every boot for the
+        # life of the medium, writing errors to a log nobody reads.
+        if not config.mirror:
+            errors.append(
+                "автообновление включено, но не задан адрес репозитория: "
+                "установочный образ на носителе недоступен, обновляться будет неоткуда"
+            )
+
+        if settings.delay_minutes < 0:
+            errors.append("задержка перед автообновлением не может быть отрицательной")
+
+        return errors
+
+    def _kiosk_errors(self, config: InstallConfig) -> list[str]:
+        """Checks specific to the restricted desktop.
+
+        All of these are things that produce a medium which installs cleanly
+        and is then useless or unsafe -- exactly the class of defect this
+        project has been bitten by before, where a configuration validated,
+        installed for an hour, and only revealed the problem on the medium.
+        """
+        errors: list[str] = []
+        kiosk = getattr(config, "kiosk", None)
+        if kiosk is None or not kiosk.enabled:
+            return errors
+
+        # Which families have the mode is a property of the backend, not a list
+        # repeated here, so adding a backend cannot leave this check stale.
+        try:
+            from ..install.backends import get_backend
+
+            supported = bool(get_backend(config.target_os).display_manager_service)
+        except Exception:  # noqa: BLE001 - an unknown OS is already reported above
+            supported = False
+        if not supported:
+            errors.append(
+                f"режим киоска не поддерживается для {config.target_os!r}: "
+                "реализован и проверен только для debian и redos"
+            )
+
+        if not kiosk.allowed_apps:
+            errors.append(
+                "в режиме киоска должно быть разрешено хотя бы одно приложение: "
+                "иначе пользователь получит рабочий стол, с которого нечего запустить"
+            )
+
+        # A desktop-entry name, not a package name and not a path. The same
+        # spelling RED OS's kiosk-mode-on takes.
+        bad = [a for a in kiosk.allowed_apps if not _DESKTOP_ENTRY_RE.match(a)]
+        if bad:
+            errors.append(
+                "недопустимые имена разрешённых приложений: "
+                f"{', '.join(repr(a) for a in bad)} — ожидается имя desktop-записи "
+                "без «.desktop» и без пути, например 'mate-calc'"
+            )
+
+        if kiosk.autostart_app and kiosk.autostart_app not in kiosk.allowed_apps:
+            errors.append(
+                f"приложение автозапуска {kiosk.autostart_app!r} не входит в список "
+                "разрешённых: оно было бы скрыто сразу после установки"
+            )
+
+        if kiosk.screen_blank_minutes < 0:
+            errors.append("время до гашения экрана не может быть отрицательным")
+
+        if kiosk.firejail_options and not kiosk.firejail:
+            errors.append(
+                "заданы параметры firejail, но сама песочница выключена"
+            )
+
+        return errors
 
 
 #: The official validator each family ships for its own automated-install file.

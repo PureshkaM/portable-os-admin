@@ -2,48 +2,93 @@
 from __future__ import annotations
 
 import tkinter as tk
-from tkinter import ttk
+from tkinter import messagebox, ttk
+
+from ...install import leftovers
+from .. import theme
+from ..widgets import MessageBar
 
 
 class DashboardFrame(ttk.Frame):
     def __init__(self, parent: tk.Widget, app):
-        super().__init__(parent)
+        super().__init__(parent, style="Window.TFrame")
         self.app = app
 
+        # Bottom-up, so the actions and the message line keep their space and
+        # the table gives up its own when the window is short.
+        self.message_bar = MessageBar(self)
+        self.message_bar.pack(side="bottom", fill="x", padx=theme.SPACE_LG, pady=(0, theme.SPACE_MD))
+
+        actions = ttk.Frame(self, style="Window.TFrame")
+        actions.pack(side="bottom", fill="x", padx=theme.SPACE_LG, pady=(theme.SPACE_MD, 0))
+        # Packed before the left-hand buttons on purpose: Tk's packer serves
+        # whoever asks first, so a right-aligned widget added last gets only
+        # what the others left over -- which on this row meant it was clipped
+        # by the window edge.
+        ttk.Button(
+            actions, text="Закрыть сеанс", style="Quiet.TButton", command=self.app.close_session
+        ).pack(side="right")
+
+        # Installing is what this application is for; everything else supports
+        # it. One accented button says so without a word of explanation.
+        ttk.Button(
+            actions, text="Установка ОС", style="Accent.TButton", command=self._open_install
+        ).pack(side="left")
+        for text, command in (
+            ("Конфигурации", self._open_configs),
+            ("Журналы", self._open_logs),
+            ("Обмен", self._open_exchange),
+            ("Восстановление", self._open_recovery),
+            ("Состояние", self._check_leftovers),
+        ):
+            ttk.Button(actions, text=text, command=command).pack(
+                side="left", padx=(theme.SPACE_SM, 0)
+            )
+
+        header = ttk.Frame(self, style="Window.TFrame")
+        header.pack(side="top", fill="x", padx=theme.SPACE_LG, pady=(theme.SPACE_LG, theme.SPACE_SM))
         ttk.Label(
-            self, text="Переносные системы, зарегистрированные в контейнере", font=("TkDefaultFont", 13, "bold")
-        ).pack(anchor="w", padx=16, pady=(16, 8))
+            header,
+            text="Переносные системы",
+            style="Window.TLabel",
+            font=theme.FONT_TITLE,
+        ).pack(anchor="w")
+        ttk.Label(
+            header,
+            text="Носители, зарегистрированные в этом контейнере администратора.",
+            style="Window.TLabel",
+            foreground=theme.TEXT_MUTED,
+        ).pack(anchor="w", pady=(theme.SPACE_XS, 0))
+
+        card = ttk.Frame(self, style="Card.TFrame", padding=theme.SPACE_MD)
+        card.pack(side="top", fill="both", expand=True, padx=theme.SPACE_LG)
 
         columns = ("media_id", "label", "os", "config", "created")
         headings = {
-            "media_id": "media_id",
-            "label": "метка",
+            "media_id": "Идентификатор",
+            "label": "Метка",
             "os": "ОС",
-            "config": "конфигурация",
-            "created": "создан",
+            "config": "Конфигурация",
+            "created": "Создан",
         }
-        self.table = ttk.Treeview(self, columns=columns, show="headings", height=10)
+        widths = {"media_id": 220, "label": 200, "os": 100, "config": 180, "created": 180}
+        self.table = ttk.Treeview(card, columns=columns, show="headings", height=10)
         for col in columns:
             self.table.heading(col, text=headings[col])
-            self.table.column(col, width=140, anchor="w")
-        self.table.pack(fill="both", expand=True, padx=16)
+            self.table.column(col, width=widths[col], anchor="w")
+        self.table.pack(side="left", fill="both", expand=True)
+        scroll = ttk.Scrollbar(card, orient="vertical", command=self.table.yview)
+        self.table.configure(yscrollcommand=scroll.set)
+        scroll.pack(side="right", fill="y")
 
         self._refresh_table()
-
-        actions = ttk.Frame(self)
-        actions.pack(fill="x", padx=16, pady=12)
-        ttk.Button(actions, text="Конфигурации", command=self._open_configs).pack(side="left")
-        ttk.Button(actions, text="Установка ОС", command=self._open_install).pack(side="left", padx=(8, 0))
-        ttk.Button(actions, text="Журналы", command=self._open_logs).pack(side="left", padx=(8, 0))
-        ttk.Button(actions, text="Раздел обмена", command=self._open_exchange).pack(side="left", padx=(8, 0))
-        ttk.Button(actions, text="Восстановление", command=self._open_recovery).pack(side="left", padx=(8, 0))
-
-        close_row = ttk.Frame(self)
-        close_row.pack(fill="x", padx=16, pady=(0, 16))
-        ttk.Button(close_row, text="Закрыть сеанс", command=self.app.close_session).pack(side="left")
-        ttk.Button(close_row, text="Проверить состояние", command=self._check_leftovers).pack(
-            side="left", padx=(8, 0)
-        )
+        # Said plainly rather than left as an empty grid, which reads as a
+        # screen that failed to load rather than as a container with nothing in
+        # it yet.
+        if not self.app.session.container.data.media_records:
+            self.message_bar.info(
+                "В контейнере пока нет носителей. Начните с «Установка ОС»."
+            )
 
     def _refresh_table(self) -> None:
         for item in self.table.get_children():

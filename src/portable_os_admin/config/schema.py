@@ -65,6 +65,106 @@ KNOWN_RELEASES = {
 }
 
 
+#: Profiles the installed system can be built as. "console" is what this
+#: project produced before the kiosk work: a text-only base system with an
+#: autologin console. "kiosk" is the restricted desktop -- a graphical session
+#: whose menu holds only the applications the administrator allowed.
+SYSTEM_PROFILES = ("console", "kiosk")
+
+
+@dataclass
+class KioskConfig:
+    """The restricted desktop ("режим киоска").
+
+    Modelled on the mode RED OS ships as `redos-kiosk-utils`, which this
+    project cannot use: that package is published in RED SOFT's network
+    repositories and is absent from the installation image, while installing
+    from a local image is this tool's primary path. The restrictions below
+    therefore reproduce the same result with facilities both target families
+    already have -- MATE, dconf, polkit, X and the mount options -- so one
+    implementation covers Debian and RED OS alike and does not depend on the
+    version of the image the administrator happens to hold.
+
+    `allowed_apps` names desktop entries the way RED OS does: the basename of
+    a file in /usr/share/applications with the ".desktop" suffix dropped
+    (`mate-calc`, `libreoffice-writer`, `firefox-esr`). Naming entries rather
+    than packages is what makes the whitelist meaningful -- one package can
+    install several launchers, and it is launchers a user clicks.
+    """
+
+    enabled: bool = False
+    #: Desktop-entry names the user may launch. Everything else is hidden from
+    #: the menu and the desktop.
+    allowed_apps: list[str] = field(default_factory=list)
+    #: Desktop entry started automatically when the session opens. Empty means
+    #: the user gets the (restricted) desktop itself.
+    autostart_app: str = ""
+    #: Minutes of inactivity before the screen blanks. 0 keeps it lit.
+    #:
+    #: Blanking, not locking, and the difference is forced by this project's
+    #: login model rather than chosen. RED OS's kiosk offers `-t/--timelock`,
+    #: a lock screen after idle time; that presupposes an account password to
+    #: unlock with. Here the account password is deliberately locked
+    #: (`passwd -l`) and the display manager logs the user in automatically,
+    #: because the LUKS passphrase entered at boot is meant to be the single
+    #: front-door secret. A lock screen would therefore demand a password that
+    #: does not exist and shut the user out of the session until a reboot.
+    #: So the screen goes dark and comes back on a keypress, with no prompt.
+    screen_blank_minutes: int = 0
+    # RED OS's kiosk also offers -i/--autohide, hiding the panel until the
+    # pointer reaches the screen edge. There is deliberately no such field
+    # here: MATE stores that setting per panel, under
+    # /org/mate/panel/toplevels/<id>/, and <id> is generated when the session
+    # first builds its panels -- which happens on the medium, after this
+    # program is done. There is no path to write at install time, so the
+    # option would have been a switch that quietly did nothing.
+    #: Let the user power the machine off and reboot it from the panel.
+    allow_shutdown: bool = True
+    #: Allow mounting USB sticks and other removable media from the session.
+    #: Off by default: a kiosk that mounts arbitrary media is a kiosk that
+    #: runs arbitrary files.
+    allow_removable_media: bool = False
+    #: Run the allowed applications under firejail (RED OS: -f). Only takes
+    #: effect where the package exists -- it is in the RED OS image and absent
+    #: from the Debian DVD, so this stays a request rather than a guarantee.
+    firejail: bool = False
+    #: Extra firejail switches, e.g. "--net=none --nosound".
+    firejail_options: str = ""
+
+
+@dataclass
+class AutoUpdateConfig:
+    """Unattended updates on every boot of the finished medium.
+
+    The point is a fleet: many identical sticks handed out to many people, with
+    no way to collect them again to patch each one by hand. Each medium updates
+    itself from the repository named in `InstallConfig.mirror`.
+
+    That mirror is what makes this work at all. The installation image is
+    mounted on the administrator's machine and is gone the moment the stick is
+    unplugged, so a medium built from an image alone has no package source and
+    nothing to update from -- which is why the validator refuses this option
+    when no mirror is configured, instead of installing a service that fails
+    silently on every boot for the life of the medium.
+    """
+
+    enabled: bool = False
+    #: Include kernel and bootloader packages in the upgrade.
+    #:
+    #: On by default because the kernel is where the security fixes that matter
+    #: most land, and excluding it would make the whole feature cosmetic. The
+    #: trade-off is real and belongs to the administrator: a kernel upgrade
+    #: rebuilds the initramfs on the medium, and while this project's recovery
+    #: hooks live in /etc/initramfs-tools and are re-applied by that rebuild, a
+    #: rebuild interrupted by someone pulling the stick out leaves a medium
+    #: that does not boot.
+    include_kernel: bool = True
+    #: Minutes to wait after boot before starting. Not zero by default: the
+    #: update runs on a USB stick, and competing with the desktop session for
+    #: the same slow device makes the first minutes after login crawl.
+    delay_minutes: int = 5
+
+
 @dataclass
 class LuksConfig:
     cipher: str = "aes-xts-plain64"
@@ -109,14 +209,33 @@ class InstallConfig:
     # with "Exec format error". Kept explicit in the config so a wrong value is
     # reported by validation instead of surfacing as a cryptic chroot failure.
     arch: str = ""
+    # What kind of system to build: the text-only console system this project
+    # produced originally, or the restricted desktop. Kept as a separate field
+    # from kiosk.enabled so the two can never disagree -- see __post_init__.
+    profile: str = "console"
     disk: DiskLayoutConfig = field(default_factory=DiskLayoutConfig)
     luks: LuksConfig = field(default_factory=LuksConfig)
     account: UserAccountConfig = field(default_factory=UserAccountConfig)
     remote_access: RemoteAccessConfig = field(default_factory=RemoteAccessConfig)
+    kiosk: KioskConfig = field(default_factory=KioskConfig)
+    auto_update: AutoUpdateConfig = field(default_factory=AutoUpdateConfig)
     system_tasks: list[str] = field(default_factory=list)
     packages: list[str] = field(default_factory=list)
     validation_status: str = "unchecked"  # "unchecked" | "valid" | "invalid"
     validation_errors: list[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        # One truth, two spellings: `profile` is what the interface and the
+        # validator talk about, `kiosk.enabled` is what the install steps read.
+        # Reconciling them here means a configuration loaded from an older file
+        # (which has neither field, or only one) still ends up consistent
+        # instead of building a desktop whose restrictions were never applied.
+        if self.profile == "kiosk":
+            self.kiosk.enabled = True
+        elif self.kiosk.enabled:
+            self.profile = "kiosk"
+        else:
+            self.profile = "console"
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -128,7 +247,19 @@ class InstallConfig:
         luks = LuksConfig(**data.pop("luks", {}))
         account = UserAccountConfig(**data.pop("account", {}))
         remote_access = RemoteAccessConfig(**data.pop("remote_access", {}))
-        return cls(disk=disk, luks=luks, account=account, remote_access=remote_access, **data)
+        # Configurations written before the kiosk profile existed simply have
+        # no such key, and default to the console system they were made for.
+        kiosk = KioskConfig(**data.pop("kiosk", {}))
+        auto_update = AutoUpdateConfig(**data.pop("auto_update", {}))
+        return cls(
+            disk=disk,
+            luks=luks,
+            account=account,
+            remote_access=remote_access,
+            kiosk=kiosk,
+            auto_update=auto_update,
+            **data,
+        )
 
     @classmethod
     def create_default(cls, name: str, target_os: str = "debian") -> "InstallConfig":

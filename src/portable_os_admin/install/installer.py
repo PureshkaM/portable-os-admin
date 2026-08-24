@@ -498,6 +498,14 @@ class OSInstaller:
             run(["mkdir", "-p", target.rsplit("/", 1)[0]])
             self._write_file(target, content, plan, dry_run, confirm_device)
 
+        # Scripts and units, which carry a mode of their own. Written 0644 they
+        # would be present, correct and inert -- the kiosk whitelist would
+        # never be applied and the update service would never start.
+        for relative, (content, mode) in backend.scripted_files(config, layout).items():
+            target = f"{layout.mount_root}/{relative}"
+            run(["mkdir", "-p", target.rsplit("/", 1)[0]])
+            self._write_file(target, content, plan, dry_run, confirm_device, mode=mode)
+
         # The key file crypttab uses to open the log and exchange volumes at
         # boot. It sits on the encrypted root, so it is only reachable once the
         # root itself has been unlocked with the user's passphrase; 0400 and
@@ -533,6 +541,26 @@ class OSInstaller:
         boot_pkg_cmd = backend.package_install_command(layout.mount_root, backend.boot_packages(config))
         if boot_pkg_cmd is not None:
             run(boot_pkg_cmd, timeout=BOOTSTRAP_TIMEOUT)
+
+        # A step of its own, and named as a long one, because it is: X, its
+        # driver metapackages and MATE are several hundred megabytes on top of
+        # the base system. Folded into the account/services step below it would
+        # be tens of minutes during which the interface names the wrong thing.
+        desktop_packages = backend.desktop_packages(config)
+        if desktop_packages:
+            self._progress.step("Установка графического окружения — долгий шаг")
+            desktop_cmd = backend.package_install_command(layout.mount_root, desktop_packages)
+            if desktop_cmd is not None:
+                run(desktop_cmd, timeout=BOOTSTRAP_TIMEOUT)
+            # firejail is an extra layer, not a requirement: it is present in
+            # the RED OS image and absent from the Debian DVD. Installed by a
+            # command that is allowed to fail, so asking for the sandbox on an
+            # image that has no such package costs a line in the log rather
+            # than an install that dies with the medium half-written.
+            if config.kiosk.firejail:
+                optional = backend.optional_package_command(layout.mount_root, ["firejail"])
+                if optional is not None:
+                    run(optional, timeout=BOOTSTRAP_TIMEOUT)
 
         self._progress.step("Создание учётной записи и служб")
         for argv in backend.chroot_setup_commands(layout.mount_root, config):
