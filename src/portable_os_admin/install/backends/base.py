@@ -154,12 +154,22 @@ class InstallBackend(ABC):
     #: one distribution and quietly wrong for the next.
     image_core_packages: tuple[str, ...] = ()
 
+    #: Architecture the medium is being built for, in this family's spelling.
+    #: Needed by a package manager that runs on the *host* and installs into a
+    #: root of another architecture.
+    install_arch: str = ""
+
     def bind_install_source(
-        self, source_url: str, release: str, core_packages: tuple[str, ...] = ()
+        self,
+        source_url: str,
+        release: str,
+        core_packages: tuple[str, ...] = (),
+        arch: str = "",
     ) -> None:
         self.install_source_url = source_url
         self.install_release = release
         self.image_core_packages = core_packages
+        self.install_arch = arch
 
     #: Where this family keeps the package sources this program writes.
     #: Debian has one file; the RHEL family has a directory of them, so a

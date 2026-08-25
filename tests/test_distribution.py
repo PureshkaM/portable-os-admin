@@ -334,3 +334,33 @@ def test_redos_does_not_ask_dnf_to_resolve_a_group():
     # The leaves that pull a working base system in behind them.
     for package in ("basesystem", "systemd", "bash", "coreutils", "redos-release"):
         assert package in argv
+
+
+def test_redos_installs_every_package_for_the_target_architecture():
+    """Regression: --forcearch was on the bootstrap and nowhere else.
+
+    dnf runs on the host and installs into a root of another architecture, so
+    without it every package after the base system is refused with "does not
+    have a compatible architecture" -- which the first RED OS build hit
+    immediately after successfully unpacking a base system made of those very
+    packages.
+    """
+    from portable_os_admin.install.backends import get_backend
+
+    backend = get_backend("redos")
+    config = InstallConfig.create_default("stick", "redos")
+    config.arch = "x86_64"
+
+    bootstrap = backend.bootstrap_command("/mnt/root", config, "file:///mnt/image", "8.0")
+    assert "--forcearch" in bootstrap
+
+    backend.bind_install_source("file:///mnt/image", "8.0", (), "x86_64")
+    install = backend.package_install_command("/mnt/root", ["kernel"])
+    assert "--forcearch" in install
+    assert "x86_64" in install
+
+    # A native build passes no --forcearch at all, rather than one that says
+    # "the architecture you already are".
+    backend.bind_install_source("file:///mnt/image", "8.0", (), "")
+    native = backend.package_install_command("/mnt/root", ["kernel"])
+    assert "--forcearch" not in native

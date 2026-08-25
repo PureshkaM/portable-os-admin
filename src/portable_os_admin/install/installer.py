@@ -188,7 +188,10 @@ class OSInstaller:
             release, source_url = self._prepare_source(image, image_path, config, backend, dry_run=dry_run)
             # Every later package command draws from this same repository, not
             # from whatever the administrator's own machine has configured.
-            backend.bind_install_source(source_url, release, self._source_core_packages)
+            backend.bind_install_source(
+                source_url, release, self._source_core_packages,
+                backend.normalize_arch(config.arch),
+            )
             recovery_code, recovery_salt, service_key = self._install(
                 device, config, backend, layout, media_id, user_passphrase, plan, state,
                 image_url=source_url, release=release, dry_run=dry_run, confirm_device=confirm_device,
@@ -286,7 +289,10 @@ class OSInstaller:
 
         try:
             release, source_url = self._prepare_source(image, image_path, config, backend, dry_run=dry_run)
-            backend.bind_install_source(source_url, release, self._source_core_packages)
+            backend.bind_install_source(
+                source_url, release, self._source_core_packages,
+                backend.normalize_arch(config.arch),
+            )
             metadata = self._build_root(
                 config, backend, root, destination, plan, state,
                 image_url=source_url, release=release, dry_run=dry_run,

@@ -371,6 +371,14 @@ class RedOSInstallBackend(InstallBackend):
         # and --repo already disables everything it does not name. This one
         # would have broken *every* package install, not just the bootstrap.
         arguments = [f"--repofrompath=poa-image,{self.install_source_url}", "--repo=poa-image"]
+        if self.install_arch:
+            # The same --forcearch the bootstrap uses, and for the same reason:
+            # dnf runs on the *host* and installs into a root of another
+            # architecture. Without it every package after the base system is
+            # refused with "does not have a compatible architecture" -- which
+            # is what the first RED OS build hit immediately after successfully
+            # unpacking a base system made of those very packages.
+            arguments += ["--forcearch", self.install_arch]
         if self.install_source_url.startswith("file:"):
             # The image is not signed; the trust anchor is the file itself.
             arguments.append("--nogpgcheck")
