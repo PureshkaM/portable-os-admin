@@ -792,3 +792,68 @@ def test_firmware_does_not_rebuild_the_initramfs_once_per_package():
     # ...and the deferred triggers are run once, at the end.
     assert "--triggers-only --pending" in script
     assert script.index("--no-triggers") < script.index("--triggers-only")
+
+
+def test_firmware_step_repairs_what_dpkg_could_not_resolve():
+    """Regression: one half-installed package blocked every later apt command.
+
+    `dpkg -i` installs without satisfying dependencies. `intel-microcode` ships
+    in the image's /firmware directory and depends on `iucode-tool`, which does
+    not -- so it stayed half-installed and the install died two steps later,
+    105 minutes in, with "Unmet dependencies" while installing the kiosk's own
+    applications. The dependency is in the image's index, so apt can fetch it.
+    """
+    script = get_backend("debian").firmware_install_command("/mnt/t", "/mnt/img")[-1]
+
+    assert "--fix-broken install" in script
+    # After the packages, not before them.
+    assert script.index("--no-triggers") < script.index("--fix-broken")
+    # And it reports what is still broken rather than leaving it to be found
+    # two steps later.
+    assert "осталось ненастроенных" in script
+
+
+# ----------------------------------------------------------------------
+# Cleanup
+# ----------------------------------------------------------------------
+def test_the_package_cache_is_not_carried_on_the_medium():
+    """It is dead weight: those .deb files will never be read again.
+
+    Measured mid-install on a real run: 144 files and 48 MB before the desktop
+    was even installed. The apt lists go too -- they index the installation
+    image, which does not exist once the stick is unplugged.
+    """
+    script = get_backend("debian").package_cleanup_command("/mnt/t")[-1]
+
+    assert "apt-get clean" in script
+    assert "/var/lib/apt/lists" in script
+
+    redos = get_backend("redos").package_cleanup_command("/mnt/t")
+    assert "clean" in redos and "all" in redos
+
+
+def test_a_console_system_is_cleaned_up_too():
+    """Nothing about this depends on the kiosk profile."""
+    assert get_backend("debian").package_cleanup_command("/mnt/t") is not None
+
+
+def test_the_image_mount_point_is_removed_after_unmounting(tmp_path):
+    """Regression: one empty directory left behind per install.
+
+    `mount()` always creates the directory, but `unmount()` only removed it
+    when the *path* had been chosen by the object. Nine stale
+    /mnt/poa-image-<id> directories had accumulated on the test machine.
+    """
+    from portable_os_admin.install.image_source import MountedImage
+
+    mountpoint = tmp_path / "poa-image-test"
+    image = MountedImage(str(tmp_path / "fake.iso"), mountpoint=str(mountpoint))
+
+    # Pretend the mount succeeded: this test is about the bookkeeping, not
+    # about loop devices, which need root.
+    mountpoint.mkdir()
+    image._created_mountpoint = True
+    image._mounted = True
+    image.unmount()
+
+    assert not mountpoint.exists(), "точка монтирования образа осталась после размонтирования"

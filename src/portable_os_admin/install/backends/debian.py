@@ -336,6 +336,22 @@ class DebianInstallBackend(InstallBackend):
     def package_refresh_command(self, mount_root: str) -> list[str]:
         return self.chroot(mount_root, "apt-get", "update")
 
+    def package_cleanup_command(self, mount_root: str) -> list[str] | None:
+        """Empties the download cache and the package index off the medium.
+
+        `apt-get clean` removes the .deb files; the lists under
+        /var/lib/apt/lists are the index of a repository that no longer exists
+        for this medium anyway -- it was the installation image, mounted on the
+        administrator's machine and gone once the stick is unplugged. Keeping
+        either only costs space on the medium.
+        """
+        script = (
+            "apt-get clean >/dev/null 2>&1 || true; "
+            "rm -rf /var/lib/apt/lists/* >/dev/null 2>&1 || true; "
+            "exit 0"
+        )
+        return self.chroot(mount_root, "sh", "-c", script)
+
     def firmware_install_command(self, mount_root: str, image_mountpoint: str) -> list[str] | None:
         """Installs the non-free device firmware carried on the Debian image.
 
@@ -385,7 +401,24 @@ class DebianInstallBackend(InstallBackend):
             'done; '
             # Once, after all of them -- not once per package.
             'dpkg --triggers-only --pending >/dev/null 2>&1 || true; '
-            'echo "poa: прошивки — установлено $installed, пропущено $skipped, с ошибкой $failed"; '
+            # And then let apt resolve what dpkg could not.
+            #
+            # `dpkg -i` installs a package without satisfying its dependencies,
+            # leaving it half-installed -- and a single half-installed package
+            # makes every later apt command refuse to run with "Unmet
+            # dependencies". Found the hard way: `intel-microcode` ships in the
+            # image's /firmware directory and depends on `iucode-tool`, which
+            # does *not*, so the install died two steps later, 105 minutes in,
+            # while installing the kiosk's own applications.
+            #
+            # The dependency is available -- it is in the image's package index,
+            # just not in that directory -- so apt fetches it from the
+            # repository the install is already using.
+            'env DEBIAN_FRONTEND=noninteractive apt-get -y --fix-broken install '
+            '>/dev/null 2>&1 || true; '
+            'broken=$(dpkg -l | awk \'$1 !~ /^ii/ && $1 ~ /^[a-z]/\' | wc -l); '
+            'echo "poa: прошивки — установлено $installed, пропущено $skipped, '
+            'с ошибкой $failed, осталось ненастроенных $broken"; '
             'exit 0'
         )
         return self.chroot(mount_root, "sh", "-c", script)

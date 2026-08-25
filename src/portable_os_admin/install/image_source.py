@@ -93,6 +93,12 @@ class MountedImage:
     def mount(self) -> None:
         if self._mounted:
             return
+        # Remember whether this call is what brought the directory into
+        # existence, so unmount() can take it away again. The constructor's
+        # `_own_mountpoint` only says whether the *path* was chosen here, which
+        # is a different question -- and getting the two confused left a stale
+        # /mnt/poa-image-<id> behind after every single install.
+        self._created_mountpoint = not os.path.isdir(self.mountpoint)
         os.makedirs(self.mountpoint, exist_ok=True)
         proc = subprocess.run(
             resolve_argv(["mount", "-o", "loop,ro,nodev,nosuid", self.path, self.mountpoint]),
@@ -110,14 +116,28 @@ class MountedImage:
     def unmount(self) -> None:
         if not self._mounted:
             return
-        subprocess.run(
-            resolve_argv(["umount", "-l", self.mountpoint]), capture_output=True, timeout=60, check=False
+        # A plain umount first, and only then the lazy one. `umount -l` detaches
+        # the tree and finishes the work later, so the rmdir below could run
+        # while the mount was still going away and fail with EBUSY -- which is
+        # how empty mount points accumulated one per install.
+        proc = subprocess.run(
+            resolve_argv(["umount", self.mountpoint]), capture_output=True, timeout=60, check=False
         )
+        if proc.returncode != 0:
+            subprocess.run(
+                resolve_argv(["umount", "-l", self.mountpoint]),
+                capture_output=True,
+                timeout=60,
+                check=False,
+            )
         self._mounted = False
-        if self._own_mountpoint:
+        if self._own_mountpoint or getattr(self, "_created_mountpoint", False):
             try:
                 os.rmdir(self.mountpoint)
             except OSError:
+                # Still busy, or not empty: leave it rather than fight. The
+                # medium is finished either way, and an orphaned empty
+                # directory is reported by the "Проверить состояние" check.
                 pass
 
 

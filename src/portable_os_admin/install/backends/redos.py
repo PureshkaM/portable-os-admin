@@ -141,6 +141,14 @@ class RedOSInstallBackend(InstallBackend):
     # ------------------------------------------------------------------
     # Unattended updates, run on the medium itself
     # ------------------------------------------------------------------
+    def package_cleanup_command(self, mount_root: str) -> list[str] | None:
+        """Empties dnf's caches off the medium.
+
+        `--installroot` rather than a chroot, to match how every other dnf call
+        in this backend addresses the target.
+        """
+        return ["dnf", "--installroot", mount_root, "-y", "clean", "all"]
+
     def update_refresh_command(self) -> list[str]:
         return ["dnf", "-y", "makecache"]
 

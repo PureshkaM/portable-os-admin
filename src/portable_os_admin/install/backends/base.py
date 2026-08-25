@@ -225,6 +225,18 @@ class InstallBackend(ABC):
         """
         return []
 
+    def package_cleanup_command(self, mount_root: str) -> list[str] | None:
+        """Frees the space the package manager used while building the medium.
+
+        Every package downloaded during the install stays in the target's cache
+        afterwards -- measured mid-install on this project's own run: 144 files
+        and 48 MB before the desktop was even installed, and the desktop and
+        firmware are an order of magnitude larger. On a medium whose whole
+        point is being small and portable, that is space taken from the user
+        for files that will never be read again.
+        """
+        return None
+
     def firmware_install_command(self, mount_root: str, image_mountpoint: str) -> list[str] | None:
         """Installs device firmware carried by the image but absent from its index.
 
