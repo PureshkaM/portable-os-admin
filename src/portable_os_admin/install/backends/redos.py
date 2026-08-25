@@ -60,6 +60,39 @@ class RedOSInstallBackend(InstallBackend):
     #: RHEL-family EFI package suffixes, which do not match the arch name
     EFI_SUFFIX = {"x86_64": "x64", "aarch64": "aa64"}
 
+    #: The base system, named package by package instead of as the `@core`
+    #: comps group.
+    #:
+    #: `@core` is a real group in the image's comps.xml and reads correctly --
+    #: but resolving it makes dnf **segfault** on this project's build host
+    #: (Debian trixie, python3-dnf, arm64). Reproduced down to the cause:
+    #: installing a single package from the same repository works, `repoquery`
+    #: against it works, and dropping `--forcearch` changes nothing -- only the
+    #: group does it, and it dies right after the metadata is read.
+    #:
+    #: Nothing here can fix a crash in dnf's group handling, so the group is
+    #: not used. Everything below is a leaf that pulls the rest in by
+    #: dependency: measured, the list resolves to 221 packages -- a working
+    #: base system.
+    CORE_PACKAGES = (
+        "basesystem",
+        "filesystem",
+        "setup",
+        "redos-release",
+        "bash",
+        "coreutils",
+        "systemd",
+        "rpm",
+        "dnf",
+        "shadow-utils",
+        "passwd",
+        "util-linux",
+        "iproute",
+        "NetworkManager",
+        "sudo",
+        "kbd",
+    )
+
     #: Checked name by name against redos-8's own repodata, not recalled. The
     #: distribution's `mate-desktop` comps group is deliberately not used: it
     #: lists 103 packages including mate-terminal, mate-control-center,
@@ -202,20 +235,40 @@ class RedOSInstallBackend(InstallBackend):
         self, mount_root: str, config: InstallConfig, source_url: str, release: str
     ) -> list[str]:
         # The mounted image carries repodata/, so dnf reads it as a repository
-        # directly. --disablerepo='*' keeps it from reaching for the host's own
-        # configured repositories, which on an isolated network do not answer.
+        # directly.
+        #
+        # `--repo=poa-image` already restricts the transaction to that one
+        # repository -- it enables what it names and disables everything else.
+        # Passing `--disablerepo=*` alongside it is not merely redundant, dnf
+        # refuses the combination outright:
+        #
+        #     argument --repo/--repoid: not allowed with argument --disablerepo
+        #
+        # Which is what the first real RED OS run died on, immediately. The
+        # backend had never been executed before that point, so nothing had
+        # ever put these two flags in front of dnf together.
         return [
             "dnf",
             "--installroot", mount_root,
             "--releasever", release,
             "-y",
-            "--disablerepo=*",
             f"--repofrompath=poa-image,{source_url}",
             "--repo=poa-image",
             "--nogpgcheck",
             "--forcearch", self.normalize_arch(config.arch),
-            "install", "@core",
+            "install", *self.core_package_names(),
         ]
+
+    def core_package_names(self) -> tuple[str, ...]:
+        """The base system: from the image where possible, from here otherwise.
+
+        The image's own comps.xml is the authority -- it is what that release
+        of that distribution says its base system is. Falling back to the list
+        below only matters for an image with no comps or one this program
+        could not parse, and even then a working system is likelier than a
+        refusal.
+        """
+        return self.image_core_packages or self.CORE_PACKAGES
 
     def recovery_boot_files(self, layout, config) -> dict:
         """dracut integration for the recovery module.
@@ -314,7 +367,10 @@ class RedOSInstallBackend(InstallBackend):
         """
         if not self.install_source_url:
             return []
-        arguments = ["--disablerepo=*", f"--repofrompath=poa-image,{self.install_source_url}", "--repo=poa-image"]
+        # No --disablerepo here either: dnf rejects it together with --repo,
+        # and --repo already disables everything it does not name. This one
+        # would have broken *every* package install, not just the bootstrap.
+        arguments = [f"--repofrompath=poa-image,{self.install_source_url}", "--repo=poa-image"]
         if self.install_source_url.startswith("file:"):
             # The image is not signed; the trust anchor is the file itself.
             arguments.append("--nogpgcheck")

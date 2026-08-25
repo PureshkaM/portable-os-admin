@@ -164,7 +164,13 @@ def test_redos_package_installs_use_the_image_not_the_host_repositories():
 
     argv = backend.package_install_command("/mnt/poa", ["kernel"])
     assert "--repofrompath=poa-image,file:///mnt/poa-image-x" in argv
-    assert "--disablerepo=*" in argv
+    # `--repo` names the only repository to use, which is what restricts the
+    # transaction to the image. `--disablerepo=*` used to be here as well and
+    # had to go: dnf refuses the two together ("argument --repo/--repoid: not
+    # allowed with argument --disablerepo"), which is what the first real
+    # RED OS run died on.
+    assert "--repo=poa-image" in argv
+    assert not any(a.startswith("--disablerepo") for a in argv)
     # an image carries no signature; the trust anchor is the file itself
     assert "--nogpgcheck" in argv
     assert "--releasever" in argv

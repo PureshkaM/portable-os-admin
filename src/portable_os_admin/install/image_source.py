@@ -48,6 +48,10 @@ class ImageInfo:
     architectures: tuple[str, ...]
     #: Human-readable name, taken from the image itself rather than the filename.
     label: str
+    #: Packages of the image's own base group, read from its comps.xml. Empty
+    #: for families that do not use comps, or when it could not be read -- the
+    #: backend then falls back to its own list.
+    core_packages: tuple[str, ...] = ()
     #: Repository components the image publishes ("main", "contrib", ...),
     #: read from its own Release file. Needed to point the target's package
     #: manager at the image, and read rather than assumed because an image may
@@ -318,6 +322,7 @@ def _inspect_redhat(path: str, mountpoint: str) -> ImageInfo | None:
         family=family,
         release=release,
         architectures=(arch,) if arch else (),
+        core_packages=_redhat_core_packages(mountpoint),
         label=name or _disk_info(mountpoint) or f"RedOS {release}".strip(),
         complete=complete,
         incomplete_reason=(
@@ -327,6 +332,56 @@ def _inspect_redhat(path: str, mountpoint: str) -> ImageInfo | None:
             "похоже на загрузочный образ сетевой установки, нужен полный установочный образ"
         ),
     )
+
+
+def _redhat_core_packages(mountpoint: str) -> tuple[str, ...]:
+    """Packages of the image's own `core` group, read from its comps.xml.
+
+    Read from the image rather than written down here, for the same reason the
+    release and the architecture are: a list of package names built into this
+    program would be a list that is right for one version of one distribution
+    and quietly wrong for the next. RED OS names its base package
+    `redos-release`, but nothing guarantees that stays true, and a wrong name
+    fails the whole install.
+
+    The group is *read* and its members passed to dnf individually, rather than
+    dnf being asked to resolve `@core` itself -- that segfaults on this
+    project's build host. So this is not an optimisation: it is the only way
+    the group can be used at all.
+
+    Returns an empty tuple when the image has no comps or it cannot be parsed;
+    the backend then falls back to its own list, which is better than failing.
+    """
+    repodata = os.path.join(mountpoint, "repodata")
+    if not os.path.isdir(repodata):
+        return ()
+    candidates = [
+        os.path.join(repodata, name)
+        for name in sorted(os.listdir(repodata))
+        # Uncompressed only: the gzipped copy holds the same content, and
+        # decompressing it here would add a dependency for nothing.
+        if "comps" in name and name.endswith(".xml")
+    ]
+    for candidate in candidates:
+        try:
+            with open(candidate, encoding="utf-8", errors="replace") as handle:
+                text = handle.read()
+        except OSError:
+            continue
+        match = re.search(
+            r"<group>(?:(?!</group>).)*?<id>core</id>(?:(?!</group>).)*?</group>", text, re.S
+        )
+        if not match:
+            continue
+        packages = re.findall(r"<packagereq[^>]*>([^<]+)</packagereq>", match.group(0))
+        # Deduplicated but order-preserving: the same name can appear as both
+        # mandatory and default.
+        seen: dict[str, None] = {}
+        for package in packages:
+            seen.setdefault(package.strip(), None)
+        if seen:
+            return tuple(seen)
+    return ()
 
 
 def _repodata_has_packages(mountpoint: str) -> bool:

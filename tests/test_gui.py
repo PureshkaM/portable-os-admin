@@ -740,3 +740,25 @@ def test_final_step_lists_what_the_administrator_changed(gui_app, tmp_path):
     assert changes["Разрешённые приложения"] == ("(пусто)", "mate-calc")
     assert changes["Съёмные носители"] == ("нет", "да")
     assert changes["Архитектура носителя"] == ("(пусто)", "amd64")
+
+
+def test_building_a_distribution_is_reachable_and_asks_for_no_medium(gui_app, tmp_path):
+    """The two halves are separate screens, not modes of one.
+
+    Building erases nothing and needs no device, so the screen must not ask
+    for one -- no device step, no confirmation, no passphrase. That absence is
+    the point: it is what makes this operation safe to run at any time.
+    """
+    from portable_os_admin.gui.screens.build_wizard import BuildWizardFrame
+
+    app = gui_app
+    _open_container(app, tmp_path)
+    app.show_frame(BuildWizardFrame)
+    app.update()
+    wizard = app._current_frame
+
+    assert isinstance(wizard, BuildWizardFrame)
+    titles = " ".join(wizard.step_titles).lower()
+    for medium_word in ("носитель", "пароль", "подтверждение"):
+        assert medium_word not in titles, f"в сборке дистрибутива спрашивается «{medium_word}»"
+    assert "образ" in titles

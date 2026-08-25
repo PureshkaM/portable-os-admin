@@ -35,6 +35,10 @@ class DashboardFrame(ttk.Frame):
             actions, text="Установка ОС", style="Accent.TButton", command=self._open_install
         ).pack(side="left")
         for text, command in (
+            # Building a distribution comes before installing in the list
+            # because it comes before it in the work: one build, then a medium
+            # per person.
+            ("Собрать дистрибутив", self._open_build),
             ("Конфигурации", self._open_configs),
             ("Журналы", self._open_logs),
             ("Обмен", self._open_exchange),
@@ -126,6 +130,11 @@ class DashboardFrame(ttk.Frame):
             self.message_bar.error("Освободить удалось не всё:\n" + remaining.describe())
         else:
             self.message_bar.success("Всё освобождено, носитель можно извлекать или размечать заново.")
+
+    def _open_build(self) -> None:
+        from .build_wizard import BuildWizardFrame
+
+        self.app.show_frame(BuildWizardFrame)
 
     def _open_configs(self) -> None:
         from .configs_list import ConfigsListFrame

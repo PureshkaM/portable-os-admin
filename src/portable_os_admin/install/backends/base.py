@@ -148,9 +148,18 @@ class InstallBackend(ABC):
     install_source_url: str = ""
     install_release: str = ""
 
-    def bind_install_source(self, source_url: str, release: str) -> None:
+    #: Base-system packages read from the image itself, when the family's
+    #: images carry such a list. Preferred over anything written into this
+    #: program: a list of package names here would be right for one version of
+    #: one distribution and quietly wrong for the next.
+    image_core_packages: tuple[str, ...] = ()
+
+    def bind_install_source(
+        self, source_url: str, release: str, core_packages: tuple[str, ...] = ()
+    ) -> None:
         self.install_source_url = source_url
         self.install_release = release
+        self.image_core_packages = core_packages
 
     #: Where this family keeps the package sources this program writes.
     #: Debian has one file; the RHEL family has a directory of them, so a

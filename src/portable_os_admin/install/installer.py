@@ -32,6 +32,7 @@ from .backends.base import (
     SERVICE_KEY_PATH,
 )
 from .command_runner import BOOTSTRAP_TIMEOUT, CommandPlan, CommandResult, CommandRunner
+from . import distribution
 from .devices import BlockDevice, check_install_eligible
 from .disk import DiskManager, MediaLayout, build_media_layout, plan_partitions
 from .image_source import MountedImage, inspect_mounted
@@ -75,6 +76,20 @@ class InstallResult:
     #: Things that went right but the operator still has to know about --
     #: currently a medium built under emulation, which has to be tried on a
     #: machine of the target architecture before it is handed to anyone.
+    warnings: tuple[str, ...] = ()
+
+
+@dataclass
+class DistributionResult:
+    """What building a distribution produced.
+
+    The archive and its metadata live in `directory`; `metadata.sha256` is the
+    digest an administrator can verify with `sha256sum -c` before deploying.
+    """
+
+    directory: str
+    metadata: "distribution.DistributionMetadata"
+    plan: CommandPlan
     warnings: tuple[str, ...] = ()
 
 
@@ -146,6 +161,7 @@ class OSInstaller:
 
         backend = get_backend(config.target_os)
         self._source_components: tuple[str, ...] = ("main",)
+        self._source_core_packages: tuple[str, ...] = ()
         warnings = self._check_arch(backend, config)
         if not dry_run:
             check_tools_available(backend.required_tools())
@@ -172,7 +188,7 @@ class OSInstaller:
             release, source_url = self._prepare_source(image, image_path, config, backend, dry_run=dry_run)
             # Every later package command draws from this same repository, not
             # from whatever the administrator's own machine has configured.
-            backend.bind_install_source(source_url, release)
+            backend.bind_install_source(source_url, release, self._source_core_packages)
             recovery_code, recovery_salt, service_key = self._install(
                 device, config, backend, layout, media_id, user_passphrase, plan, state,
                 image_url=source_url, release=release, dry_run=dry_run, confirm_device=confirm_device,
@@ -221,6 +237,458 @@ class OSInstaller:
             plan=plan,
             warnings=warnings,
         )
+
+    # ------------------------------------------------------------------
+    # Building a distribution once, deploying it many times
+    # ------------------------------------------------------------------
+    def build_distribution(
+        self,
+        config: InstallConfig,
+        destination: str,
+        *,
+        image_path: str = "",
+        dry_run: bool = True,
+        on_step: "Callable[[int, int, str], None] | None" = None,
+    ) -> "DistributionResult":
+        """Builds the system once, into an archive, without touching a medium.
+
+        This is the long half of the work -- unpacking packages and running
+        their configuration scripts -- and it is exactly the half that does not
+        differ between ten identical sticks. Doing it here, into a directory on
+        the administrator's own disk, means it is done once and it is fast:
+        the medium is USB flash behind dm-crypt, and this is not.
+
+        Nothing is erased and no device is opened, so this operation is safe to
+        run at any time. What it produces is a build artefact: it holds no
+        keys, no passphrase and no recovery data -- see distribution.py.
+        """
+        self.session.require_open()
+        self._progress = _Progress(on_step, expected=_Progress.BUILD_STAGES)
+
+        if config.validation_status != "valid":
+            raise ConfigValidationError(
+                ["сборка запрещена: файл конфигурации не прошёл проверку"]
+            )
+
+        backend = get_backend(config.target_os)
+        self._source_components = ("main",)
+        self._source_core_packages = ()
+        warnings = self._check_arch(backend, config)
+        if not dry_run:
+            check_tools_available([*backend.required_tools(), "tar"])
+
+        build_id = crypto.new_media_id()
+        root = os.path.join(destination, f"rootfs-{build_id}")
+        plan = CommandPlan(device=root)
+        state = _TeardownState()
+        image = MountedImage(image_path, mountpoint=f"/mnt/poa-image-{build_id}")
+        state.image = image
+
+        try:
+            release, source_url = self._prepare_source(image, image_path, config, backend, dry_run=dry_run)
+            backend.bind_install_source(source_url, release, self._source_core_packages)
+            metadata = self._build_root(
+                config, backend, root, destination, plan, state,
+                image_url=source_url, release=release, dry_run=dry_run,
+                emulated=bool(warnings),
+            )
+        except Exception as exc:  # noqa: BLE001 - re-raised below
+            self._teardown_build(root, state, plan, dry_run=dry_run)
+            if isinstance(exc, InstallError):
+                raise
+            raise InstallError(f"сборка дистрибутива прервана: {exc}") from exc
+        else:
+            self._teardown_build(root, state, plan, dry_run=dry_run)
+
+        return DistributionResult(
+            directory=destination, metadata=metadata, plan=plan, warnings=warnings
+        )
+
+    def _build_root(
+        self,
+        config: InstallConfig,
+        backend,
+        root: str,
+        destination: str,
+        plan: CommandPlan,
+        state: "_TeardownState",
+        *,
+        image_url: str,
+        release: str,
+        dry_run: bool,
+        emulated: bool,
+    ) -> "distribution.DistributionMetadata":
+        # The runner refuses to act unless the caller names the target it means
+        # to write to -- the check that keeps an install from landing on the
+        # wrong disk. Here the target is the build directory, so that is what
+        # is confirmed: the guard stays in force rather than being bypassed.
+        confirm = root
+        run = lambda argv, **kw: self._run(argv, plan, dry_run, confirm, **kw)  # noqa: E731
+
+        self._progress.step("Подготовка каталога сборки")
+        run(["mkdir", "-p", root])
+
+        self._progress.step("Развёртывание базовой системы с образа — самый долгий шаг")
+        argv = backend.bootstrap_command(root, config, image_url, release)
+        run(argv, timeout=BOOTSTRAP_TIMEOUT)
+
+        # A bootstrapper that exits 0 having produced nothing is a real
+        # possibility -- dnf does exactly that when the transaction resolves to
+        # an empty set -- and the failure then surfaces two steps later as a
+        # missing /etc/resolv.conf, which says nothing about the cause. Checked
+        # here, while the command responsible is still the obvious suspect.
+        if not dry_run and not os.path.isdir(os.path.join(root, "etc")):
+            raise InstallError(
+                "развёртывание базовой системы завершилось без ошибки, но система не "
+                f"создана: в {root} нет каталога etc.\n"
+                f"Команда: {' '.join(argv)}\n"
+                "Обычно это значит, что репозиторий образа не содержит запрошенных "
+                "пакетов для выбранной архитектуры."
+            )
+
+        self._mount_pseudo_filesystems(root, state, plan, dry_run, confirm)
+        self._bind_image_into(root, image_url, state, plan, dry_run, confirm)
+        self._write_install_time_sources(root, backend, release, image_url, plan, dry_run, confirm)
+
+        temporary_paths = []
+        for relative, (content, mode) in backend.temporary_files().items():
+            target = f"{root}/{relative}"
+            run(["mkdir", "-p", target.rsplit("/", 1)[0]])
+            self._write_file(target, content, plan, dry_run, confirm, mode=mode)
+            temporary_paths.append(target)
+
+        self._install_packages_and_settings(
+            config, backend, root, image_url, plan, dry_run, confirm
+        )
+
+        # Package sources for the finished system, written now because the
+        # image is still mounted and a backend may read settings off it.
+        image_mountpoint = image_url[len("file://"):] if image_url.startswith("file://") else ""
+        sources = backend.sources_list(config, release, image_mountpoint)
+        if sources is not None:
+            target = f"{root}/{backend.sources_path}"
+            run(["mkdir", "-p", target.rsplit("/", 1)[0]])
+            self._write_file(target, sources, plan, dry_run, confirm)
+
+        if temporary_paths:
+            run(["rm", "-f", *temporary_paths])
+        cleanup = backend.package_cleanup_command(root)
+        if cleanup is not None:
+            try:
+                run(cleanup, timeout=BOOTSTRAP_TIMEOUT)
+            except Exception:  # noqa: BLE001 - a full cache is not a failure
+                pass
+
+        # Everything medium-specific comes out before the archive is made, so
+        # the artefact cannot carry a key or an identity. This is what makes
+        # ten media from one distribution ten systems rather than one.
+        self._progress.step("Удаление из образа всего, что уникально для носителя")
+        self._unmount_all(state, plan, dry_run, confirm)
+        for argv in distribution.sanitise_commands(root):
+            self._try(argv, plan, dry_run, confirm)
+
+        self._progress.step("Упаковка дистрибутива")
+        compressor, archive_name = _pick_compressor()
+        archive = os.path.join(destination, archive_name)
+        run(distribution.archive_command(root, archive, compressor=compressor), timeout=BOOTSTRAP_TIMEOUT)
+
+        rootfs_bytes = _directory_size(root) if not dry_run else 0
+        metadata = distribution.DistributionMetadata.for_config(
+            config,
+            release=release,
+            arch=backend.normalize_arch(config.arch),
+            rootfs_bytes=rootfs_bytes,
+            emulated=emulated,
+            archive=archive_name,
+        )
+
+        self._progress.step("Подсчёт контрольной суммы")
+        if not dry_run:
+            _, digest = distribution.write_checksum(archive)
+            metadata.sha256 = digest
+            distribution.write_metadata(destination, metadata)
+        return metadata
+
+    def deploy_distribution(
+        self,
+        device: BlockDevice,
+        directory: str,
+        user_passphrase: bytes,
+        *,
+        dry_run: bool = True,
+        confirm_device: str | None = None,
+        on_step: "Callable[[int, int, str], None] | None" = None,
+    ) -> InstallResult:
+        """Writes a built distribution onto one medium, with its own encryption.
+
+        The short half of the work, and the only half that has to be repeated
+        per stick. Everything unique to this medium is created here and now:
+        the LUKS master key, the passphrase, the recovery code and its salt,
+        the service key, the media id and the filesystem UUIDs.
+
+        The distribution is verified against its recorded checksum **before**
+        the medium is touched, so a damaged archive costs a message rather than
+        an erased stick and an hour of waiting.
+        """
+        self.session.require_open()
+        self._progress = _Progress(on_step, expected=_Progress.DEPLOY_STAGES)
+
+        self._progress.step("Проверка дистрибутива")
+        metadata = distribution.read_metadata(directory)
+        config = InstallConfig.from_dict(metadata.config)
+        backend = get_backend(config.target_os)
+        warnings = self._check_arch(backend, config)
+        if not dry_run:
+            check_tools_available([*backend.required_tools(), "tar"])
+            # Before anything is erased. This is the whole point of doing it
+            # here rather than discovering a truncated archive mid-unpack.
+            distribution.verify_archive(directory, metadata)
+
+        self.check_possible(device, config, require_unmounted=False)
+
+        media_id = crypto.new_media_id()
+        layout = build_media_layout(
+            plan_partitions(device.path, config.disk),
+            mapper_name=f"poa-{media_id}",
+            mount_root=f"/mnt/poa-install-{media_id}",
+        )
+        plan = CommandPlan(device=device.path)
+        state = _TeardownState()
+
+        try:
+            recovery_code, recovery_salt, service_key = self._deploy(
+                device, config, backend, layout, media_id, user_passphrase, plan, state,
+                directory=directory, metadata=metadata,
+                dry_run=dry_run, confirm_device=confirm_device,
+            )
+        except Exception as exc:  # noqa: BLE001 - re-raised below
+            self._teardown(layout, state, plan, dry_run=dry_run, confirm_device=confirm_device)
+            if isinstance(exc, InstallError):
+                raise
+            raise InstallError(f"установка прервана: {exc}") from exc
+        else:
+            self._teardown(layout, state, plan, dry_run=dry_run, confirm_device=confirm_device)
+
+        media_record = MediaRecord(
+            media_id=media_id,
+            luks_uuid=layout.luks_uuid,
+            label=device.model or device.path,
+            config_name=config.name,
+            target_os=config.target_os,
+            service_key_b64=base64.b64encode(service_key).decode("ascii"),
+            logs_luks_uuid=layout.logs_luks_uuid,
+            exchange_luks_uuid=layout.exchange_luks_uuid,
+        )
+        recovery_record = RecoveryRecord(
+            media_id=media_id,
+            slot=RECOVERY_KEYSLOT,
+            code=recovery_code,
+            salt_b64=base64.b64encode(recovery_salt).decode("ascii"),
+        )
+        self.session.container.add_media_record(media_record)
+        self.session.container.add_recovery_record(recovery_record)
+
+        return InstallResult(
+            media_record=media_record,
+            recovery_record=recovery_record,
+            plan=plan,
+            warnings=warnings,
+        )
+
+    def _deploy(
+        self, device, config, backend, layout, media_id, user_passphrase, plan, state,
+        *, directory, metadata, dry_run, confirm_device,
+    ) -> tuple[str, bytes, bytes]:
+        run = lambda argv, **kw: self._run(argv, plan, dry_run, confirm_device, **kw)  # noqa: E731
+
+        recovery_code, recovery_salt, service_key, boot_key = self._prepare_medium(
+            device, config, layout, user_passphrase, plan, state, dry_run, confirm_device
+        )
+
+        self._progress.step("Распаковка дистрибутива на носитель")
+        archive = distribution.archive_path(directory, metadata)
+        run(distribution.unpack_command(archive, layout.mount_root), timeout=BOOTSTRAP_TIMEOUT)
+
+        self._progress.step("Подключение служебных разделов")
+        self._mount_boot_partitions(layout, state, plan, dry_run, confirm_device)
+        self._mount_pseudo_filesystems(layout.mount_root, state, plan, dry_run, confirm_device)
+
+        self._progress.step("Настройка носителя")
+        self._write_medium_identity(
+            config, backend, layout, media_id, recovery_salt, boot_key, service_key,
+            plan, state, dry_run, confirm_device,
+        )
+
+        self._progress.step("Сборка initramfs с разблокировкой диска")
+        run(backend.initramfs_command(layout.mount_root), timeout=BOOTSTRAP_TIMEOUT)
+
+        self._progress.step("Установка загрузчика на носитель")
+        for argv in backend.bootloader_commands(layout, config):
+            run(argv, timeout=BOOTSTRAP_TIMEOUT)
+
+        self._progress.step("Запись модуля восстановления")
+        self._install_recovery_module(
+            layout, media_id, recovery_salt, plan, dry_run=dry_run, confirm_device=confirm_device
+        )
+
+        self._progress.step("Завершение записи и отключение носителя")
+        run(["sync"])
+        return recovery_code, recovery_salt, service_key
+
+    def _write_medium_identity(
+        self, config, backend, layout, media_id, recovery_salt, boot_key, service_key,
+        plan, state, dry_run, confirm_device,
+    ) -> None:
+        """Everything that makes this medium this medium and not another one."""
+        run = lambda argv, **kw: self._run(argv, plan, dry_run, confirm_device, **kw)  # noqa: E731
+
+        self._probe_uuids(layout, dry_run)
+        for relative, content in backend.config_files(config, layout).items():
+            target = f"{layout.mount_root}/{relative}"
+            run(["mkdir", "-p", target.rsplit("/", 1)[0]])
+            self._write_file(target, content, plan, dry_run, confirm_device)
+
+        run(["mkdir", "-p", f"{layout.mount_root}/{SERVICE_KEY_DIR}"])
+        self._write_file(
+            f"{layout.mount_root}/{SERVICE_KEY_PATH}", boot_key, plan, dry_run, confirm_device,
+            binary=True, mode=0o400,
+        )
+
+        run(["mkdir", "-p", f"{layout.mount_root}{EXCHANGE_MOUNTPOINT}"])
+        run(["mount", layout.exchange_mapper_path, f"{layout.mount_root}{EXCHANGE_MOUNTPOINT}"])
+        state.mounts.append(f"{layout.mount_root}{EXCHANGE_MOUNTPOINT}")
+        run(["chmod", "1777", f"{layout.mount_root}{EXCHANGE_MOUNTPOINT}"])
+
+        # Before the initramfs is built, never after: these are what the
+        # rebuild copies into the image.
+        self._install_recovery_boot(
+            backend, layout, config, media_id, recovery_salt, plan,
+            dry_run=dry_run, confirm_device=confirm_device,
+        )
+
+    def _mount_boot_partitions(self, layout, state, plan, dry_run, confirm_device) -> None:
+        run = lambda argv, **kw: self._run(argv, plan, dry_run, confirm_device, **kw)  # noqa: E731
+        run(["mkdir", "-p", f"{layout.mount_root}/boot"])
+        run(["mount", layout.boot_partition, f"{layout.mount_root}/boot"])
+        state.mounts.append(f"{layout.mount_root}/boot")
+        run(["mkdir", "-p", f"{layout.mount_root}/boot/efi"])
+        run(["mount", layout.esp_partition, f"{layout.mount_root}/boot/efi"])
+        state.mounts.append(f"{layout.mount_root}/boot/efi")
+
+    def _install_packages_and_settings(
+        self, config, backend, root, image_url, plan, dry_run, confirm_device
+    ) -> None:
+        """Kernel, bootloader tools, desktop, firmware, account and kiosk.
+
+        Shared by the one-shot install and the distribution build: it is the
+        part that is identical on every medium, which is precisely why it is
+        worth doing once.
+        """
+        run = lambda argv, **kw: self._run(argv, plan, dry_run, confirm_device, **kw)  # noqa: E731
+
+        refresh = backend.package_refresh_command(root)
+        if refresh is not None:
+            run(refresh, timeout=BOOTSTRAP_TIMEOUT)
+
+        self._progress.step("Установка ядра и загрузчика")
+        boot_pkg_cmd = backend.package_install_command(root, backend.boot_packages(config))
+        if boot_pkg_cmd is not None:
+            run(boot_pkg_cmd, timeout=BOOTSTRAP_TIMEOUT)
+
+        desktop_packages = backend.desktop_packages(config)
+        if desktop_packages:
+            self._progress.step("Установка графического окружения — долгий шаг")
+            desktop_cmd = backend.package_install_command(root, desktop_packages)
+            if desktop_cmd is not None:
+                run(desktop_cmd, timeout=BOOTSTRAP_TIMEOUT)
+            if config.kiosk.firejail:
+                optional = backend.optional_package_command(root, ["firejail"])
+                if optional is not None:
+                    run(optional, timeout=BOOTSTRAP_TIMEOUT)
+
+        image_dir = image_url[len("file://"):] if image_url.startswith("file://") else ""
+        firmware_cmd = backend.firmware_install_command(root, image_dir)
+        if firmware_cmd is not None:
+            self._progress.step("Установка прошивок устройств")
+            run(firmware_cmd, timeout=BOOTSTRAP_TIMEOUT)
+
+        self._progress.step("Создание учётной записи и служб")
+        for argv in backend.chroot_setup_commands(root, config):
+            run(argv, timeout=BOOTSTRAP_TIMEOUT)
+
+    def _mount_pseudo_filesystems(self, root, state, plan, dry_run, confirm_device) -> None:
+        """/proc, /sys, /dev inside the target.
+
+        Without them apt and the initramfs tools fail in obscure ways. /run is
+        deliberately not bound: it would expose this machine's systemd and dbus
+        sockets to the chroot.
+        """
+        run = lambda argv, **kw: self._run(argv, plan, dry_run, confirm_device, **kw)  # noqa: E731
+        for target, argv in (
+            (f"{root}/proc", ["mount", "-t", "proc", "proc", f"{root}/proc"]),
+            (f"{root}/sys", ["mount", "-t", "sysfs", "sys", f"{root}/sys"]),
+            (f"{root}/dev", ["mount", "--bind", "/dev", f"{root}/dev"]),
+            (f"{root}/dev/pts", ["mount", "--bind", "/dev/pts", f"{root}/dev/pts"]),
+        ):
+            run(["mkdir", "-p", target])
+            run(argv)
+            state.mounts.append(target)
+
+    def _bind_image_into(self, root, image_url, state, plan, dry_run, confirm_device) -> None:
+        """Makes the image visible inside the chroot at the same path.
+
+        debootstrap writes the target's sources.list pointing at
+        file:///mnt/poa-image-<id>, a path that exists only out here.
+        """
+        if not image_url.startswith("file://"):
+            return
+        run = lambda argv, **kw: self._run(argv, plan, dry_run, confirm_device, **kw)  # noqa: E731
+        inside = image_url[len("file://"):]
+        target = f"{root}{inside}"
+        run(["mkdir", "-p", target])
+        run(["mount", "--bind", inside, target])
+        state.mounts.append(target)
+
+    def _write_install_time_sources(
+        self, root, backend, release, image_url, plan, dry_run, confirm_device
+    ) -> None:
+        run = lambda argv, **kw: self._run(argv, plan, dry_run, confirm_device, **kw)  # noqa: E731
+        sources = backend.install_time_sources(release, image_url, self._source_components)
+        if sources is not None:
+            relative, content = sources
+            target = f"{root}/{relative}"
+            run(["mkdir", "-p", target.rsplit("/", 1)[0]])
+            self._write_file(target, content, plan, dry_run, confirm_device)
+        # A freshly bootstrapped tree has no usable resolver configuration.
+        #
+        # Two things have to happen before it can be written, and both were
+        # learned from failures rather than guessed:
+        #
+        # `mkdir` because debootstrap always leaves /etc behind and dnf does
+        # not necessarily -- that difference should not decide whether this
+        # works.
+        #
+        # `rm -f` because on the RHEL family /etc/resolv.conf is a *symlink* to
+        # /run/systemd/resolve/stub-resolv.conf, which does not exist in a root
+        # nothing has booted yet. Opening it for writing follows the link and
+        # fails with "no such file or directory" -- pointing at /etc/resolv.conf
+        # while /etc is plainly there, which is as misleading as an error gets.
+        run(["mkdir", "-p", f"{root}/etc"])
+        run(["rm", "-f", f"{root}/etc/resolv.conf"])
+        self._write_file(f"{root}/etc/resolv.conf", _host_resolv_conf(), plan, dry_run, confirm_device)
+
+    def _unmount_all(self, state: "_TeardownState", plan, dry_run, confirm_device) -> None:
+        for mountpoint in reversed(state.mounts):
+            self._try(["umount", "-l", mountpoint], plan, dry_run, confirm_device)
+        state.mounts.clear()
+
+    def _teardown_build(self, root: str, state: "_TeardownState", plan, *, dry_run: bool) -> None:
+        self._unmount_all(state, plan, dry_run, root)
+        if state.image is not None:
+            state.image.unmount()
+            state.image = None
+        # The unpacked root is an intermediate: the distribution is the archive.
+        self._try(["rm", "-rf", root], plan, dry_run, root)
 
     # ------------------------------------------------------------------
     # The installation image
@@ -285,6 +753,9 @@ class OSInstaller:
         # Kept for the install-time sources written into the chroot further
         # down, which need the components the image actually publishes.
         self._source_components = info.components
+        # The image's own idea of what its base system is, preferred over any
+        # list written into this program -- see ImageInfo.core_packages.
+        self._source_core_packages = info.core_packages
         wanted_arch = backend.normalize_arch(config.arch)
         if info.architectures and wanted_arch not in info.architectures:
             raise InstallError(
@@ -314,125 +785,9 @@ class OSInstaller:
     ) -> tuple[str, bytes, bytes]:
         run = lambda argv, **kw: self._run(argv, plan, dry_run, confirm_device, **kw)  # noqa: E731
 
-        self._progress.step("Отключение носителя от системы")
-        self._unmount_medium(device, plan, dry_run, confirm_device)
-
-        self._progress.step("Очистка носителя и создание разделов")
-        # Set immediately before the first destructive command, not after: if
-        # partitioning itself fails halfway, the medium has still been written
-        # to and saying otherwise would be worse than saying nothing.
-        self.medium_modified = not dry_run
-        self.disk_manager.apply(
-            plan_partitions(device.path, config.disk),
-            dry_run=dry_run,
-            confirm_device=confirm_device,
-            command_plan=plan,
-            # Whatever the medium held before is erased signature by signature,
-            # not merely overwritten by a new partition table -- see
-            # DiskManager.commands_for.
-            existing_partitions=device.partition_paths,
+        recovery_code, recovery_salt, service_key, boot_key = self._prepare_medium(
+            device, config, layout, user_passphrase, plan, state, dry_run, confirm_device
         )
-
-        self._progress.step("Шифрование системного раздела (LUKS)")
-        self.luks_manager.format(
-            layout.system_partition,
-            user_passphrase,
-            cipher=config.luks.cipher,
-            key_size=config.luks.key_size_bits,
-            kdf=config.luks.kdf,
-            dry_run=dry_run,
-            confirm_device=confirm_device,
-            plan=plan,
-        )
-
-        self._progress.step("Создание ключа восстановления")
-        recovery_code = crypto.generate_recovery_code()
-        recovery_salt = crypto.new_salt()
-        recovery_passphrase = crypto.derive_recovery_passphrase(recovery_code, recovery_salt)
-        self.luks_manager.add_keyslot(
-            layout.system_partition,
-            user_passphrase,
-            recovery_passphrase,
-            slot=RECOVERY_KEYSLOT,
-            dry_run=dry_run,
-            confirm_device=confirm_device,
-            plan=plan,
-        )
-
-        self._progress.step("Открытие зашифрованного тома")
-        self.luks_manager.open(
-            layout.system_partition,
-            layout.mapper_name,
-            user_passphrase,
-            dry_run=dry_run,
-            confirm_device=confirm_device,
-            plan=plan,
-        )
-        state.mapper_opened = True
-
-        # The log and exchange volumes. Two keys, and the difference between
-        # them is the whole design:
-        #
-        #   boot_key    -- a key *file* placed on the encrypted root. The
-        #                  portable system opens both volumes with it at boot,
-        #                  so the user sees the exchange folder as an ordinary
-        #                  directory and never types a second passphrase. It is
-        #                  reachable only after the root itself was unlocked.
-        #   service_key -- kept in the administrator container and nowhere else.
-        #                  It lets the administrator read the logs and the
-        #                  exchange volume on their own machine without the
-        #                  user's LUKS passphrase.
-        #
-        # A stolen medium yields neither, so it is ciphertext to an outsider.
-        # It is deliberately not proof against the medium's own user, who holds
-        # the LUKS passphrase -- that was the chosen threat model, and claiming
-        # more would be false.
-        self._progress.step("Шифрование разделов журналов и обмена")
-        service_key = crypto.new_volume_key()
-        boot_key = crypto.new_volume_key()
-        for partition, mapper in (
-            (layout.logs_partition, layout.logs_mapper_name),
-            (layout.exchange_partition, layout.exchange_mapper_name),
-        ):
-            self.luks_manager.format(
-                partition,
-                boot_key,
-                cipher=config.luks.cipher,
-                key_size=config.luks.key_size_bits,
-                kdf=config.luks.kdf,
-                dry_run=dry_run,
-                confirm_device=confirm_device,
-                plan=plan,
-            )
-            self.luks_manager.add_keyslot(
-                partition,
-                boot_key,
-                service_key,
-                slot=ADMIN_KEYSLOT,
-                dry_run=dry_run,
-                confirm_device=confirm_device,
-                plan=plan,
-            )
-            self.luks_manager.open(
-                partition, mapper, boot_key, dry_run=dry_run, confirm_device=confirm_device, plan=plan
-            )
-            state.service_mappers.append(mapper)
-
-        # Filesystems. The root filesystem goes *inside* the opened LUKS
-        # mapping, which is the step whose absence made every earlier install
-        # write the target system into a directory on the admin host instead.
-        self._progress.step("Создание файловых систем")
-        run(["mkfs.ext4", "-F", "-L", "POA_ROOT", layout.mapper_path])
-        run(["mkfs.vfat", "-F", "32", "-n", "POA_ESP", layout.esp_partition])
-        run(["mkfs.ext4", "-F", "-L", "POA_BOOT", layout.boot_partition])
-        run(["mkfs.ext4", "-F", "-L", "POA_LOGS", layout.logs_mapper_path])
-        run(["mkfs.ext4", "-F", "-L", "POA_EXCHANGE", layout.exchange_mapper_path])
-
-        self._progress.step("Монтирование носителя")
-        # Mount the target tree, outermost first.
-        run(["mkdir", "-p", layout.mount_root])
-        run(["mount", layout.mapper_path, layout.mount_root])
-        state.mounts.append(layout.mount_root)
 
         self._progress.step("Развёртывание базовой системы с образа — самый долгий шаг")
         self._run_bootstrap(backend, config, layout, image_url, release, plan, dry_run, confirm_device)
@@ -653,6 +1008,143 @@ class OSInstaller:
         )
         run(["sync"])
         return recovery_code, recovery_salt, service_key
+
+
+    def _prepare_medium(
+        self, device, config, layout, user_passphrase, plan, state, dry_run, confirm_device
+    ) -> tuple[str, bytes, bytes, bytes]:
+        """Erases the medium and builds its encrypted, empty structure.
+
+        Shared by the one-shot install and by deploying a distribution,
+        because it is the part that must happen *per medium*: the LUKS
+        master key is generated here, and generating it here is what makes
+        two media from one distribution two systems rather than copies of
+        one. Returns the recovery code, its salt, the administrator's
+        service key and the contents of the boot key file.
+        """
+        run = lambda argv, **kw: self._run(argv, plan, dry_run, confirm_device, **kw)  # noqa: E731
+
+        self._progress.step("Отключение носителя от системы")
+        self._unmount_medium(device, plan, dry_run, confirm_device)
+
+        self._progress.step("Очистка носителя и создание разделов")
+        # Set immediately before the first destructive command, not after: if
+        # partitioning itself fails halfway, the medium has still been written
+        # to and saying otherwise would be worse than saying nothing.
+        self.medium_modified = not dry_run
+        self.disk_manager.apply(
+            plan_partitions(device.path, config.disk),
+            dry_run=dry_run,
+            confirm_device=confirm_device,
+            command_plan=plan,
+            # Whatever the medium held before is erased signature by signature,
+            # not merely overwritten by a new partition table -- see
+            # DiskManager.commands_for.
+            existing_partitions=device.partition_paths,
+        )
+
+        self._progress.step("Шифрование системного раздела (LUKS)")
+        self.luks_manager.format(
+            layout.system_partition,
+            user_passphrase,
+            cipher=config.luks.cipher,
+            key_size=config.luks.key_size_bits,
+            kdf=config.luks.kdf,
+            dry_run=dry_run,
+            confirm_device=confirm_device,
+            plan=plan,
+        )
+
+        self._progress.step("Создание ключа восстановления")
+        recovery_code = crypto.generate_recovery_code()
+        recovery_salt = crypto.new_salt()
+        recovery_passphrase = crypto.derive_recovery_passphrase(recovery_code, recovery_salt)
+        self.luks_manager.add_keyslot(
+            layout.system_partition,
+            user_passphrase,
+            recovery_passphrase,
+            slot=RECOVERY_KEYSLOT,
+            dry_run=dry_run,
+            confirm_device=confirm_device,
+            plan=plan,
+        )
+
+        self._progress.step("Открытие зашифрованного тома")
+        self.luks_manager.open(
+            layout.system_partition,
+            layout.mapper_name,
+            user_passphrase,
+            dry_run=dry_run,
+            confirm_device=confirm_device,
+            plan=plan,
+        )
+        state.mapper_opened = True
+
+        # The log and exchange volumes. Two keys, and the difference between
+        # them is the whole design:
+        #
+        #   boot_key    -- a key *file* placed on the encrypted root. The
+        #                  portable system opens both volumes with it at boot,
+        #                  so the user sees the exchange folder as an ordinary
+        #                  directory and never types a second passphrase. It is
+        #                  reachable only after the root itself was unlocked.
+        #   service_key -- kept in the administrator container and nowhere else.
+        #                  It lets the administrator read the logs and the
+        #                  exchange volume on their own machine without the
+        #                  user's LUKS passphrase.
+        #
+        # A stolen medium yields neither, so it is ciphertext to an outsider.
+        # It is deliberately not proof against the medium's own user, who holds
+        # the LUKS passphrase -- that was the chosen threat model, and claiming
+        # more would be false.
+        self._progress.step("Шифрование разделов журналов и обмена")
+        service_key = crypto.new_volume_key()
+        boot_key = crypto.new_volume_key()
+        for partition, mapper in (
+            (layout.logs_partition, layout.logs_mapper_name),
+            (layout.exchange_partition, layout.exchange_mapper_name),
+        ):
+            self.luks_manager.format(
+                partition,
+                boot_key,
+                cipher=config.luks.cipher,
+                key_size=config.luks.key_size_bits,
+                kdf=config.luks.kdf,
+                dry_run=dry_run,
+                confirm_device=confirm_device,
+                plan=plan,
+            )
+            self.luks_manager.add_keyslot(
+                partition,
+                boot_key,
+                service_key,
+                slot=ADMIN_KEYSLOT,
+                dry_run=dry_run,
+                confirm_device=confirm_device,
+                plan=plan,
+            )
+            self.luks_manager.open(
+                partition, mapper, boot_key, dry_run=dry_run, confirm_device=confirm_device, plan=plan
+            )
+            state.service_mappers.append(mapper)
+
+        # Filesystems. The root filesystem goes *inside* the opened LUKS
+        # mapping, which is the step whose absence made every earlier install
+        # write the target system into a directory on the admin host instead.
+        self._progress.step("Создание файловых систем")
+        run(["mkfs.ext4", "-F", "-L", "POA_ROOT", layout.mapper_path])
+        run(["mkfs.vfat", "-F", "32", "-n", "POA_ESP", layout.esp_partition])
+        run(["mkfs.ext4", "-F", "-L", "POA_BOOT", layout.boot_partition])
+        run(["mkfs.ext4", "-F", "-L", "POA_LOGS", layout.logs_mapper_path])
+        run(["mkfs.ext4", "-F", "-L", "POA_EXCHANGE", layout.exchange_mapper_path])
+
+        self._progress.step("Монтирование носителя")
+        # Mount the target tree, outermost first.
+        run(["mkdir", "-p", layout.mount_root])
+        run(["mount", layout.mapper_path, layout.mount_root])
+        state.mounts.append(layout.mount_root)
+
+        return recovery_code, recovery_salt, service_key, boot_key
 
     def _run_bootstrap(self, backend, config, layout, image_url, release, plan, dry_run, confirm_device) -> None:
         argv = backend.bootstrap_command(layout.mount_root, config, image_url, release)
@@ -897,9 +1389,14 @@ class _Progress:
     #: Stages the pipeline reports. A constant so the first stage already shows
     #: a sensible total rather than counting up from one out of one.
     EXPECTED_STAGES = 18
+    #: Building a distribution skips everything to do with a medium.
+    BUILD_STAGES = 10
+    #: Deploying one skips everything to do with packages.
+    DEPLOY_STAGES = 14
 
-    def __init__(self, callback):
+    def __init__(self, callback, expected: int | None = None):
         self._callback = callback
+        self._expected = expected or self.EXPECTED_STAGES
         self._index = 0
 
     def step(self, text: str) -> None:
@@ -907,9 +1404,34 @@ class _Progress:
         if self._callback is None:
             return
         try:
-            self._callback(self._index, max(self.EXPECTED_STAGES, self._index), text)
+            self._callback(self._index, max(self._expected, self._index), text)
         except Exception:  # noqa: BLE001 - a broken display must not stop an install
             pass
+
+
+def _pick_compressor() -> tuple[str, str]:
+    """(compressor, archive name), preferring zstd where it exists.
+
+    zstd compresses a root filesystem several times faster than gzip at a
+    better ratio, which matters when the artefact is gigabytes; gzip is the
+    fallback because it is everywhere.
+    """
+    import shutil as _shutil
+
+    if _shutil.which("zstd"):
+        return "zstd -T0 -3", distribution.ARCHIVE_NAME
+    return "gzip -1", distribution.ARCHIVE_NAME_GZ
+
+
+def _directory_size(path: str) -> int:
+    total = 0
+    for root, _dirs, files in os.walk(path):
+        for name in files:
+            try:
+                total += os.lstat(os.path.join(root, name)).st_size
+            except OSError:
+                continue
+    return total
 
 
 def _blkid_uuid(path: str) -> str:
