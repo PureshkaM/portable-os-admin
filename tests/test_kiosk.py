@@ -857,3 +857,57 @@ def test_the_image_mount_point_is_removed_after_unmounting(tmp_path):
     image.unmount()
 
     assert not mountpoint.exists(), "точка монтирования образа осталась после размонтирования"
+
+
+def test_hidden_entries_keep_their_exec_line():
+    """Regression: the medium booted to a black screen.
+
+    The override used to be a stub with Hidden=true and no Exec. But marco,
+    mate-panel and caja are not menu entries -- they are components of the
+    desktop itself, and mate-session reads their .desktop files to start them.
+    With no Exec it started none of them: autologin worked, X ran, and there
+    was nothing inside. Only a real boot showed this; every test passed.
+    """
+    script = kiosk.apply_script(make_kiosk_config(allowed_apps=["mate-calc"]))
+
+    # The original file is copied and annotated, not replaced by a stub: the
+    # source entry is read and written through to the override.
+    assert '"$f" > "$OVERRIDE_DIR/$name.desktop"' in script
+    assert 'print "NoDisplay=true"' in script
+    # Nothing writes a Hidden line any more (the words survive only in the
+    # comment explaining why).
+    assert "printf 'Hidden" not in script
+    # And any Hidden/NoDisplay already in the source is dropped, so the two
+    # cannot contradict each other.
+    assert "/^Hidden[[:space:]]*=/" in script
+    assert "/^NoDisplay[[:space:]]*=/" in script
+
+
+def test_allowed_applications_get_desktop_icons():
+    """Regression: a kiosk with nothing the user can start.
+
+    The first medium booted into exactly that: applications installed and
+    allowed, the panel locked, the menu not opening -- and no icons anywhere.
+    RED OS puts the allowed applications on the desktop for this reason, and so
+    does this now.
+    """
+    script = kiosk.apply_script(make_kiosk_config(allowed_apps=["mate-calc"]))
+
+    assert "/etc/skel" in script, "ярлыки не попадут в учётные записи, созданные позже"
+    assert "Desktop" in script
+    # Caja refuses to launch a .desktop that is not executable.
+    assert "chmod 0755" in script
+    assert "chown" in script, "ярлыки останутся принадлежать root"
+
+
+def test_the_program_list_is_not_switched_off_wholesale():
+    """Regression: the menu stopped opening, so nothing could be started.
+
+    Limiting the menu is done per entry with NoDisplay. Turning the whole
+    program list off is blunter, unnecessary, and made the medium unusable.
+    """
+    keyfile = kiosk.dconf_keyfile(make_kiosk_config())
+
+    assert "enable-program-list=false" not in keyfile
+    # The panel is still locked against being rearranged.
+    assert "locked-down=true" in keyfile

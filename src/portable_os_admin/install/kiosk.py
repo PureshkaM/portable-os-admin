@@ -284,7 +284,18 @@ def _dconf_settings(config: InstallConfig) -> list[tuple[str, list[tuple[str, st
                 # The panel cannot be re-arranged, and no launcher can be added
                 # to it. This is RED OS's "изменение свойств главной панели".
                 ("locked-down", "true"),
-                ("enable-program-list", "false"),
+                # `enable-program-list` is deliberately NOT set to false.
+                #
+                # It was, and it made the medium unusable: the menu stopped
+                # opening at all, so with no desktop icons either there was no
+                # way to start a single allowed application. A kiosk you cannot
+                # work in is not a restricted kiosk, it is a broken one -- and
+                # only a real boot showed it, since every file was written
+                # exactly as intended.
+                #
+                # Hiding the disallowed entries is what limits the menu, and
+                # that is done per entry with NoDisplay. Switching the whole
+                # program list off is both blunter and unnecessary.
                 ("disable-force-quit", "true"),
             ],
         ),
@@ -544,8 +555,18 @@ def apply_script(config: InstallConfig) -> str:
 
     Hiding is done with an override file in /usr/local/share/applications, not
     by deleting anything: XDG_DATA_DIRS searches /usr/local/share first, so a
-    same-named entry with Hidden=true wins while the packaged file stays intact
-    and a later `kiosk off` is a matter of removing one directory.
+    same-named entry wins while the packaged file stays intact and a later
+    `kiosk off` is a matter of removing one directory.
+
+    The override is a **copy of the original with NoDisplay=true added**, not a
+    stub. Writing a stub with Hidden=true and no Exec broke the session
+    outright, and only a real boot showed it: marco, mate-panel and caja are
+    not menu entries but components of the desktop itself, and mate-session
+    reads their .desktop files to start them. With no Exec it started none of
+    them, so the medium booted to a black screen -- autologin fine, X running,
+    and nothing inside. Hidden=true means "this entry has been deleted";
+    NoDisplay=true means "it exists, just keep it out of the menu", which is
+    what was wanted all along.
 
     The allowed list is baked into the script instead of passed as arguments --
     a desktop-entry name is administrator input, and text that never crosses a
@@ -585,15 +606,25 @@ for f in /usr/share/applications/*.desktop; do
     if is_allowed "$name"; then
         continue
     fi
-    # Hidden=true — штатный для freedesktop способ сказать «этой записи нет».
-    # NoDisplay=true добавлен для сред, которые читают только его.
-    {{
-        printf '[Desktop Entry]\\n'
-        printf 'Type=Application\\n'
-        printf 'Name=%s\\n' "$name"
-        printf 'NoDisplay=true\\n'
-        printf 'Hidden=true\\n'
-    }} > "$OVERRIDE_DIR/$name.desktop"
+    # Копия исходной записи плюс NoDisplay=true — а не подмена её пустышкой.
+    #
+    # Раньше здесь создавалась запись с Hidden=true и без Exec, и это ломало
+    # сессию целиком. marco, mate-panel и caja — не «приложения из меню», а
+    # компоненты самой среды: оконный менеджер, панель и рисовальщик рабочего
+    # стола. mate-session читает их .desktop, чтобы запустить их, не находит
+    # Exec и не поднимает ни одного. Носитель загружался в чёрный экран:
+    # автологин проходил, X работал, а внутри не было ни окон, ни панели.
+    #
+    # Hidden=true по спецификации значит «записи больше нет», то есть её
+    # удалили. NoDisplay=true значит «есть, но не показывать в меню» — ровно
+    # то, что нужно: запись остаётся исправной для всего, что запускает её
+    # само.
+    awk '
+        /^\\[Desktop Entry\\]/ {{ print; print "NoDisplay=true"; next }}
+        /^NoDisplay[[:space:]]*=/ {{ next }}
+        /^Hidden[[:space:]]*=/ {{ next }}
+        {{ print }}
+    ' "$f" > "$OVERRIDE_DIR/$name.desktop"
     hidden=$((hidden + 1))
 done
 echo "poa-kiosk: скрыто записей приложений: $hidden"
@@ -606,6 +637,38 @@ for a in $ALLOWED; do
         echo "poa-kiosk: ВНИМАНИЕ: разрешено '$a', но записи /usr/share/applications/$a.desktop нет" >&2
     fi
 done
+
+# Ярлыки разрешённых приложений на Рабочем столе.
+#
+# Так же, как в штатном киоске РЕД ОС: «ярлыки таких приложений находятся на
+# Рабочем столе». Это не украшение, а единственный надёжный способ запустить
+# приложение в запертой среде — панель заблокирована, а меню может быть
+# недоступно. Первый собранный носитель загрузился именно в такое состояние:
+# приложения установлены и разрешены, а открыть их нечем.
+#
+# Кладутся и в /etc/skel (для учётных записей, которые создадут позже), и в
+# домашний каталог уже существующего пользователя, потому что порядок шагов
+# установки на это не влияет.
+placed=0
+for home in /etc/skel /home/*; do
+    [ -d "$home" ] || continue
+    desktop_dir="$home/Desktop"
+    mkdir -p "$desktop_dir" || continue
+    for a in $ALLOWED; do
+        src="/usr/share/applications/$a.desktop"
+        [ -f "$src" ] || continue
+        cp "$src" "$desktop_dir/$a.desktop" 2>/dev/null || continue
+        # Caja запускает ярлык только если он исполняемый и помечен доверенным.
+        chmod 0755 "$desktop_dir/$a.desktop" 2>/dev/null || true
+        placed=$((placed + 1))
+    done
+    # Владелец: домашний каталог пользователя должен остаться его.
+    owner=${{home##*/}}
+    if [ "$home" != "/etc/skel" ]; then
+        chown -R "$owner:$owner" "$desktop_dir" 2>/dev/null || true
+    fi
+done
+echo "poa-kiosk: ярлыков на рабочем столе размещено: $placed"
 
 # Песочница: разрешённые приложения перезапускаются через firejail.
 # Только если пакет есть — в образе Debian DVD его нет, и тогда это не отказ
