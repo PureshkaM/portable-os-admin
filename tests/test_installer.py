@@ -398,3 +398,39 @@ def test_a_local_image_is_trusted_explicitly_because_it_carries_no_signature():
     # a network mirror is signed, and must not be marked trusted blindly
     _, text = backend.install_time_sources("trixie", "https://deb.debian.org/debian", ("main",))
     assert "[trusted=yes]" not in text
+
+
+def test_medium_is_not_reported_as_erased_when_nothing_was_written(session, make_config):
+    """Regression: the interface announced an erased medium on every failure.
+
+    Several failures land before the first write -- a device too small, an
+    image of the wrong family or architecture, no emulator registered for the
+    target. Telling an administrator their stick was wiped when it was intact
+    costs them the data they then do not try to recover.
+    """
+    cfgm = ConfigManager()
+    config = make_config()
+    cfgm.validate(config)
+
+    tiny_device = BlockDevice(
+        name="sdb", path="/dev/sdb", size_bytes=100_000_000, model="Tiny", removable=True,
+        mountpoints=(None,),
+    )
+    installer = OSInstaller(session)
+    assert installer.medium_modified is False
+
+    with pytest.raises(DeviceNotEligibleError):
+        installer.run(tiny_device, config, b"user-passphrase", dry_run=True)
+
+    assert installer.medium_modified is False, "носитель объявлен изменённым, хотя запись не начиналась"
+
+
+def test_a_dry_run_never_claims_the_medium_was_touched(session, big_removable_device, make_config):
+    cfgm = ConfigManager()
+    config = make_config()
+    cfgm.validate(config)
+
+    installer = OSInstaller(session)
+    installer.run(big_removable_device, config, b"user-passphrase-123", dry_run=True)
+
+    assert installer.medium_modified is False

@@ -53,6 +53,19 @@ def _pump(app, condition, timeout=20.0, interval=0.05):
     assert condition(), "timed out waiting for background operation to complete"
 
 
+def _allow_an_application(app, wizard, name: str = "mate-calc"):
+    """Fills in the one thing a new configuration cannot guess.
+
+    A new configuration is a kiosk with no applications allowed, and validation
+    refuses that on purpose -- so any test that walks the wizard to the end has
+    to make the same decision an administrator would.
+    """
+    _advance_to(app, wizard, "Режим системы и обновления")
+    wizard.app_entry_var.set(name)
+    wizard._add_allowed_app()
+    app.update()
+
+
 def _advance_to(app, wizard, title: str, limit: int = 12):
     """Walks the wizard forward until the named step, then stops.
 
@@ -114,6 +127,7 @@ def test_config_wizard_creates_and_validates(gui_app, tmp_path):
     wizard._on_target_os_changed()
     assert wizard.release_var.get() == "8.0"
 
+    _allow_an_application(app, wizard)
     _advance_to(app, wizard, "Проверка и сохранение")
 
     wizard._run_validation()
@@ -137,6 +151,7 @@ def test_config_wizard_final_step_edits_are_applied_or_refused(gui_app, tmp_path
     app.show_frame(ConfigWizardFrame)
     wizard = app._current_frame
     wizard.name_var.set("stick1")
+    _allow_an_application(app, wizard)
     _advance_to(app, wizard, "Проверка и сохранение")
 
     text = wizard.config_text.get("1.0", "end")
@@ -298,6 +313,13 @@ def _stub_install(monkeypatch):
 
     monkeypatch.setattr(install_wizard_module, "OSInstaller", _StubInstaller)
     monkeypatch.setattr(install_wizard_module, "_is_root", lambda: True)
+    # The wizard refuses to start while an unfinished install is on the machine
+    # -- correctly, since a second run on top of an open LUKS mapping corrupts
+    # both. That check reads global system state, so on a machine where a real
+    # install happens to be running these tests would fail for a reason that
+    # has nothing to do with them. Observed exactly that way, while a genuine
+    # install was writing to a stick in the next process.
+    monkeypatch.setattr(install_wizard_module.leftovers, "find", lambda: None)
     return install_wizard_module
 
 
@@ -641,3 +663,80 @@ def test_dashboard_state_check_reports_instead_of_crashing(gui_app, tmp_path, mo
     app.update()
 
     assert "Незавершённых установок нет" in frame.message_bar.var.get()
+
+
+def test_new_configuration_opens_as_a_locked_down_kiosk(gui_app, tmp_path):
+    """The wizard's defaults are a statement about what this tool builds.
+
+    Opening on an ordinary console system meant a restricted medium was
+    something you had to know to ask for.
+    """
+    app = gui_app
+    _open_container(app, tmp_path)
+    app.show_frame(ConfigWizardFrame)
+    app.update()
+    wizard = app._current_frame
+
+    assert wizard.config.profile == "kiosk"
+    assert wizard.config.kiosk.enabled is True
+    assert wizard.config.kiosk.allow_removable_media is False
+    assert wizard.config.account.sudo is False
+
+
+def test_architecture_can_be_chosen_in_the_interface(gui_app, tmp_path):
+    """Regression: it was only reachable by editing the JSON.
+
+    Empty means "same as this machine", so an administrator on arm64 building
+    for an amd64 fleet was refused at install time with no way, in the
+    interface, to say what they meant.
+    """
+    app = gui_app
+    _open_container(app, tmp_path)
+    app.show_frame(ConfigWizardFrame)
+    app.update()
+    wizard = app._current_frame
+
+    assert hasattr(wizard, "arch_var"), "в мастере нет выбора архитектуры"
+    wizard.arch_var.set("amd64")
+    wizard._on_arch_changed()
+    app.update()
+    # Whatever this machine is, the interface must say something about whether
+    # the build is possible rather than leave the question open.
+    assert wizard.arch_status_var.get().strip()
+
+    wizard._save_step_basics()
+    assert wizard.config.arch == "amd64"
+
+
+def test_same_as_host_is_stored_as_an_empty_architecture(gui_app, tmp_path):
+    """The label is for reading; the configuration keeps the schema's spelling."""
+    app = gui_app
+    _open_container(app, tmp_path)
+    app.show_frame(ConfigWizardFrame)
+    app.update()
+    wizard = app._current_frame
+
+    wizard.arch_var.set(config_wizard_module.ARCH_SAME_AS_HOST)
+    wizard._save_step_basics()
+
+    assert wizard.config.arch == ""
+
+
+def test_final_step_lists_what_the_administrator_changed(gui_app, tmp_path):
+    """The file says what will be installed; this says what they did to it."""
+    app = gui_app
+    _open_container(app, tmp_path)
+    app.show_frame(ConfigWizardFrame)
+    wizard = app._current_frame
+    wizard.name_var.set("stick1")
+    wizard.arch_var.set("amd64")
+    _allow_an_application(app, wizard)
+    wizard.allow_media_var.set(True)
+    _advance_to(app, wizard, "Проверка и сохранение")
+
+    changes = dict(
+        (label, (before, after)) for label, before, after in wizard.config.diff_from(wizard._baseline)
+    )
+    assert changes["Разрешённые приложения"] == ("(пусто)", "mate-calc")
+    assert changes["Съёмные носители"] == ("нет", "да")
+    assert changes["Архитектура носителя"] == ("(пусто)", "amd64")

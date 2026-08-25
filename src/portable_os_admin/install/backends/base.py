@@ -72,10 +72,21 @@ class InstallBackend(ABC):
     ssh_service: str = "ssh"
     sudo_group: str = "sudo"
     syslog_package: str = "rsyslog"
-    #: systemd unit of the display manager this family uses for the kiosk
-    #: session. Empty means the family has no kiosk support wired up, and a
-    #: kiosk configuration is refused for it rather than half-built.
+    #: Non-empty means this family supports the kiosk profile at all. The unit
+    #: actually enabled depends on the desktop as well, so ask
+    #: display_manager_for() rather than reading this; a kiosk configuration
+    #: for a family whose value is empty is refused rather than half-built.
     display_manager_service: str = ""
+    #: Display manager used for a KDE session. SDDM is KDE's own, ships in both
+    #: families' images, and autologins without a session bus of its own.
+    kde_display_manager: str = "sddm"
+
+    def display_manager_for(self, config: InstallConfig) -> str:
+        if not self.display_manager_service:
+            return ""
+        if kiosk_mode.desktop_of(config) == kiosk_mode.DESKTOP_KDE:
+            return self.kde_display_manager
+        return self.display_manager_service
 
     # ------------------------------------------------------------------
     # Architecture
@@ -213,6 +224,14 @@ class InstallBackend(ABC):
         the upgrade command itself returns nothing here.
         """
         return []
+
+    def firmware_install_command(self, mount_root: str, image_mountpoint: str) -> list[str] | None:
+        """Installs device firmware carried by the image but absent from its index.
+
+        Returns None where the family needs nothing extra. See the Debian
+        backend for why this exists at all.
+        """
+        return None
 
     def optional_package_command(self, mount_root: str, packages: list[str]) -> list[str] | None:
         """Installs packages whose absence must not abort the install.

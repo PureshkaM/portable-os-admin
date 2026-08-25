@@ -7,6 +7,8 @@ below is what turns it into something a machine can actually start.
 """
 from __future__ import annotations
 
+import shlex
+
 from ...config.schema import InstallConfig
 from .. import kiosk as kiosk_mode
 from ..disk import MediaLayout
@@ -35,24 +37,36 @@ class DebianInstallBackend(InstallBackend):
     #: the install forty minutes in. `firejail` and `chromium`, for instance,
     #: are *not* on that DVD, which is why firejail is installed by a separate
     #: command that is allowed to fail.
-    KIOSK_PACKAGES = (
-        # X, its input and video drivers, and the free firmware blobs a laptop
-        # graphics chip may ask for.
+    #: X and everything needed to drive whatever hardware the medium is
+    #: eventually plugged into. Shared by both desktops.
+    #:
+    #: Both driver metapackages, deliberately: they are the bulk of the
+    #: install, and the alternative -- only the driver for the card in the
+    #: administrator's own machine -- gives a medium that shows a black screen
+    #: on the next machine it is carried to, which is the one thing a portable
+    #: system may not do.
+    GRAPHICS_PACKAGES = (
         "xserver-xorg",
-        # Both driver metapackages, deliberately. They are the bulk of this
-        # list, and the alternative -- the driver for the card in the
-        # administrator's own machine -- gives a medium that shows a black
-        # screen on the next machine it is carried to, which is the one thing
-        # a portable system may not do.
         "xserver-xorg-video-all",
         "xserver-xorg-input-all",
         "x11-xserver-utils",
         "firmware-linux-free",
         "dbus-x11",
+        "fonts-dejavu",
+        "network-manager",
+        # dconf-cli carries `dconf update`, which compiles MATE's lockdown
+        # database; harmless under KDE and cheap either way.
+        "dconf-cli",
+        "dconf-gsettings-backend",
+        "desktop-file-utils",
+    )
+
+    KIOSK_PACKAGES = (
         # Display manager: the only way into the session, since the account's
         # password is locked and the getty units are masked.
         "lightdm",
         "lightdm-gtk-greeter",
+        "network-manager-gnome",
         # MATE, named package by package. `mate-desktop-environment` and
         # `task-mate-desktop` would each drag in mate-terminal, the control
         # centre and a system monitor -- the tools this mode exists to remove.
@@ -68,20 +82,39 @@ class DebianInstallBackend(InstallBackend):
         # as a dependency of mate-panel.
         "mate-themes",
         "mate-icon-theme",
-        # dconf-cli carries `dconf update`, which compiles the lockdown
-        # database; without it the restrictions stay inert text.
-        "dconf-cli",
-        "dconf-gsettings-backend",
-        "desktop-file-utils",
-        "network-manager",
-        "network-manager-gnome",
-        "fonts-dejavu",
+    )
+
+    #: Minimal Plasma. `systemsettings`, `plasma-discover` and `kwrited` are
+    #: only *Recommends* of plasma-desktop -- checked against the image's own
+    #: index -- and package_install_command passes --no-install-recommends, so
+    #: a kiosk gets Plasma with no settings centre, no software store and no
+    #: terminal. Dolphin is not listed at all: unlike MATE, where caja draws
+    #: the desktop and is therefore unavoidable, Plasma's desktop is drawn by
+    #: plasmashell, so the file manager can simply be absent.
+    KDE_PACKAGES = (
+        "plasma-desktop",
+        "plasma-workspace",
+        "kwin-x11",
+        "sddm",
+        "plasma-nm",
+        "breeze",
+        "kde-config-gtk-style",
     )
 
     def desktop_packages(self, config: InstallConfig) -> list[str]:
         if not kiosk_mode.is_enabled(config):
             return []
-        packages = list(self.KIOSK_PACKAGES)
+        if kiosk_mode.desktop_of(config) == kiosk_mode.DESKTOP_KDE:
+            packages = list(self.GRAPHICS_PACKAGES) + list(self.KDE_PACKAGES)
+            if kiosk_mode.wants_wayland(config):
+                # kwin-wayland is the compositor itself; xwayland lets X-only
+                # applications (which is most of what a kiosk allows) run at
+                # all inside a Wayland session.
+                packages += ["kwin-wayland", "xwayland"]
+            # KDE blanks the screen through kscreenlocker, which Plasma already
+            # carries; nothing extra to install.
+            return packages
+        packages = list(self.GRAPHICS_PACKAGES) + list(self.KIOSK_PACKAGES)
         # Only when the screen is meant to blank. It is the component that
         # would otherwise also offer to lock, which this login model cannot
         # support -- see KioskConfig.screen_blank_minutes.
@@ -90,20 +123,42 @@ class DebianInstallBackend(InstallBackend):
         return packages
 
     def display_manager_files(self, config: InstallConfig) -> dict[str, str]:
-        """LightDM autologin straight into the MATE session.
+        """Autologin, because the account has no usable password.
 
-        `autologin-user-timeout=0` means no countdown the user could interrupt
-        to reach a login prompt, and `greeter-hide-users` keeps the account
-        name off the screen if the greeter is ever reached at all.
+        Without it the medium boots to a login prompt nobody can satisfy --
+        the single most damaging way this profile can fail, since the result is
+        a stick that is finished, encrypted, and unusable.
         """
+        username = config.account.username
+        if kiosk_mode.desktop_of(config) == kiosk_mode.DESKTOP_KDE:
+            return {
+                "etc/sddm.conf.d/50-poa-kiosk.conf": (
+                    "# generated by portable-os-admin\n"
+                    "[Autologin]\n"
+                    f"User={username}\n"
+                    # This program's own session entry, not the distribution's.
+                    # "plasma" means X11 under Plasma 5 and Wayland under
+                    # Plasma 6, so naming it would pick a different protocol --
+                    # and a different set of restrictions -- per distribution.
+                    f"Session={kiosk_mode.SESSION_NAME}\n"
+                    # The account cannot log in by hand, so logging out must
+                    # come straight back rather than stop at a greeter.
+                    "Relogin=true\n"
+                    "\n"
+                    "[Users]\n"
+                    "HideUsers=*\n"
+                )
+            }
         return {
             "etc/lightdm/lightdm.conf.d/50-poa-kiosk.conf": (
                 "# generated by portable-os-admin\n"
                 "[Seat:*]\n"
-                f"autologin-user={config.account.username}\n"
+                f"autologin-user={username}\n"
+                # No countdown the user could interrupt to reach a prompt.
                 "autologin-user-timeout=0\n"
-                "autologin-session=mate\n"
-                "user-session=mate\n"
+                # This program's own session entry -- see the SDDM branch.
+                f"autologin-session={kiosk_mode.SESSION_NAME}\n"
+                f"user-session={kiosk_mode.SESSION_NAME}\n"
                 "greeter-hide-users=true\n"
                 "allow-guest=false\n"
             )
@@ -245,21 +300,95 @@ class DebianInstallBackend(InstallBackend):
         )
 
     def package_install_command(self, mount_root: str, packages: list[str]) -> list[str] | None:
+        """Installs packages inside the target, through eatmydata where possible.
+
+        The wrapper is what makes a long install bearable, and it has to run
+        *inside* the chroot to work at all. `maybe_eatmydata` prefixes the
+        host's copy, which is right for debootstrap but useless for anything
+        run in the target when the architectures differ: measured on this
+        project's own arm64→amd64 run, every package logged
+
+            ld.so: object 'libeatmydata.so' from LD_PRELOAD cannot be
+            preloaded ... ignored
+
+        because an arm64 library cannot be preloaded into an amd64 process. So
+        the accelerator was silently doing nothing on exactly the runs that
+        need it most, and the install sat in D-state waiting on fsync -- CPU
+        idle, load average 5, everything blocked on a USB stick behind dm-crypt.
+
+        Resolved in the target, at run time, rather than decided here: the
+        package may not be installed yet the first time this runs, so the shell
+        checks and falls back. `force-unsafe-io` in temporary_files() covers
+        dpkg's own writes; this covers apt and the maintainer scripts, which
+        dpkg's setting does not reach.
+        """
         if not packages:
             return None
-        return self.chroot(
-            mount_root,
-            "env",
-            "DEBIAN_FRONTEND=noninteractive",
-            "apt-get",
-            "install",
-            "-y",
-            "--no-install-recommends",
-            *packages,
+        quoted = " ".join(shlex.quote(name) for name in packages)
+        script = (
+            "set -e; "
+            "export DEBIAN_FRONTEND=noninteractive; "
+            'if [ -x /usr/bin/eatmydata ]; then run="eatmydata"; else run=""; fi; '
+            f"exec $run apt-get install -y --no-install-recommends {quoted}"
         )
+        return self.chroot(mount_root, "sh", "-c", script)
 
     def package_refresh_command(self, mount_root: str) -> list[str]:
         return self.chroot(mount_root, "apt-get", "update")
+
+    def firmware_install_command(self, mount_root: str, image_mountpoint: str) -> list[str] | None:
+        """Installs the non-free device firmware carried on the Debian image.
+
+        This is not a nicety. A Debian installation image publishes only `main`
+        and `contrib` in its index -- checked on debian-13.6.0-amd64-DVD-1.iso,
+        whose Release names exactly those two -- so `firmware-iwlwifi`,
+        `firmware-realtek`, `firmware-amd-graphics` and the rest are simply not
+        installable by name, and a medium built from it comes up on unfamiliar
+        hardware with no wireless and, on AMD graphics, no acceleration.
+
+        The image does carry them: 36 .deb files under /firmware, outside any
+        repository index. They are installed straight from there with dpkg,
+        which works because the installer bind-mounts the image inside the
+        target at the same path it has outside (see installer.py).
+
+        Three deliberate decisions:
+
+        - each package is installed on its own and failure is ignored. Firmware
+          is an improvement to hardware support, never a precondition for
+          booting, so one bad package must not end an hour-long install.
+        - `--no-triggers`, with the triggers run **once** at the end. Without
+          it every firmware package fires initramfs-tools' trigger and the
+          initramfs is rebuilt from scratch -- roughly thirty times in a row.
+          Observed on this project's own run: the step sat there with
+          `initramfs-tools.postinst triggered update-initramfs` between
+          packages, each rebuild costing minutes under emulation. The initramfs
+          this program actually ships is built later, deliberately, once the
+          crypttab and the recovery hooks are in place.
+        - `*-installer_*` packages are skipped. Those (b43-installer and
+          friends) are not firmware but scripts that *download* firmware during
+          configuration, which in the isolated network this project is built
+          for means hanging on a fetch that cannot succeed.
+        """
+        if not image_mountpoint:
+            return None
+        firmware_dir = f"{image_mountpoint}/firmware"
+        script = (
+            f'dir="{firmware_dir}"; '
+            'if [ ! -d "$dir" ]; then '
+            'echo "poa: на образе нет каталога прошивок, шаг пропущен"; exit 0; fi; '
+            'installed=0; skipped=0; failed=0; '
+            'for deb in "$dir"/*.deb; do '
+            '[ -e "$deb" ] || continue; '
+            'case "$deb" in *-installer_*) skipped=$((skipped+1)); continue;; esac; '
+            'if dpkg --no-triggers -i "$deb" >/dev/null 2>&1; then installed=$((installed+1)); '
+            'else failed=$((failed+1)); fi; '
+            'done; '
+            # Once, after all of them -- not once per package.
+            'dpkg --triggers-only --pending >/dev/null 2>&1 || true; '
+            'echo "poa: прошивки — установлено $installed, пропущено $skipped, с ошибкой $failed"; '
+            'exit 0'
+        )
+        return self.chroot(mount_root, "sh", "-c", script)
 
     # ------------------------------------------------------------------
     # Unattended updates, run on the medium itself
@@ -317,6 +446,11 @@ class DebianInstallBackend(InstallBackend):
     def boot_packages(self, config: InstallConfig) -> list[str]:
         arch = self.normalize_arch(config.arch)
         return [
+            # First, deliberately: it is installed in the same transaction as
+            # the kernel, and every package command after that one picks it up
+            # (see package_install_command). On a cross-architecture build the
+            # desktop step alone is several hundred packages of fsync.
+            "eatmydata",
             f"linux-image-{arch}",
             f"grub-efi-{arch}",
             "initramfs-tools",

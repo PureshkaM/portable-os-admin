@@ -302,7 +302,7 @@ def add_field(
     entry.grid(row=row, column=1, sticky="w", pady=theme.SPACE_XS)
     next_row = row + 1
     if hint:
-        ttk.Label(parent, text=hint, style=hint_style, wraplength=theme.TEXT_WRAP, justify="left").grid(
+        ttk.Label(parent, text=hint, style=hint_style, wraplength=theme.HINT_WRAP, justify="left").grid(
             row=next_row, column=1, sticky="w", pady=(0, theme.SPACE_XS)
         )
         next_row += 1
@@ -344,7 +344,7 @@ def add_choice(
         combo.bind("<<ComboboxSelected>>", lambda _event: on_change())
     next_row = row + 1
     if hint:
-        ttk.Label(parent, text=hint, style=hint_style, wraplength=theme.TEXT_WRAP, justify="left").grid(
+        ttk.Label(parent, text=hint, style=hint_style, wraplength=theme.HINT_WRAP, justify="left").grid(
             row=next_row, column=1, sticky="w", pady=(0, theme.SPACE_XS)
         )
         next_row += 1

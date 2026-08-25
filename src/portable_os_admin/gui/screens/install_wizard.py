@@ -654,6 +654,8 @@ class InstallWizardFrame(WizardFrame):
 
         passphrase_bytes = self.passphrase.encode("utf-8")
         installer = OSInstaller(self.app.session)
+        # Kept so the failure path can ask it whether the medium was written to.
+        self._installer = installer
 
         def do_install():
             return installer.run(
@@ -750,10 +752,18 @@ class InstallWizardFrame(WizardFrame):
 
     def _on_install_error(self, exc: BaseException) -> None:
         self._stop_progress()
-        # No hedging about whether anything happened: by the time this runs the
-        # medium has been erased, so the honest statement is that its previous
-        # contents are gone regardless of where the failure landed.
-        suffix = " Носитель уже изменён — прежние данные на нём не сохранились."
+        # Whether the medium was touched is a fact the installer knows, not
+        # something to assume. Several failures land before the first write --
+        # an image of the wrong family or architecture, a device too small, no
+        # emulator registered for the target -- and this used to announce that
+        # the stick had been erased in all of them. Telling an administrator
+        # their medium is gone when it is intact costs them the data they then
+        # do not bother to recover.
+        installer = getattr(self, "_installer", None)
+        if installer is not None and not getattr(installer, "medium_modified", True):
+            suffix = " Носитель не изменён — установка остановилась до записи на него."
+        else:
+            suffix = " Носитель уже изменён — прежние данные на нём не сохранились."
         if isinstance(exc, (DeviceNotEligibleError, InstallError)) or isinstance(exc, KNOWN_ERRORS):
             self.message_bar.error(f"{exc}{suffix}")
         else:

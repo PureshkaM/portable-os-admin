@@ -416,3 +416,379 @@ def test_a_complete_kiosk_configuration_validates():
         allowed_apps=["mate-calc"], autostart_app="mate-calc", screen_blank_minutes=10
     )
     assert _errors(config) == []
+
+
+# ----------------------------------------------------------------------
+# KDE: the Kiosk framework
+# ----------------------------------------------------------------------
+def make_kde_config(target_os: str = "debian", **kiosk_kwargs) -> InstallConfig:
+    kiosk_kwargs.setdefault("desktop_environment", "kde")
+    return make_kiosk_config(target_os, **kiosk_kwargs)
+
+
+def test_exchange_path_is_the_same_in_both_modules():
+    """kiosk.py repeats it rather than importing, to avoid an import cycle.
+
+    A silent divergence would put the URL restriction on a directory that is
+    not where the exchange volume is mounted, so the rule would allow nothing
+    and the user could not open their own files.
+    """
+    from portable_os_admin.install.backends.base import EXCHANGE_MOUNTPOINT
+
+    assert kiosk.EXCHANGE_DIR == EXCHANGE_MOUNTPOINT
+
+
+def test_mate_stays_the_default():
+    """An existing configuration must not change desktop underneath its author."""
+    assert InstallConfig(name="a").kiosk.desktop_environment == "mate"
+    assert kiosk.desktop_of(make_kiosk_config()) == "mate"
+
+
+def test_every_restriction_group_is_marked_immutable():
+    """[$i] is the whole mechanism.
+
+    Without it these are defaults, and anything ~/.config says later wins --
+    which is to say the kiosk would restrict nothing at all.
+    """
+    text = kiosk.kdeglobals(make_kde_config())
+
+    groups = [line for line in text.splitlines() if line.startswith("[")]
+    assert groups, "не записана ни одна группа ограничений"
+    for group in groups:
+        assert group.endswith("[$i]"), f"группа {group} не помечена неизменяемой"
+
+
+def test_shell_access_and_command_running_are_refused():
+    """The two that close the general-purpose escape routes."""
+    text = kiosk.kdeglobals(make_kde_config())
+
+    assert "shell_access=false" in text
+    assert "run_command=false" in text
+    # No equivalent exists under MATE: refuses a .desktop that did not come
+    # from a system directory, so one carried in on the exchange volume is
+    # inert even though the volume is mounted.
+    assert "run_desktop_files=false" in text
+
+
+def test_file_dialogs_are_confined_to_home_and_the_exchange_volume():
+    """Deny first, then allow: the rules are evaluated in order."""
+    text = kiosk.kdeglobals(make_kde_config())
+
+    assert "rule_count=6" in text
+    assert "rule_1=list,,,,file,,,false" in text
+    assert "rule_2=list,,,,file,,$HOME,true" in text
+    assert f"rule_3=list,,,,file,,{kiosk.EXCHANGE_DIR},true" in text
+    assert "rule_4=open,,,,file,,,false" in text
+
+
+def test_lock_screen_is_refused_under_kde_too():
+    """Same constraint as MATE: the account password is locked."""
+    text = kiosk.kdeglobals(make_kde_config(screen_blank_minutes=10))
+
+    assert "lock_screen=false" in text
+    assert "Lock=false" in kiosk.kscreensaverrc(make_kde_config(screen_blank_minutes=10))
+
+
+def test_blanking_delay_reaches_kde_in_seconds():
+    assert "Timeout=600" in kiosk.kscreensaverrc(make_kde_config(screen_blank_minutes=10))
+    assert "Enabled=false" in kiosk.kscreensaverrc(make_kde_config(screen_blank_minutes=0))
+
+
+def test_logout_follows_the_shutdown_setting():
+    assert "logout=true" in kiosk.kdeglobals(make_kde_config(allow_shutdown=True))
+    assert "logout=false" in kiosk.kdeglobals(make_kde_config(allow_shutdown=False))
+
+
+def test_autostart_resource_is_only_closed_when_nothing_needs_it():
+    """Closing it while this project relies on autostart could disable both.
+
+    The opening it covers -- a .desktop dropped into ~/.config/autostart -- is
+    refused by run_desktop_files either way.
+    """
+    without = kiosk.kdeglobals(make_kde_config())
+    assert "autostart=false" in without
+
+    with_app = kiosk.kdeglobals(make_kde_config(autostart_app="mate-calc"))
+    assert "[KDE Resource Restrictions][$i]" not in with_app
+    assert "run_desktop_files=false" in with_app
+
+
+@pytest.mark.parametrize("target_os", ["debian", "redos"])
+def test_kde_writes_kde_files_and_no_dconf(target_os, layout):
+    backend = get_backend(target_os)
+    config = make_kde_config(target_os)
+    files = dict(backend.config_files(config, layout))
+    files.update(backend.scripted_files(config, layout))
+
+    assert kiosk.KDEGLOBALS_PATH in files
+    assert kiosk.PLASMARC_PATH in files
+    # dconf belongs to the MATE half; writing both would be two half-applied
+    # configurations rather than one.
+    assert kiosk.DCONF_KEYFILE_PATH not in files
+
+
+@pytest.mark.parametrize("target_os", ["debian", "redos"])
+def test_mate_writes_dconf_and_no_kde_files(target_os, layout):
+    backend = get_backend(target_os)
+    config = make_kiosk_config(target_os)
+    files = dict(backend.config_files(config, layout))
+    files.update(backend.scripted_files(config, layout))
+
+    assert kiosk.DCONF_KEYFILE_PATH in files
+    assert kiosk.KDEGLOBALS_PATH not in files
+
+
+@pytest.mark.parametrize("target_os", ["debian", "redos"])
+def test_kde_session_uses_sddm_and_our_own_session_entry(target_os, layout):
+    """SDDM, and the session this program defines rather than a distribution's.
+
+    It used to ask for "plasma" by name, which was wrong in a way no test would
+    have caught: that name means the X11 session on Plasma 5 and the Wayland
+    one on Plasma 6, so the same configuration would have produced a different
+    protocol -- and a different set of restrictions -- on RED OS than on Debian.
+    """
+    backend = get_backend(target_os)
+    config = make_kde_config(target_os)
+
+    assert backend.display_manager_for(config) == "sddm"
+    files = backend.config_files(config, layout)
+    dm_file = next(path for path in files if "sddm" in path)
+    assert f"Session={kiosk.SESSION_NAME}" in files[dm_file]
+    assert config.account.username in files[dm_file]
+
+
+@pytest.mark.parametrize("target_os", ["debian", "redos"])
+def test_kde_kiosk_installs_no_terminal_and_no_settings_centre(target_os):
+    packages = get_backend(target_os).desktop_packages(make_kde_config(target_os))
+
+    for name in (
+        "konsole",
+        "konsole5",  # what RED OS calls it
+        "systemsettings",
+        "plasma-systemsettings",
+        "plasma-discover",
+        "dolphin",  # Plasma draws its desktop with plasmashell, not a file manager
+        "kde-standard",
+        "kwrited",
+    ):
+        assert name not in packages, f"{name} не должен ставиться в режиме киоска"
+
+
+@pytest.mark.parametrize("target_os", ["debian", "redos"])
+def test_kde_session_has_what_it_needs_to_start(target_os):
+    packages = get_backend(target_os).desktop_packages(make_kde_config(target_os))
+
+    assert "plasma-desktop" in packages
+    assert "plasma-workspace" in packages
+    assert any(p.startswith("kwin") for p in packages)
+    assert "sddm" in packages
+
+
+@pytest.mark.parametrize("target_os", ["debian", "redos"])
+def test_both_desktops_get_the_full_driver_set(target_os):
+    """A medium is carried to hardware nobody has seen yet.
+
+    Shipping only the driver for the administrator's own card gives a stick
+    that shows a black screen on the next machine, which is the one failure a
+    portable system may not have.
+    """
+    backend = get_backend(target_os)
+    for desktop in ("mate", "kde"):
+        config = make_kiosk_config(target_os, desktop_environment=desktop)
+        packages = backend.desktop_packages(config)
+        if target_os == "debian":
+            assert "xserver-xorg-video-all" in packages
+            assert "xserver-xorg-input-all" in packages
+        else:
+            drivers = [p for p in packages if p.startswith("xorg-x11-drv-")]
+            assert len(drivers) >= 12, f"драйверов слишком мало: {drivers}"
+            assert "linux-firmware" in packages
+
+
+def test_debian_installs_the_firmware_the_image_hides_from_its_index():
+    """The Debian image publishes only main and contrib.
+
+    So firmware-iwlwifi and the rest cannot be installed by name, and a medium
+    built from it reaches unfamiliar hardware with no wireless. They are on the
+    image as loose .deb files, and this is what picks them up.
+    """
+    backend = get_backend("debian")
+    argv = backend.firmware_install_command("/mnt/t", "/mnt/poa-image-x")
+
+    assert argv is not None
+    script = argv[-1]
+    assert "/mnt/poa-image-x/firmware" in script
+    # A missing firmware package must not end an hour-long install.
+    assert "exit 0" in script
+    # *-installer packages download during configuration, which cannot work on
+    # the isolated network this project is built for.
+    assert "-installer_" in script
+
+    assert backend.firmware_install_command("/mnt/t", "") is None
+
+
+def test_redos_needs_no_firmware_step():
+    """It packages the firmware in its own repository, so it installs by name."""
+    assert get_backend("redos").firmware_install_command("/mnt/t", "/mnt/img") is None
+    assert "linux-firmware" in get_backend("redos").desktop_packages(make_kde_config("redos"))
+
+
+def test_unknown_desktop_is_refused():
+    config = make_kiosk_config(desktop_environment="gnome")
+    assert any("рабочая среда" in e for e in _errors(config))
+
+
+# ----------------------------------------------------------------------
+# X11 and Wayland
+# ----------------------------------------------------------------------
+def test_x11_is_the_default_session():
+    assert InstallConfig(name="a").kiosk.session_type == "x11"
+    assert kiosk.wants_wayland(make_kiosk_config()) is False
+
+
+def test_the_session_entry_is_this_program_s_own():
+    """Naming the distribution's session would pick a different protocol.
+
+    "plasma" is the X11 session under Plasma 5 (RED OS 8) and the *Wayland*
+    one under Plasma 6 (Debian 13). Asking for it by name would therefore give
+    X11 on one distribution and Wayland on the other -- silently, and with
+    different security properties, since the X11 lockdown file is not read
+    under Wayland.
+    """
+    path, content = kiosk.session_entry(make_kde_config())
+
+    assert path.endswith(f"{kiosk.SESSION_NAME}.desktop")
+    assert "plasma.desktop" not in path
+    assert "startplasma-x11" in content
+
+
+def test_wayland_selects_the_wayland_session_directory_and_binary():
+    config = make_kde_config(session_type="wayland")
+    path, content = kiosk.session_entry(config)
+
+    assert kiosk.wants_wayland(config) is True
+    assert path.startswith("usr/share/wayland-sessions/")
+    assert "startplasma-wayland" in content
+
+
+def test_mate_is_always_x11_whatever_was_asked_for():
+    """It has no Wayland session; validation refuses the pairing separately."""
+    config = make_kiosk_config(session_type="wayland")
+
+    assert kiosk.wants_wayland(config) is False
+    path, content = kiosk.session_entry(config)
+    assert path.startswith("usr/share/xsessions/")
+    assert "mate-session" in content
+
+
+def test_console_switching_is_refused_by_polkit_not_only_by_xorg():
+    """The restriction has to survive Plasma's move to Wayland.
+
+    Under Wayland xorg.conf is never read, so DontVTSwitch does nothing; the
+    compositor asks logind to switch, and that request is what gets refused.
+    """
+    rules = kiosk.polkit_rules(make_kde_config(session_type="wayland"))
+
+    assert "org.freedesktop.login1.chvt" in rules
+    # And the spare consoles are not allocated at all.
+    assert "NAutoVTs=0" in kiosk.logind_conf()
+
+
+def test_the_xorg_lockdown_is_still_written_but_is_not_the_load_bearing_part():
+    config = make_kde_config(session_type="wayland")
+    files = kiosk.config_files(config)
+
+    assert kiosk.XORG_CONF_PATH in files
+    assert "DontVTSwitch" in files[kiosk.XORG_CONF_PATH][0]
+    assert kiosk.LOGIND_CONF_PATH in files
+
+
+def test_wayland_packages_are_added_only_when_asked_for():
+    backend = get_backend("debian")
+    x11 = backend.desktop_packages(make_kde_config(session_type="x11"))
+    wayland = backend.desktop_packages(make_kde_config(session_type="wayland"))
+
+    assert "kwin-wayland" not in x11
+    assert "kwin-wayland" in wayland
+    # X-only applications are most of what a kiosk allows.
+    assert "xwayland" in wayland
+
+
+def test_wayland_is_refused_where_it_cannot_work():
+    """Both refusals are facts about the images, not preferences."""
+    mate = make_kiosk_config(session_type="wayland")
+    assert any("MATE" in e for e in _errors(mate))
+
+    redos = make_kde_config("redos", session_type="wayland")
+    assert any("РЕД ОС" in e for e in _errors(redos))
+
+    assert _errors(make_kde_config("redos", session_type="x11")) == []
+    assert _errors(make_kde_config("debian", session_type="wayland")) == []
+
+
+def test_display_manager_asks_for_our_session_by_name(layout):
+    for target_os in ("debian", "redos"):
+        backend = get_backend(target_os)
+        config = make_kde_config(target_os)
+        files = backend.config_files(config, layout)
+        dm_file = next(path for path in files if "sddm" in path or "lightdm" in path)
+        assert kiosk.SESSION_NAME in files[dm_file]
+
+
+# ----------------------------------------------------------------------
+# Install speed
+# ----------------------------------------------------------------------
+def test_packages_are_installed_through_eatmydata_inside_the_target():
+    """Regression: the accelerator silently did nothing on cross-arch builds.
+
+    `maybe_eatmydata` prefixes the *host's* copy, which cannot be preloaded
+    into a process of another architecture -- measured on this project's own
+    arm64→amd64 run, where every package logged "libeatmydata.so ... cannot be
+    preloaded ... ignored". The install then sat waiting on fsync with the CPU
+    idle: load average 5, everything in D-state behind a USB stick and dm-crypt.
+
+    Resolved inside the target instead, at run time, because the package is not
+    there yet the first time this runs.
+    """
+    backend = get_backend("debian")
+    argv = backend.package_install_command("/mnt/t", ["mate-panel"])
+
+    script = argv[-1]
+    assert "/usr/bin/eatmydata" in script
+    # Falls back rather than failing where it is absent.
+    assert "else run=" in script
+    assert "apt-get install -y --no-install-recommends" in script
+
+
+def test_eatmydata_is_installed_early_enough_to_help():
+    """It has to be in before the hundreds of desktop packages, not after."""
+    config = make_kiosk_config()
+    boot = get_backend("debian").boot_packages(config)
+
+    assert "eatmydata" in boot
+    assert boot.index("eatmydata") == 0
+
+
+def test_package_names_cannot_break_out_of_the_shell():
+    """The command now goes through `sh -c`, so quoting has to hold."""
+    argv = get_backend("debian").package_install_command("/mnt/t", ["ok", "a b; rm -rf /"])
+
+    assert "'a b; rm -rf /'" in argv[-1]
+
+
+def test_firmware_does_not_rebuild_the_initramfs_once_per_package():
+    """Regression: thirty initramfs rebuilds in a row.
+
+    Every firmware package fires initramfs-tools' trigger, so installing them
+    one by one rebuilt the initramfs after each -- observed on a real run as
+    `initramfs-tools.postinst triggered update-initramfs` between packages,
+    minutes apiece under emulation. The initramfs this program ships is built
+    later anyway, once crypttab and the recovery hooks are in place.
+    """
+    argv = get_backend("debian").firmware_install_command("/mnt/t", "/mnt/img")
+    script = argv[-1]
+
+    assert "--no-triggers" in script
+    # ...and the deferred triggers are run once, at the end.
+    assert "--triggers-only --pending" in script
+    assert script.index("--no-triggers") < script.index("--triggers-only")

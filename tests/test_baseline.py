@@ -1,0 +1,119 @@
+"""The starting point of a new configuration, and the change list against it.
+
+A wizard's defaults are a statement about what the tool is for. These fix that
+statement in place: a new configuration is the most restricted medium this
+program can build, and everything the administrator does afterwards is an
+opening they made on purpose -- which is exactly what the last step lists back
+to them.
+"""
+from __future__ import annotations
+
+from portable_os_admin.config import InstallConfig
+from portable_os_admin.config.validator import BuiltinConfigValidator
+
+
+def test_a_new_configuration_starts_as_a_kiosk():
+    """Not as an ordinary system someone must know to restrict."""
+    config = InstallConfig.create_baseline("stick", "debian")
+
+    assert config.profile == "kiosk"
+    assert config.kiosk.enabled is True
+    assert config.kiosk.desktop_environment == "mate"
+
+
+def test_every_optional_opening_starts_closed():
+    config = InstallConfig.create_baseline("stick", "debian")
+
+    assert config.kiosk.allow_removable_media is False
+    assert config.account.sudo is False
+    assert config.remote_access.enabled is False
+    assert config.auto_update.enabled is False
+    assert config.packages == []
+    assert config.system_tasks == []
+
+
+def test_shutdown_is_granted_because_the_alternative_is_worse():
+    """Without it the only way to stop the machine is pulling the medium out."""
+    assert InstallConfig.create_baseline("stick", "debian").kiosk.allow_shutdown is True
+
+
+def test_the_baseline_asks_for_the_one_thing_it_cannot_guess():
+    """No applications, and validation refuses a kiosk without any.
+
+    That is the point: there is no sensible default for which programs a
+    particular kiosk should offer, so it is the single decision the
+    administrator is forced to make rather than one they might miss.
+    """
+    config = InstallConfig.create_baseline("stick", "debian")
+    assert config.kiosk.allowed_apps == []
+
+    errors = BuiltinConfigValidator().validate(config).errors
+    assert any("хотя бы одно приложение" in e for e in errors)
+
+    config.kiosk.allowed_apps = ["mate-calc"]
+    assert BuiltinConfigValidator().validate(config).errors == []
+
+
+def test_create_default_is_left_alone():
+    """The installer and the tests rely on it being a plain configuration."""
+    config = InstallConfig.create_default("stick", "debian")
+
+    assert config.profile == "console"
+    assert config.kiosk.enabled is False
+
+
+# ----------------------------------------------------------------------
+# The change list
+# ----------------------------------------------------------------------
+def test_an_untouched_configuration_reports_no_changes():
+    baseline = InstallConfig.create_baseline("stick", "debian")
+    assert InstallConfig.create_baseline("stick", "debian").diff_from(baseline) == []
+
+
+def test_changes_are_reported_in_the_words_the_interface_uses():
+    """A path like kiosk.allow_removable_media tells an administrator nothing."""
+    baseline = InstallConfig.create_baseline("stick", "debian")
+    config = InstallConfig.create_baseline("stick", "debian")
+    config.kiosk.allow_removable_media = True
+    config.account.sudo = True
+
+    changes = dict((label, (before, after)) for label, before, after in config.diff_from(baseline))
+
+    assert changes["Съёмные носители"] == ("нет", "да")
+    assert changes["Права администратора у пользователя"] == ("нет", "да")
+
+
+def test_lists_and_empty_values_are_readable():
+    baseline = InstallConfig.create_baseline("stick", "debian")
+    config = InstallConfig.create_baseline("stick", "debian")
+    config.kiosk.allowed_apps = ["mate-calc", "atril"]
+    config.arch = "amd64"
+
+    changes = dict((label, (before, after)) for label, before, after in config.diff_from(baseline))
+
+    assert changes["Разрешённые приложения"] == ("(пусто)", "mate-calc, atril")
+    assert changes["Архитектура носителя"] == ("(пусто)", "amd64")
+
+
+def test_derived_fields_are_not_reported_as_changes():
+    """Validation status is computed, not authored -- listing it is noise."""
+    baseline = InstallConfig.create_baseline("stick", "debian")
+    config = InstallConfig.create_baseline("stick", "debian")
+    config.validation_status = "valid"
+    config.validation_errors = []
+
+    assert config.diff_from(baseline) == []
+
+
+def test_a_field_with_no_label_still_appears():
+    """A new field must show up in the list the day it is added.
+
+    Falling back to the raw path keeps an unlabelled field visible rather than
+    silently unreported, which is the failure that would matter.
+    """
+    from portable_os_admin.config.schema import FIELD_LABELS, _diff_dicts
+
+    changes = _diff_dicts({"brand_new_field": 1}, {"brand_new_field": 2})
+
+    assert changes == [("brand_new_field", "1", "2")]
+    assert "brand_new_field" not in FIELD_LABELS

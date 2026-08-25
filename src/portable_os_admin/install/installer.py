@@ -91,6 +91,13 @@ class OSInstaller:
         self.luks_manager = luks_manager or LuksManager()
         self.runner = runner or CommandRunner()
         self._progress = _Progress(None)
+        #: True once anything has been written to the medium. Read by the
+        #: interface when a run fails, so it can say whether the stick's former
+        #: contents are gone -- several failures (a mismatched image, a device
+        #: too small, no emulator for the target architecture) happen before
+        #: the first write, and telling someone their medium was erased when it
+        #: was not is its own kind of damage.
+        self.medium_modified = False
 
     def check_possible(self, device: BlockDevice, config: InstallConfig, *, require_unmounted: bool = True) -> None:
         """"Установка.Проверка.Носитель" / "Установка.Проверка.ДоИзменения":
@@ -311,6 +318,10 @@ class OSInstaller:
         self._unmount_medium(device, plan, dry_run, confirm_device)
 
         self._progress.step("Очистка носителя и создание разделов")
+        # Set immediately before the first destructive command, not after: if
+        # partitioning itself fails halfway, the medium has still been written
+        # to and saying otherwise would be worse than saying nothing.
+        self.medium_modified = not dry_run
         self.disk_manager.apply(
             plan_partitions(device.path, config.disk),
             dry_run=dry_run,
@@ -561,6 +572,17 @@ class OSInstaller:
                 optional = backend.optional_package_command(layout.mount_root, ["firejail"])
                 if optional is not None:
                     run(optional, timeout=BOOTSTRAP_TIMEOUT)
+
+            # Device firmware the image carries outside its package index.
+            # Without it a medium built from a Debian image reaches unfamiliar
+            # hardware with no wireless and no graphics acceleration -- which
+            # for a system whose whole point is being carried elsewhere is the
+            # difference between working and not.
+            image_dir = image_url[len("file://"):] if image_url.startswith("file://") else ""
+            firmware_cmd = backend.firmware_install_command(layout.mount_root, image_dir)
+            if firmware_cmd is not None:
+                self._progress.step("Установка прошивок устройств")
+                run(firmware_cmd, timeout=BOOTSTRAP_TIMEOUT)
 
         self._progress.step("Создание учётной записи и служб")
         for argv in backend.chroot_setup_commands(layout.mount_root, config):

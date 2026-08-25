@@ -19,7 +19,15 @@ import sys
 from dataclasses import dataclass
 from typing import Protocol
 
-from .schema import LUKS_CIPHERS, LUKS_KDFS, SUPPORTED_ARCH, SUPPORTED_TARGET_OS, InstallConfig
+from .schema import (
+    LUKS_CIPHERS,
+    LUKS_KDFS,
+    SUPPORTED_ARCH,
+    SUPPORTED_DESKTOPS,
+    SUPPORTED_SESSION_TYPES,
+    SUPPORTED_TARGET_OS,
+    InstallConfig,
+)
 
 _USERNAME_RE = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
 #: A desktop-entry name as RED OS's `kiosk-mode-on -a` takes it: the basename
@@ -193,6 +201,34 @@ class BuiltinConfigValidator:
                 f"режим киоска не поддерживается для {config.target_os!r}: "
                 "реализован и проверен только для debian и redos"
             )
+
+        desktop = getattr(kiosk, "desktop_environment", "") or ""
+        if desktop not in SUPPORTED_DESKTOPS:
+            errors.append(
+                f"неподдерживаемая рабочая среда киоска: {desktop!r} "
+                f"(ожидается одно из {', '.join(SUPPORTED_DESKTOPS)})"
+            )
+
+        session_type = getattr(kiosk, "session_type", "") or ""
+        if session_type not in SUPPORTED_SESSION_TYPES:
+            errors.append(
+                f"неподдерживаемый тип сеанса: {session_type!r} "
+                f"(ожидается одно из {', '.join(SUPPORTED_SESSION_TYPES)})"
+            )
+        elif session_type == "wayland":
+            # MATE has no Wayland session at all, and RED OS 8's image carries
+            # Plasma 5.27 without `startplasma-wayland` -- checked against the
+            # image's own file list. Refusing here beats a medium that installs
+            # cleanly and then has no session to start.
+            if desktop == "mate":
+                errors.append(
+                    "MATE не умеет работать под Wayland: выберите X11 или рабочую среду KDE"
+                )
+            elif config.target_os == "redos":
+                errors.append(
+                    "в образе РЕД ОС нет Wayland-сеанса Plasma (есть только startplasma-x11): "
+                    "для РЕД ОС выберите X11"
+                )
 
         if not kiosk.allowed_apps:
             errors.append(

@@ -9,6 +9,7 @@ mirror defaults, sudo group name used elsewhere) follow from that choice.
 """
 from __future__ import annotations
 
+import platform
 import re
 import tkinter as tk
 from pathlib import Path
@@ -26,6 +27,7 @@ from ...config.schema import (
 )
 from ...config.validator import ConfigValidationUnavailableError
 from ...errors import RepoBrowseError
+from ...install.emulation import probe as probe_emulation
 from .. import theme
 from ..widgets import KNOWN_ERRORS, WizardFrame, add_choice, add_field, run_in_background
 
@@ -47,6 +49,16 @@ DEFAULT_MIRROR = {
 }
 CATALOG_DISPLAY_LIMIT = 200
 
+#: Shown instead of an empty architecture field, which is what "same as this
+#: machine" is stored as. An empty combobox reads as "not filled in yet"
+#: rather than as a decision.
+ARCH_SAME_AS_HOST = "как у этой машины"
+#: Offered spellings. One per architecture rather than both synonyms: the
+#: schema accepts amd64/x86_64 and arm64/aarch64 alike because users copy
+#: whichever they saw, but a list offering the same thing twice is a list that
+#: makes people wonder what the difference is.
+ARCH_CHOICES = ("amd64", "arm64")
+
 
 class ConfigWizardFrame(WizardFrame):
     def __init__(self, parent: tk.Widget, app, config_path: Path | None = None):
@@ -54,8 +66,18 @@ class ConfigWizardFrame(WizardFrame):
         if config_path is not None:
             self.config = app.config_manager.open(config_path)
         else:
-            self.config = InstallConfig.create_default(name="", target_os="debian")
+            # A new configuration starts as the locked-down minimum, not as a
+            # blank system. What the wizard opens on is a statement about what
+            # this tool builds, and every later step is the administrator
+            # opening something on purpose.
+            self.config = InstallConfig.create_baseline(name="", target_os="debian")
             self.config.mirror = DEFAULT_MIRROR["debian"]
+        # Kept for the change list on the last step: what the administrator
+        # started from, so "what did I actually alter?" has an answer.
+        self._baseline = InstallConfig.create_baseline(
+            name=self.config.name, target_os=self.config.target_os
+        )
+        self._baseline.mirror = DEFAULT_MIRROR.get(self.config.target_os, "")
         self._catalog: list[RepoPackage] = []
         self._catalog_view: list[RepoPackage] = []
         self._sort_descending: dict[str, bool] = {}
@@ -129,7 +151,7 @@ class ConfigWizardFrame(WizardFrame):
             editable=True,
         )
         self.mirror_var = tk.StringVar(value=self.config.mirror)
-        add_field(
+        _, row = add_field(
             form,
             row,
             "Зеркало репозитория:",
@@ -137,6 +159,68 @@ class ConfigWizardFrame(WizardFrame):
             hint="используется и для установки, и для просмотра пакетов на шаге 5",
             width=48,
         )
+
+        # Architecture is a first-class choice, not a field only reachable by
+        # editing the JSON. An administrator on an arm64 laptop building sticks
+        # for amd64 desktops is the normal case, not an exotic one -- and left
+        # empty this means "same as this machine", so the installer refuses an
+        # image of any other architecture before it starts.
+        self.arch_var = tk.StringVar(value=self.config.arch or ARCH_SAME_AS_HOST)
+        self.arch_combo, row = add_choice(
+            form,
+            row,
+            "Архитектура носителя:",
+            self.arch_var,
+            [ARCH_SAME_AS_HOST, *ARCH_CHOICES],
+            width=22,
+            on_change=self._on_arch_changed,
+        )
+        self.arch_status_var = tk.StringVar()
+        self.arch_status = ttk.Label(
+            form,
+            textvariable=self.arch_status_var,
+            style="Hint.TLabel",
+            # HINT_WRAP, not TEXT_WRAP: this sits in the form's second column,
+            # which already starts well to the right, and the full width pushed
+            # the end of the sentence off the card.
+            wraplength=theme.HINT_WRAP,
+            justify="left",
+        )
+        self.arch_status.grid(row=row, column=1, sticky="w", pady=(0, theme.SPACE_XS))
+        self._on_arch_changed()
+
+    def _on_arch_changed(self) -> None:
+        """Says now whether this machine can build for the chosen architecture.
+
+        Building for a foreign architecture works -- every chroot step runs
+        through the emulator the kernel dispatches to -- but only where one is
+        registered. Answering here, while the administrator is choosing, beats
+        refusing at install time: by then they have picked an image, a medium
+        and a passphrase.
+        """
+        chosen = self.arch_var.get()
+        if chosen == ARCH_SAME_AS_HOST:
+            self.arch_status_var.set(
+                f"Как у этой машины ({platform.machine()}). Образ другой архитектуры "
+                "будет отклонён."
+            )
+            self.arch_status.configure(style="Hint.TLabel")
+            return
+
+        emulation = probe_emulation(chosen)
+        if emulation.native:
+            self.arch_status_var.set("Родная архитектура этой машины — эмуляция не нужна.")
+            self.arch_status.configure(style="Hint.TLabel")
+        elif emulation.available:
+            self.arch_status_var.set(
+                f"Чужая архитектура. Эмулятор найден ({emulation.registration}), сборка "
+                "возможна: шаги внутри chroot пойдут через него и займут заметно больше "
+                "времени. Загрузку такого носителя проверьте на машине нужной архитектуры."
+            )
+            self.arch_status.configure(style="Hint.TLabel")
+        else:
+            self.arch_status_var.set(f"Собрать не получится: {emulation.reason}")
+            self.arch_status.configure(style="Warning.TLabel")
 
     def _on_target_os_changed(self) -> None:
         target_os = self.target_os_var.get()
@@ -159,6 +243,10 @@ class ConfigWizardFrame(WizardFrame):
         self.config.target_os = self.target_os_var.get()
         self.config.release = self.release_var.get().strip()
         self.config.mirror = self.mirror_var.get().strip()
+        # "как у этой машины" is the label for an empty value, which is what
+        # the schema means by "same architecture as the host".
+        chosen_arch = self.arch_var.get()
+        self.config.arch = "" if chosen_arch == ARCH_SAME_AS_HOST else chosen_arch
 
     def _validate_step_basics(self) -> bool:
         if not self.config.name:
@@ -605,11 +693,54 @@ class ConfigWizardFrame(WizardFrame):
             ).pack(anchor="w", pady=(0, theme.SPACE_XS))
 
         self.kiosk_frame = ttk.LabelFrame(
-            body, text="Разрешённые приложения и ограничения", padding=theme.SPACE_SM
+            body, text="Рабочая среда, приложения и ограничения", padding=theme.SPACE_SM
         )
         self.kiosk_frame.pack(fill="both", expand=True, pady=(0, theme.SPACE_MD))
         inner = ttk.Frame(self.kiosk_frame)
         inner.pack(fill="both", expand=True)
+
+        self.desktop_var = tk.StringVar(value=kiosk.desktop_environment or "mate")
+        desktop_row = ttk.Frame(inner)
+        desktop_row.pack(fill="x", pady=(0, theme.SPACE_SM))
+        ttk.Label(desktop_row, text="Рабочая среда:").pack(side="left", padx=(0, theme.SPACE_MD))
+        ttk.Radiobutton(
+            desktop_row, text="MATE", value="mate", variable=self.desktop_var
+        ).pack(side="left")
+        ttk.Radiobutton(
+            desktop_row, text="KDE Plasma", value="kde", variable=self.desktop_var
+        ).pack(side="left", padx=(theme.SPACE_MD, 0))
+        ttk.Label(
+            inner,
+            text="MATE — то, на чём построен штатный режим киоска РЕД ОС; ограничения "
+            "задаются через dconf. KDE использует встроенный механизм Kiosk: запрет "
+            "проверяют сами приложения, поэтому закрываются терминал и запуск "
+            "принесённых ярлыков, а диалоги открытия файлов не выходят за пределы "
+            "домашнего каталога и раздела обмена. KDE тяжелее и дольше ставится.",
+            style="Hint.TLabel",
+            wraplength=theme.TEXT_WRAP,
+        ).pack(anchor="w", pady=(0, theme.SPACE_SM))
+
+        self.session_var = tk.StringVar(value=kiosk.session_type or "x11")
+        session_row = ttk.Frame(inner)
+        session_row.pack(fill="x")
+        ttk.Label(session_row, text="Графический протокол:").pack(
+            side="left", padx=(0, theme.SPACE_MD)
+        )
+        ttk.Radiobutton(session_row, text="X11", value="x11", variable=self.session_var).pack(
+            side="left"
+        )
+        ttk.Radiobutton(
+            session_row, text="Wayland (только KDE)", value="wayland", variable=self.session_var
+        ).pack(side="left", padx=(theme.SPACE_MD, 0))
+        ttk.Label(
+            inner,
+            text="Plasma переходит на Wayland, поэтому выбор явный. Под Wayland файл "
+            "xorg.conf не читается, и запрет Ctrl+Alt+F1..F12 держится не на нём, а на "
+            "правиле polkit и отключённых текстовых консолях — так ограничение работает "
+            "при любом протоколе. В образе РЕД ОС Wayland-сеанса Plasma нет, там только X11.",
+            style="Hint.TLabel",
+            wraplength=theme.TEXT_WRAP,
+        ).pack(anchor="w", pady=(0, theme.SPACE_SM))
 
         ttk.Label(
             inner,
@@ -803,6 +934,8 @@ class ConfigWizardFrame(WizardFrame):
         self.config.profile = self.profile_var.get()
         kiosk = self.config.kiosk
         kiosk.enabled = self.config.profile == "kiosk"
+        kiosk.desktop_environment = self.desktop_var.get()
+        kiosk.session_type = self.session_var.get()
         kiosk.allowed_apps = list(self.allowed_list.get(0, "end"))
         kiosk.autostart_app = self.autostart_var.get().strip()
         kiosk.allow_shutdown = self.allow_shutdown_var.get()
@@ -837,6 +970,17 @@ class ConfigWizardFrame(WizardFrame):
                     "рабочий стол, с которого нечего запустить."
                 )
                 return False
+            if kiosk.session_type == "wayland":
+                if kiosk.desktop_environment == "mate":
+                    self.message_bar.error(
+                        "MATE не умеет работать под Wayland — выберите X11 или KDE."
+                    )
+                    return False
+                if self.config.target_os == "redos":
+                    self.message_bar.error(
+                        "В образе РЕД ОС нет Wayland-сеанса Plasma — для РЕД ОС выберите X11."
+                    )
+                    return False
             if kiosk.autostart_app and kiosk.autostart_app not in kiosk.allowed_apps:
                 self.message_bar.error(
                     f"Приложение автозапуска «{kiosk.autostart_app}» не входит в список "
@@ -875,13 +1019,15 @@ class ConfigWizardFrame(WizardFrame):
         full document is visible, instead of through a step dedicated to typing
         shell commands into a list box.
         """
+        self._build_change_list(body)
+
         ttk.Label(
             body,
             text="Файл конфигурации целиком. Можно править прямо здесь — изменения применятся по кнопке ниже.",
             style="Hint.TLabel",
             wraplength=theme.TEXT_WRAP,
             justify="left",
-        ).pack(anchor="w")
+        ).pack(anchor="w", pady=(theme.SPACE_MD, 0))
 
         editor_frame = ttk.Frame(body)
         editor_frame.pack(fill="both", expand=True, pady=(6, 0))
@@ -909,6 +1055,56 @@ class ConfigWizardFrame(WizardFrame):
         ttk.Label(body, textvariable=self.validation_status_var, wraplength=740, justify="left").pack(
             anchor="w", pady=(6, 0)
         )
+
+    def _build_change_list(self, body: ttk.Frame) -> None:
+        """What this configuration changes against the locked-down starting point.
+
+        The finished file answers "what will be installed"; this answers "what
+        did I do", which in a configuration whose purpose is restricting a
+        system is the more useful question -- particularly for the entries that
+        *open* something up.
+        """
+        changes = self.config.diff_from(self._baseline)
+
+        frame = ttk.LabelFrame(
+            body, text="Отличия от исходной минимальной конфигурации", padding=theme.SPACE_SM
+        )
+        frame.pack(fill="x", pady=(0, theme.SPACE_SM))
+
+        if not changes:
+            ttk.Label(
+                frame,
+                text="Ничего не изменено: конфигурация в точности такая, какой создаётся "
+                "по умолчанию — режим киоска с минимальными возможностями.",
+                style="Hint.TLabel",
+                wraplength=theme.TEXT_WRAP,
+            ).pack(anchor="w")
+            return
+
+        table = ttk.Treeview(
+            frame,
+            columns=("field", "before", "after"),
+            show="headings",
+            height=min(len(changes), 8),
+        )
+        for column, title, width in (
+            ("field", "Параметр", 260),
+            ("before", "Было", 150),
+            ("after", "Стало", 220),
+        ):
+            table.heading(column, text=title)
+            table.column(column, width=width, anchor="w")
+        for label, before, after in changes:
+            table.insert("", "end", values=(label, before, after))
+        table.pack(fill="x")
+        ttk.Label(
+            frame,
+            text=f"Изменений: {len(changes)}. Исходная конфигурация — самая ограниченная "
+            "из тех, что умеет собирать программа; всё перечисленное здесь администратор "
+            "разрешил или изменил сознательно.",
+            style="Hint.TLabel",
+            wraplength=theme.TEXT_WRAP,
+        ).pack(anchor="w", pady=(theme.SPACE_XS, 0))
 
     def _config_as_text(self) -> str:
         data = self.config.to_dict()

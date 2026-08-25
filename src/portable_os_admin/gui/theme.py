@@ -75,6 +75,10 @@ SPACE_XL = 32
 #: loses the start of the next line, which is why prose here wraps well before
 #: the window edge instead of filling it.
 TEXT_WRAP = 620
+#: For text in the second column of a form, which already starts well to the
+#: right of the card's edge. Using the full width there pushed the last words
+#: of a long hint off the card entirely.
+HINT_WRAP = 520
 
 # ----------------------------------------------------------------------
 # Type scale: four roles, no more

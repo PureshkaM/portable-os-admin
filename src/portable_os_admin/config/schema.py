@@ -15,6 +15,77 @@ SUPPORTED_TARGET_OS = ("debian", "redos", "astra")
 SUPPORTED_ARCH = ("amd64", "x86_64", "arm64", "aarch64")
 
 
+#: Field paths spelled the way the interface names them. Anything missing from
+#: here is shown by its path, so a new field appears in the change list as soon
+#: as it exists rather than silently going unreported.
+FIELD_LABELS = {
+    "name": "Имя конфигурации",
+    "target_os": "Целевая ОС",
+    "release": "Релиз",
+    "mirror": "Зеркало репозитория",
+    "arch": "Архитектура носителя",
+    "profile": "Режим системы",
+    "packages": "Предустановленные пакеты",
+    "system_tasks": "Команды после установки",
+    "disk.esp_partition_mb": "Размер EFI-раздела, МБ",
+    "disk.boot_partition_mb": "Размер /boot, МБ",
+    "disk.log_partition_mb": "Размер раздела журналов, МБ",
+    "disk.exchange_partition_mb": "Размер раздела обмена, МБ",
+    "luks.cipher": "Шифр LUKS",
+    "luks.key_size_bits": "Длина ключа LUKS, бит",
+    "luks.kdf": "Функция формирования ключа",
+    "luks.failed_attempts_limit": "Лимит попыток ввода пароля",
+    "account.username": "Имя пользователя",
+    "account.full_name": "Полное имя",
+    "account.sudo": "Права администратора у пользователя",
+    "account.shell": "Командная оболочка",
+    "account.min_password_length": "Минимальная длина пароля",
+    "remote_access.enabled": "Удалённый доступ",
+    "remote_access.method": "Метод удалённого доступа",
+    "remote_access.port": "Порт удалённого доступа",
+    "kiosk.enabled": "Режим киоска",
+    "kiosk.desktop_environment": "Рабочая среда",
+    "kiosk.allowed_apps": "Разрешённые приложения",
+    "kiosk.autostart_app": "Приложение автозапуска",
+    "kiosk.screen_blank_minutes": "Гашение экрана, мин",
+    "kiosk.allow_shutdown": "Выключение машины пользователем",
+    "kiosk.allow_removable_media": "Съёмные носители",
+    "kiosk.firejail": "Песочница firejail",
+    "kiosk.firejail_options": "Параметры firejail",
+    "auto_update.enabled": "Автообновление",
+    "auto_update.include_kernel": "Обновлять ядро",
+    "auto_update.delay_minutes": "Задержка обновления, мин",
+}
+
+#: Never reported as a change: derived from the configuration rather than
+#: authored, so listing them would be noise the administrator did not cause.
+_DIFF_IGNORED = {"validation_status", "validation_errors", "name"}
+
+
+def _format_value(value) -> str:
+    if isinstance(value, bool):
+        return "да" if value else "нет"
+    if isinstance(value, list):
+        return ", ".join(str(v) for v in value) if value else "(пусто)"
+    if value == "":
+        return "(пусто)"
+    return str(value)
+
+
+def _diff_dicts(before: dict, after: dict, prefix: str = "") -> list[tuple[str, str, str]]:
+    changes: list[tuple[str, str, str]] = []
+    for key in after:
+        path = f"{prefix}{key}"
+        if path in _DIFF_IGNORED:
+            continue
+        old, new = before.get(key), after[key]
+        if isinstance(new, dict) and isinstance(old, dict):
+            changes += _diff_dicts(old, new, prefix=f"{path}.")
+        elif old != new:
+            changes.append((FIELD_LABELS.get(path, path), _format_value(old), _format_value(new)))
+    return changes
+
+
 @dataclass
 class DiskLayoutConfig:
     """Partition sizes for the medium.
@@ -71,6 +142,13 @@ KNOWN_RELEASES = {
 #: whose menu holds only the applications the administrator allowed.
 SYSTEM_PROFILES = ("console", "kiosk")
 
+#: Desktops the kiosk profile can be built on. Both exist in the installation
+#: images of both supported families -- checked against their own indexes.
+SUPPORTED_DESKTOPS = ("mate", "kde")
+
+#: Display protocols a kiosk session can run on.
+SUPPORTED_SESSION_TYPES = ("x11", "wayland")
+
 
 @dataclass
 class KioskConfig:
@@ -93,6 +171,36 @@ class KioskConfig:
     """
 
     enabled: bool = False
+    #: Which desktop the restricted session is built on.
+    #:
+    #: "mate" mirrors what RED OS's own kiosk uses, and restricts the session
+    #: through dconf: settings written system-wide and locked so the user
+    #: cannot write them back.
+    #:
+    #: "kde" uses KDE's Kiosk framework, which is a different kind of thing and
+    #: a stronger one. Its restrictions are not settings-that-are-locked but
+    #: authorisation checks the applications themselves perform: `shell_access`
+    #: is consulted by KAuthorized before anything opens a shell, so Konsole
+    #: refuses to start and Dolphin stops offering "open terminal" -- rather
+    #: than the launcher merely being hidden. It also has two things MATE has
+    #: no equivalent for: `run_desktop_files`, which refuses to execute a
+    #: .desktop file that did not come from a system directory, and URL
+    #: restrictions, which can stop file dialogs from browsing outside a
+    #: permitted path.
+    desktop_environment: str = "mate"
+    #: Display protocol of the session: "x11" or "wayland".
+    #:
+    #: Only KDE can do Wayland -- MATE has no Wayland session at all, and
+    #: asking for that pairing is refused rather than quietly downgraded.
+    #:
+    #: Kept as an explicit choice because it changes which restrictions apply.
+    #: `xorg.conf` is not read under Wayland, so the `DontVTSwitch` line that
+    #: blocks Ctrl+Alt+F<n> there does nothing; what holds in both cases is the
+    #: polkit refusal of org.freedesktop.login1.chvt, plus masked getty units
+    #: and NAutoVTs=0. Plasma is moving to Wayland, so this is the field that
+    #: keeps the mode honest as that happens rather than silently losing a
+    #: restriction.
+    session_type: str = "x11"
     #: Desktop-entry names the user may launch. Everything else is hidden from
     #: the menu and the desktop.
     allowed_apps: list[str] = field(default_factory=list)
@@ -263,5 +371,71 @@ class InstallConfig:
 
     @classmethod
     def create_default(cls, name: str, target_os: str = "debian") -> "InstallConfig":
+        """A plain configuration: the dataclass defaults, nothing decided.
+
+        Kept as it was because the installer, the tests and any code that just
+        needs *a* configuration rely on it. What an administrator starts from
+        in the interface is `create_baseline` below.
+        """
         release = {"debian": "bookworm", "redos": "8.0", "astra": "orel"}.get(target_os, "")
         return cls(name=name, target_os=target_os, release=release)
+
+    @classmethod
+    def create_baseline(cls, name: str, target_os: str = "debian") -> "InstallConfig":
+        """What a new configuration starts as: the locked-down minimum.
+
+        The starting point is a decision, not a blank. A wizard that opens on
+        defaults is telling the administrator what this tool is for, and the
+        old defaults said "an ordinary system with a console login" -- which is
+        the opposite of the point, and meant that getting a restricted medium
+        required knowing to go and ask for one.
+
+        So a new configuration begins as the most restricted thing this program
+        can build, and every step afterwards is the administrator *opening*
+        something deliberately: a permission granted, an application allowed, a
+        service switched on. Widening is visible; narrowing does not have to be
+        remembered.
+
+        Only `allowed_apps` is left empty, and that is deliberate too: there is
+        no sensible guess at which applications a particular kiosk should have,
+        and validation refuses a kiosk without any -- so the one thing the
+        administrator must decide is the one thing they are asked for.
+        """
+        config = cls.create_default(name, target_os)
+        config.profile = "kiosk"
+        config.kiosk = KioskConfig(
+            enabled=True,
+            desktop_environment="mate",
+            allowed_apps=[],
+            # No lock screen is possible anyway (the account password is
+            # locked), and a kiosk that dims is a kiosk whose panel survives.
+            screen_blank_minutes=15,
+            # Granted: without it a user cannot switch the machine off, and
+            # pulling the plug on a medium mid-write is worse than the risk of
+            # letting them shut it down.
+            allow_shutdown=True,
+            # Refused: a mounted stick is arbitrary files, and this is the
+            # single most useful thing to have to turn on consciously.
+            allow_removable_media=False,
+            # Off because it cannot be promised -- the package is in the RED OS
+            # image and absent from the Debian DVD.
+            firejail=False,
+        )
+        # Every optional opening starts closed.
+        config.account.sudo = False
+        config.remote_access = RemoteAccessConfig(enabled=False)
+        config.auto_update = AutoUpdateConfig(enabled=False)
+        config.packages = []
+        config.system_tasks = []
+        return config
+
+    def diff_from(self, other: "InstallConfig") -> list[tuple[str, str, str]]:
+        """(human-readable field, was, became) for everything that differs.
+
+        Exists so the last step of the wizard can show what the administrator
+        actually changed, rather than only the finished file. A JSON document
+        of sixty fields does not tell anyone which four of them they touched,
+        and in a configuration whose whole purpose is restricting a system,
+        "what did I open up?" is the question worth answering.
+        """
+        return _diff_dicts(other.to_dict(), self.to_dict())
