@@ -261,6 +261,12 @@ class RedOSInstallBackend(InstallBackend):
         ]
 
     def core_package_names(self) -> tuple[str, ...]:
+        return tuple(
+            name for name in self._core_package_names()
+            if name not in self.UNWANTED_PACKAGES
+        )
+
+    def _core_package_names(self) -> tuple[str, ...]:
         """The base system: from the image where possible, from here otherwise.
 
         The image's own comps.xml is the authority -- it is what that release
@@ -392,14 +398,24 @@ class RedOSInstallBackend(InstallBackend):
             return None
         return ["dnf", "--installroot", mount_root, "-y", *self._repo_arguments(), "install", *packages]
 
+    #: Пакеты, которые убираются из состава, даже если их назвал сам образ.
+    #:
+    #: dracut-config-rescue кладёт на носитель второй initramfs — замер на
+    #: собранном носителе: 138 МБ при 974 МБ раздела /boot, то есть больше
+    #: седьмой части. Для переносного носителя он бесполезен по смыслу:
+    #: систему, которая не загружается, чинят не с неё же, а с другого
+    #: носителя или из режима восстановления, который у нас свой.
+    UNWANTED_PACKAGES = ("dracut-config-rescue",)
+
     def boot_packages(self, config: InstallConfig) -> list[str]:
         arch = self.normalize_arch(config.arch)
         suffix = self.EFI_SUFFIX[arch]
         return [
             "kernel",
             f"grub2-efi-{suffix}",
-            # the -modules package is what makes grub2-install able to build an
-            # EFI image; without it grub2-install fails on RHEL-family systems.
+            # Модули grub нужны не для сборки образа (её тут нет — загрузчик
+            # приходит готовым), а самому grub во время работы: их он
+            # подгружает с раздела EFI по ходу загрузки.
             f"grub2-efi-{suffix}-modules",
             "grub2-tools",
             "grub2-tools-extra",

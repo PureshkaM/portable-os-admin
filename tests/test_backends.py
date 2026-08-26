@@ -236,3 +236,19 @@ def test_the_distribution_keeps_the_bootloader_it_was_given():
     assert "boot/efi/EFI" not in joined, "сборка выбрасывает загрузчик из эталона"
     # А вот метка носителя на ESP уникальна и остаться не должна.
     assert "boot/efi/poa" in joined
+
+
+def test_redos_does_not_put_a_rescue_initramfs_on_the_medium():
+    """Второй initramfs занимает 138 МБ из 974 на разделе /boot.
+
+    Замер на собранном носителе. Для переносного носителя аварийный образ
+    бесполезен по смыслу: систему, которая не загружается, чинят не с неё же,
+    а с другого носителя или из режима восстановления, который здесь свой.
+    """
+    from portable_os_admin.install.backends import get_backend
+
+    backend = get_backend("redos")
+    backend.image_core_packages = ("bash", "dracut-config-rescue", "systemd")
+
+    assert "dracut-config-rescue" not in backend.core_package_names()
+    assert "bash" in backend.core_package_names()
