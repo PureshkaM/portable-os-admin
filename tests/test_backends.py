@@ -398,3 +398,49 @@ def test_redos_tells_the_initramfs_to_unlock_the_volume():
     # А в самом /etc/default/grub они тоже есть — оттуда их и берёт генератор.
     grub_defaults = get_backend("redos").config_files(config, layout)["etc/default/grub"]
     assert f"rd.luks.uuid={layout.luks_uuid}" in grub_defaults
+
+
+def test_both_families_build_a_generic_initramfs():
+    """Носитель поедет на машину, которой никто не видел.
+
+    Цена ошибки измерена: собранный по умолчанию образ РЕД ОС занял 21 МБ и не
+    содержал ни usb_storage, ни uas — драйверов того самого накопителя, с
+    которого он должен грузиться. Ядро не видело флешку, раздел LUKS не
+    появлялся, загрузка уходила в аварийный режим, а симптом — «нет устройства
+    с таким UUID» — уводил в сторону.
+
+    Требование общее для обоих семейств, потому что общая причина; способ
+    разный, поэтому проверяется результат, а не команда.
+    """
+    from portable_os_admin.install.backends import get_backend
+
+    redos = get_backend("redos")
+    debian = get_backend("debian")
+
+    assert "--no-hostonly" in redos.initramfs_command("/mnt/root")
+
+    # И настройка, которая держит образ универсальным при пересборках на самом
+    # носителе: без неё первое же автообновление на чужой машине сделало бы
+    # носитель незагружаемым на всех остальных.
+    redos_conf = redos.generic_initramfs_files()
+    debian_conf = debian.generic_initramfs_files()
+    assert redos_conf, "РЕД ОС не закрепляет универсальность образа"
+    assert debian_conf, "Debian не закрепляет универсальность образа"
+    assert "hostonly=no" in "".join(v[0] for v in redos_conf.values())
+    assert "MODULES=most" in "".join(v[0] for v in debian_conf.values())
+
+
+def test_the_generic_setting_reaches_the_medium():
+    """Файл должен попасть на носитель, а не остаться намерением."""
+    from portable_os_admin.config import InstallConfig
+    from portable_os_admin.install.backends import get_backend
+    from portable_os_admin.install.disk import build_media_layout, plan_partitions
+
+    for family, marker in (("redos", "dracut.conf.d"), ("debian", "initramfs-tools")):
+        config = InstallConfig.create_baseline("stick", family)
+        config.release = "8.0" if family == "redos" else "trixie"
+        layout = build_media_layout(
+            plan_partitions("/dev/sdb", config.disk), mapper_name="poa-x", mount_root="/mnt/root"
+        )
+        scripted = get_backend(family).scripted_files(config, layout)
+        assert any(marker in path for path in scripted), f"{family}: настройка не пишется"

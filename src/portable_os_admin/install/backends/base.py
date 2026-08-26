@@ -350,7 +350,31 @@ class InstallBackend(ABC):
     @abstractmethod
     def initramfs_command(self, mount_root: str) -> list[str]:
         """argv (chroot) regenerating the initramfs so it embeds the LUKS
-        unlocking logic derived from the /etc/crypttab written below."""
+        unlocking logic derived from the /etc/crypttab written below.
+
+        Образ обязан быть **универсальным**, а не собранным под машину, где
+        идёт сборка. Требование общее для обоих семейств, потому что общая у
+        них причина: носитель переносной и поедет на машину, которой здесь
+        никто не видел.
+
+        Цена ошибки измерена: собранный по умолчанию образ РЕД ОС занял 21 МБ
+        и не содержал ни `usb_storage`, ни `uas` — драйверов того самого
+        накопителя, с которого он должен грузиться. Ядро не видело флешку,
+        раздел LUKS не появлялся, и загрузка три минуты ждала устройство,
+        после чего уходила в аварийный режим. По симптому — «нет устройства с
+        таким UUID» — причину не угадать.
+
+        Как это делается, у семейств разное (`--no-hostonly` у dracut,
+        `MODULES=most` у initramfs-tools), поэтому команду даёт бэкенд. А вот
+        настройку, которая заставляет оставаться универсальным и при
+        последующих пересборках **на самом носителе**, кладёт
+        `generic_initramfs_files`: без неё первое же автообновление на чужой
+        машине сделало бы носитель незагружаемым на всех остальных.
+        """
+
+    def generic_initramfs_files(self) -> dict[str, tuple[str, int | None]]:
+        """Настройка, закрепляющая универсальность образа на самом носителе."""
+        return {}
 
     @abstractmethod
     def bootloader_commands(self, layout: MediaLayout, config: InstallConfig) -> list[list[str]]:
@@ -662,6 +686,7 @@ class InstallBackend(ABC):
         distribution build writes these into the reference root without one.
         """
         files: dict[str, tuple[str, int | None]] = {}
+        files.update(self.generic_initramfs_files())
         files.update(kiosk_mode.config_files(config))
         files.update(autoupdate.config_files(config, self))
         return files
