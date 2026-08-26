@@ -213,6 +213,12 @@ class ConfigWizardFrame(WizardFrame):
             hint="через запятую; пусто — как в консоли",
             width=22,
         )
+        self.kernel_params_var = tk.StringVar(value=self.config.boot.kernel_parameters)
+        _, row = add_field(
+            form, row, "Параметры ядра:", self.kernel_params_var,
+            hint="добавляются к тем, что задаёт программа; например nomodeset",
+            width=36,
+        )
         self.timezone_var = tk.StringVar(value=loc.timezone)
         self.timezone_combo, row = add_choice(
             form, row, "Часовой пояс:", self.timezone_var,
@@ -284,6 +290,7 @@ class ConfigWizardFrame(WizardFrame):
         self.config.localisation.keymap = self.keymap_var.get().strip()
         self.config.localisation.x11_layouts = self.x11_layouts_var.get().strip()
         self.config.localisation.timezone = self.timezone_var.get().strip()
+        self.config.boot.kernel_parameters = self.kernel_params_var.get().strip()
 
     def _validate_step_basics(self) -> bool:
         if not self.config.name:

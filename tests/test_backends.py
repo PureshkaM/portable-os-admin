@@ -309,3 +309,49 @@ def test_boot_entries_are_rewritten_for_a_separate_boot_partition():
     assert commands.index(rewrite) < next(
         i for i, c in enumerate(commands) if "grub2-mkconfig" in c
     )
+
+
+def test_kernel_parameters_reach_redos_through_the_boot_entry():
+    """В RHEL-семействе командную строку несёт вариант загрузки, а не /etc/default/grub.
+
+    Значение оттуда попадает лишь в запасную переменную kernelopts, которую
+    запись со своей строкой `options` перекрывает. Поле, которое пишется
+    только в /etc/default/grub, для РЕД ОС не работает вовсе.
+    """
+    from portable_os_admin.config import InstallConfig
+    from portable_os_admin.install.backends import get_backend
+    from portable_os_admin.install.disk import build_media_layout, plan_partitions
+
+    config = InstallConfig.create_baseline("stick", "redos")
+    config.release = "8.0"
+    config.arch = "amd64"
+    config.boot.kernel_parameters = "nomodeset console=ttyS0,115200"
+    layout = build_media_layout(
+        plan_partitions("/dev/sdb", config.disk), mapper_name="poa-x", mount_root="/mnt/root"
+    )
+
+    commands = "\n".join(
+        " ".join(argv) for argv in get_backend("redos").bootloader_commands(layout, config)
+    )
+    assert "nomodeset console=ttyS0,115200" in commands
+    assert "^options " in commands, "параметры дописываются не в строку options"
+
+
+def test_redos_menu_does_not_wait_forever():
+    """Носитель может оказаться в машине без клавиатуры.
+
+    Меню, ждущее нажатия бесконечно, там означает «не загрузится никогда».
+    """
+    from portable_os_admin.config import InstallConfig
+    from portable_os_admin.install.backends import get_backend
+    from portable_os_admin.install.disk import build_media_layout, plan_partitions
+
+    config = InstallConfig.create_baseline("stick", "redos")
+    config.release = "8.0"
+    layout = build_media_layout(
+        plan_partitions("/dev/sdb", config.disk), mapper_name="poa-x", mount_root="/mnt/root"
+    )
+
+    grub = get_backend("redos").config_files(config, layout)["etc/default/grub"]
+    assert f"GRUB_TIMEOUT={config.boot.menu_timeout_seconds}" in grub
+    assert config.boot.menu_timeout_seconds >= 0
