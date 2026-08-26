@@ -449,3 +449,38 @@ def test_boot_partition_is_mounted_before_the_system_is_copied(session, kiosk_co
     # спотыкается о невозможность их сохранить.
     esp_mount = next(i for i, c in enumerate(commands) if "mount" in c and c.endswith("/boot/efi"))
     assert esp_mount > copy, "ESP подключён до копирования — cp -a на FAT откажет"
+
+
+def test_a_distribution_without_a_bootloader_is_refused_before_the_medium_is_touched(
+    session, big_device, tmp_path
+):
+    """Час работы не должен пропадать на последнем шаге.
+
+    Ровно это и случилось: дистрибутив был собран версией программы, которая
+    вычищала boot/efi/EFI, развёртывание отработало почти целиком и умерло на
+    установке загрузчика — когда носитель уже стёрт. Для RHEL-семейства такой
+    дистрибутив бесполезен: собрать загрузчик на месте нечем.
+    """
+    config = InstallConfig.create_baseline("stick", "redos")
+    config.release = "8.0"
+    ConfigManager().validate(config)
+
+    directory = tmp_path / "dist"
+    directory.mkdir()
+    archive = directory / distribution.ARCHIVE_NAME
+    archive.write_bytes(b"not a real image")
+    metadata = distribution.DistributionMetadata.for_config(
+        config, release="8.0", arch="x86_64", rootfs_bytes=1024, emulated=False
+    )
+    metadata.sha256 = distribution.sha256_of(str(archive))
+    metadata.has_bootloader = False
+    distribution.write_metadata(str(directory), metadata)
+
+    installer = OSInstaller(session)
+    with pytest.raises(InstallError) as excinfo:
+        installer.deploy_distribution(
+            big_device, str(directory), b"passphrase", dry_run=True, confirm_device="/dev/sdb"
+        )
+
+    assert "загрузчик" in str(excinfo.value).lower()
+    assert installer.medium_modified is False, "носитель тронут, хотя отказ был заранее"

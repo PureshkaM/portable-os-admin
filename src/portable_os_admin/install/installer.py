@@ -188,6 +188,18 @@ class OSInstaller:
         # The installer unmounts the medium itself as an explicit, logged step,
         # so an automounted stick is not a hard stop -- the user has already
         # confirmed the device is about to be erased.
+        # До стирания, а не на последнем шаге. Дистрибутив без загрузчика для
+        # RHEL-семейства бесполезен: собрать его на месте нечем, grub2-install
+        # для EFI там отключён. Раньше это выяснялось через час работы, когда
+        # носитель уже стёрт.
+        if backend.bootloader_comes_from_packages and not metadata.has_bootloader:
+            raise InstallError(
+                "в дистрибутиве нет загрузчика, а собрать его на месте для этого "
+                "семейства нельзя: подписанные shim и grub приходят готовыми в "
+                "пакетах.\nДистрибутив собран версией программы, которая их "
+                "выбрасывала, — пересоберите его.\nНоситель не изменён."
+            )
+
         self.check_possible(device, config, require_unmounted=False)
 
         media_id = crypto.new_media_id()
@@ -431,6 +443,10 @@ class OSInstaller:
         run(distribution.archive_command(root, archive, compressor=compressor), timeout=BOOTSTRAP_TIMEOUT)
 
         rootfs_bytes = _directory_size(root) if not dry_run else 0
+        has_bootloader = (
+            os.path.isdir(os.path.join(root, "boot", "efi", "EFI"))
+            and bool(os.listdir(os.path.join(root, "boot", "efi", "EFI")))
+        ) if not dry_run else True
         metadata = distribution.DistributionMetadata.for_config(
             config,
             release=release,
@@ -439,6 +455,7 @@ class OSInstaller:
             emulated=emulated,
             archive=archive_name,
         )
+        metadata.has_bootloader = has_bootloader
 
         self._progress.step("Подсчёт контрольной суммы")
         if not dry_run:
@@ -482,6 +499,18 @@ class OSInstaller:
             # Before anything is erased. This is the whole point of doing it
             # here rather than discovering a truncated archive mid-unpack.
             distribution.verify_archive(directory, metadata)
+
+        # До стирания, а не на последнем шаге. Дистрибутив без загрузчика для
+        # RHEL-семейства бесполезен: собрать его на месте нечем, grub2-install
+        # для EFI там отключён. Раньше это выяснялось через час работы, когда
+        # носитель уже стёрт.
+        if backend.bootloader_comes_from_packages and not metadata.has_bootloader:
+            raise InstallError(
+                "в дистрибутиве нет загрузчика, а собрать его на месте для этого "
+                "семейства нельзя: подписанные shim и grub приходят готовыми в "
+                "пакетах.\nДистрибутив собран версией программы, которая их "
+                "выбрасывала, — пересоберите его.\nНоситель не изменён."
+            )
 
         self.check_possible(device, config, require_unmounted=False)
 

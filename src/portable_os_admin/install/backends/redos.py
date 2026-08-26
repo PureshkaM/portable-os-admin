@@ -49,6 +49,7 @@ class RedOSInstallBackend(InstallBackend):
 
     EXTRA_TOOLS = ("dnf",)
     firewall_service = "firewalld"
+    bootloader_comes_from_packages = True
 
     ARCH_NAMES = {
         "x86_64": "x86_64",

@@ -163,6 +163,13 @@ class DistributionMetadata:
     #: anything is erased.
     rootfs_bytes: int = 0
     built_at: str = ""
+    #: Несёт ли дистрибутив готовый загрузчик. Для RHEL-семейства это
+    #: обязательно: там подписанные shim и grub приходят в пакетах, а
+    #: grub2-install для EFI отключён, так что развернуть загрузчик из ничего
+    #: невозможно. Проверяется до стирания носителя: дистрибутив, собранный
+    #: версией программы, которая выбрасывала boot/efi/EFI, иначе выяснился бы
+    #: через час, на последнем шаге.
+    has_bootloader: bool = False
     #: Emulation note when the root was built for a foreign architecture, so
     #: it travels with the artefact instead of being forgotten.
     built_under_emulation: bool = False
