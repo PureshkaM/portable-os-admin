@@ -187,6 +187,39 @@ class ConfigWizardFrame(WizardFrame):
         )
         self.arch_status.grid(row=row, column=1, sticky="w", pady=(0, theme.SPACE_XS))
         self._on_arch_changed()
+        row += 1
+
+        self.hostname_var = tk.StringVar(value=self.config.hostname)
+        _, row = add_field(
+            form, row, "Имя в сети:", self.hostname_var,
+            hint="у всех носителей организации оно не должно быть одинаковым",
+            width=24,
+        )
+
+        loc = self.config.localisation
+        self.locale_var = tk.StringVar(value=loc.locale)
+        self.locale_combo, row = add_choice(
+            form, row, "Язык системы:", self.locale_var,
+            ("ru_RU.UTF-8", "en_US.UTF-8"), width=22, editable=True,
+        )
+        self.keymap_var = tk.StringVar(value=loc.keymap)
+        self.keymap_combo, row = add_choice(
+            form, row, "Раскладка консоли:", self.keymap_var,
+            ("us", "ru"), width=22, editable=True,
+        )
+        self.x11_layouts_var = tk.StringVar(value=loc.x11_layouts)
+        _, row = add_field(
+            form, row, "Раскладки рабочего стола:", self.x11_layouts_var,
+            hint="через запятую; пусто — как в консоли",
+            width=22,
+        )
+        self.timezone_var = tk.StringVar(value=loc.timezone)
+        self.timezone_combo, row = add_choice(
+            form, row, "Часовой пояс:", self.timezone_var,
+            ("UTC", "Europe/Moscow", "Europe/Kaliningrad", "Asia/Yekaterinburg",
+             "Asia/Novosibirsk", "Asia/Krasnoyarsk", "Asia/Irkutsk", "Asia/Vladivostok"),
+            width=22, editable=True,
+        )
 
     def _on_arch_changed(self) -> None:
         """Says now whether this machine can build for the chosen architecture.
@@ -246,6 +279,11 @@ class ConfigWizardFrame(WizardFrame):
         # the schema means by "same architecture as the host".
         chosen_arch = self.arch_var.get()
         self.config.arch = "" if chosen_arch == ARCH_SAME_AS_HOST else chosen_arch
+        self.config.hostname = self.hostname_var.get().strip() or "portable-os"
+        self.config.localisation.locale = self.locale_var.get().strip()
+        self.config.localisation.keymap = self.keymap_var.get().strip()
+        self.config.localisation.x11_layouts = self.x11_layouts_var.get().strip()
+        self.config.localisation.timezone = self.timezone_var.get().strip()
 
     def _validate_step_basics(self) -> bool:
         if not self.config.name:

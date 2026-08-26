@@ -1002,3 +1002,51 @@ def test_an_abort_is_reported_as_a_decision_not_a_failure(gui_app, tmp_path):
     shown = wizard.message_bar.var.get()
     assert "рервана" in shown
     assert "Непредвиденная ошибка" not in shown
+
+
+def test_localisation_is_editable_in_the_wizard_not_only_in_json(gui_app, tmp_path):
+    """Поле, доступное только правкой JSON, для администратора не существует.
+
+    Язык, раскладка, часовой пояс и имя в сети — то, что меняют в первую
+    очередь, и заставлять ради этого редактировать файл значит признать, что
+    мастер неполон.
+    """
+    from portable_os_admin.gui.screens.config_wizard import ConfigWizardFrame
+
+    app = gui_app
+    _open_container(app, tmp_path)
+    app.show_frame(ConfigWizardFrame)
+    app.update()
+    wizard = app._current_frame
+    assert isinstance(wizard, ConfigWizardFrame)
+
+    wizard.name_var.set("kiosk-ru")
+    wizard.hostname_var.set("kiosk-07")
+    wizard.locale_var.set("ru_RU.UTF-8")
+    wizard.keymap_var.set("ru")
+    wizard.x11_layouts_var.set("us,ru")
+    wizard.timezone_var.set("Europe/Moscow")
+    wizard.save_step(0)
+
+    assert wizard.config.hostname == "kiosk-07"
+    assert wizard.config.localisation.locale == "ru_RU.UTF-8"
+    assert wizard.config.localisation.keymap == "ru"
+    assert wizard.config.localisation.x11_layouts == "us,ru"
+    assert wizard.config.localisation.timezone == "Europe/Moscow"
+
+
+def test_an_empty_hostname_does_not_produce_a_nameless_system(gui_app, tmp_path):
+    """Пустое поле — не повод оставить систему без имени."""
+    from portable_os_admin.gui.screens.config_wizard import ConfigWizardFrame
+
+    app = gui_app
+    _open_container(app, tmp_path)
+    app.show_frame(ConfigWizardFrame)
+    app.update()
+    wizard = app._current_frame
+
+    wizard.name_var.set("stick")
+    wizard.hostname_var.set("   ")
+    wizard.save_step(0)
+
+    assert wizard.config.hostname == "portable-os"
