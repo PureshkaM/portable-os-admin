@@ -278,8 +278,8 @@ class OSInstaller:
         self._source_core_packages = ()
         warnings = self._check_arch(backend, config)
         if not dry_run:
-            unpacking = ["mount", "umount", "cp"] if distribution.is_squashfs(metadata.archive) else ["tar"]
-            check_tools_available([*backend.required_tools(), *unpacking])
+            # Сборке нужен упаковщик, а не распаковщик: носителя здесь нет.
+            check_tools_available([*backend.required_tools(), "mksquashfs"])
 
         build_id = crypto.new_media_id()
         root = os.path.join(destination, f"rootfs-{build_id}")
@@ -407,8 +407,6 @@ class OSInstaller:
             self._try(argv, plan, dry_run, confirm)
 
         self._progress.step("Упаковка дистрибутива")
-        if not dry_run:
-            check_tools_available(["mksquashfs"])
         compressor, archive_name = _pick_compressor()
         archive = os.path.join(destination, archive_name)
         run(distribution.archive_command(root, archive, compressor=compressor), timeout=BOOTSTRAP_TIMEOUT)
