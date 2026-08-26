@@ -421,6 +421,22 @@ class RedOSInstallBackend(InstallBackend):
     #: оттуда же он читает свою конфигурацию: путь вшит в сам grubx64.efi.
     EFI_VENDOR_DIR = "EFI/redos"
 
+    def firewall_commands(self, mount_root: str, config: InstallConfig) -> list[list[str]]:
+        """firewalld плюс открытые порты.
+
+        `firewall-offline-cmd` — то, чем это делается, когда служба не
+        запущена, а внутри chroot она запущена быть и не может. Обычный
+        `firewall-cmd` там просто не с чем разговаривать.
+        """
+        commands = super().firewall_commands(mount_root, config)
+        if not config.firewall.enabled:
+            return commands
+        for port in config.firewall.open_ports:
+            commands.append(
+                self.chroot(mount_root, "firewall-offline-cmd", f"--add-port={port}")
+            )
+        return commands
+
     def security_files(self, config: InstallConfig) -> dict[str, str]:
         """Режим SELinux.
 

@@ -223,6 +223,15 @@ def test_the_new_fields_reach_the_installed_system_not_just_the_schema():
     assert "authorized_keys" in joined
     assert "disable firewalld" in joined
 
+    # А при включённом брандмауэре открытые порты должны доходить до правил.
+    config.firewall.enabled = True
+    config.firewall.open_ports = ["22/tcp", "5900/tcp"]
+    with_ports = "\n".join(
+        " ".join(argv) for argv in backend.firewall_commands("/mnt/root", config)
+    )
+    assert "firewall-offline-cmd --add-port=22/tcp" in with_ports
+    assert "5900/tcp" in with_ports
+
 
 def test_dhcp_writes_no_network_file_at_all():
     """Переносной носитель не знает, в какой сети окажется.
