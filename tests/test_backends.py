@@ -450,3 +450,34 @@ def test_the_generic_setting_reaches_the_medium():
         )
         scripted = get_backend(family).scripted_files(config, layout)
         assert any(marker in path for path in scripted), f"{family}: настройка не пишется"
+
+
+def test_redos_marks_the_medium_for_relabelling():
+    """Систему разворачивают с машины, где SELinux не работает.
+
+    Значит, файлы попадают на носитель без меток безопасности, и при первой
+    загрузке SELinux в режиме enforcing запрещает systemd всё подряд:
+    «Failed to mount API filesystems. Freezing execution.» — система замирает,
+    не дойдя до монтирования служебных ФС.
+
+    /.autorelabel — штатный механизм дистрибутива: anaconda создаёт этот файл
+    ровно в том же случае. Отключать SELinux вместо этого нельзя.
+    """
+    from portable_os_admin.config import InstallConfig
+    from portable_os_admin.install.backends import get_backend
+    from portable_os_admin.install.disk import build_media_layout, plan_partitions
+
+    config = InstallConfig.create_baseline("stick", "redos")
+    config.release = "8.0"
+    layout = build_media_layout(
+        plan_partitions("/dev/sdb", config.disk), mapper_name="poa-x", mount_root="/mnt/root"
+    )
+
+    files = get_backend("redos").config_files(config, layout)
+    assert ".autorelabel" in files
+    assert "SELINUX=enforcing" in files["etc/selinux/config"]
+
+    # А когда SELinux выключен, размечать нечего — и лишняя перезагрузка не
+    # нужна.
+    config.firewall.selinux = "disabled"
+    assert ".autorelabel" not in get_backend("redos").config_files(config, layout)
