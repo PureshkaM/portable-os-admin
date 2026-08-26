@@ -484,3 +484,33 @@ def test_a_distribution_without_a_bootloader_is_refused_before_the_medium_is_tou
 
     assert "загрузчик" in str(excinfo.value).lower()
     assert installer.medium_modified is False, "носитель тронут, хотя отказ был заранее"
+
+
+def test_the_progress_counter_matches_the_real_number_of_steps(session, kiosk_config, big_device, tmp_path):
+    """Занижённое число упирает полосу в край задолго до конца.
+
+    Человек видит «шаг 14 из 14», а работа продолжается ещё три шага, и
+    выглядит это как зависание.
+    """
+    directory = tmp_path / "dist"
+    directory.mkdir()
+    archive = directory / distribution.ARCHIVE_NAME
+    archive.write_bytes(b"not a real image")
+    metadata = distribution.DistributionMetadata.for_config(
+        kiosk_config, release="trixie", arch="amd64", rootfs_bytes=1024, emulated=False
+    )
+    metadata.sha256 = distribution.sha256_of(str(archive))
+    metadata.has_bootloader = True
+    distribution.write_metadata(str(directory), metadata)
+
+    seen = []
+    OSInstaller(session).deploy_distribution(
+        big_device, str(directory), b"passphrase", dry_run=True, confirm_device="/dev/sdb",
+        on_step=lambda index, total, text: seen.append((index, total)),
+    )
+
+    assert seen, "шаги не сообщаются вовсе"
+    last_index, total = seen[-1]
+    assert last_index <= total, f"шагов больше, чем обещано: {last_index} из {total}"
+    # И обещано не сильно больше, чем есть: полоса не должна замирать на 60%.
+    assert total - last_index <= 1, f"обещано {total} шагов, выполнено {last_index}"

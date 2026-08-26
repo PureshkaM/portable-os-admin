@@ -1553,7 +1553,11 @@ class _Progress:
     #: Building a distribution skips everything to do with a medium.
     BUILD_STAGES = 10
     #: Deploying one skips everything to do with packages.
-    DEPLOY_STAGES = 14
+    #: Восемь шагов подготовки носителя плюс восемь самого развёртывания и
+    #: один на проверку дистрибутива. Считать надо по коду, а не по памяти:
+    #: занижённое число упирает полосу в край задолго до конца, и человек
+    #: решает, что программа зависла.
+    DEPLOY_STAGES = 17
 
     def __init__(self, callback, expected: int | None = None):
         self._callback = callback
