@@ -17,6 +17,7 @@ confirmed on real hardware.
 from __future__ import annotations
 
 import contextlib
+import threading
 import os
 import stat
 import subprocess
@@ -56,7 +57,46 @@ class CommandPlan:
         return "\n".join(" ".join(r.argv) for r in self.results)
 
 
+class InstallAborted(InstallError):
+    """Работу прервал администратор, а не ошибка.
+
+    Отдельный тип, потому что обходиться с этим надо иначе: сообщать не «сбой»,
+    а «прервано», и не искать причину там, где её нет.
+    """
+
+
 class CommandRunner:
+    """Запускает команды установки и умеет остановить начатое.
+
+    Ссылка на текущий дочерний процесс хранится не ради красоты: без неё
+    прервать многочасовую запись нечем. Раньше единственным способом было
+    закрыть программу целиком, и это работало лишь потому, что при закрытии
+    срабатывал обработчик сигнала.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._current: subprocess.Popen | None = None
+        self._aborted = False
+
+    def abort(self) -> None:
+        """Останавливает то, что выполняется сейчас, и запрещает следующее.
+
+        Вызывается из потока интерфейса, пока рабочий поток стоит в команде.
+        Сначала SIGTERM: `tar`, `dnf` и `dracut` на нём заканчивают
+        по-человечески. Ждать здесь нельзя — интерфейс не должен замирать, —
+        поэтому добивание идёт следом, в самой команде.
+        """
+        with self._lock:
+            self._aborted = True
+            proc = self._current
+        if proc is not None and proc.poll() is None:
+            proc.terminate()
+
+    @property
+    def aborted(self) -> bool:
+        return self._aborted
+
     def run(
         self,
         argv: list[str],
@@ -73,18 +113,38 @@ class CommandRunner:
                     "подтверждение целевого устройства не совпадает — операция отменена "
                     f"(ожидалось {plan.device!r}, получено {confirm_device!r})"
                 )
+            if self._aborted:
+                raise InstallAborted("работа прервана администратором")
             # Resolved rather than left to PATH: the installer's tools live in
             # /usr/sbin, which is not on a normal user's PATH, and `sudo -E`
             # hands that PATH straight to the root process.
-            proc = subprocess.run(
-                resolve_argv(argv), input=input_bytes, capture_output=True, timeout=timeout, check=False
+            proc = subprocess.Popen(
+                resolve_argv(argv),
+                stdin=subprocess.PIPE if input_bytes is not None else None,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
             )
+            with self._lock:
+                self._current = proc
+            try:
+                stdout, stderr = proc.communicate(input=input_bytes, timeout=timeout)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.communicate()
+                raise
+            finally:
+                with self._lock:
+                    self._current = None
+            if self._aborted:
+                # Команда упала не сама — её остановили. Разница важна: иначе
+                # человек увидит «ошибка» там, где он сам нажал «Прервать».
+                raise InstallAborted("работа прервана администратором")
             result = CommandResult(
                 argv=argv,
                 executed=True,
                 returncode=proc.returncode,
-                stdout=proc.stdout.decode("utf-8", errors="replace"),
-                stderr=proc.stderr.decode("utf-8", errors="replace"),
+                stdout=stdout.decode("utf-8", errors="replace"),
+                stderr=stderr.decode("utf-8", errors="replace"),
             )
             plan.results.append(result)
             if proc.returncode != 0:

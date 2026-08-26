@@ -23,6 +23,7 @@ from tkinter import filedialog, ttk
 
 from ...config.schema import InstallConfig
 from ...errors import DeviceNotEligibleError, InstallError
+from ...install.command_runner import InstallAborted
 from ...install import OSInstaller, distribution, leftovers
 from .. import theme
 from ..elevate import invoking_user_home
@@ -280,8 +281,15 @@ class DeployWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
         self._running = True
         self._install_signal_guard()
         self.start_btn.configure(state="disabled")
-        for button in (self.back_btn, self.next_btn, self.cancel_btn):
+        # Навигация блокируется намеренно: уход с экрана уничтожит виджеты, и
+        # код восстановления от уже записанного носителя не попадёт в
+        # контейнер — он сохраняется в обработчике завершения. А вот прервать
+        # работу должно быть чем: раньше вместе с навигацией отключалась и
+        # «Отмена», и остановить многочасовую запись из интерфейса было
+        # нельзя вовсе.
+        for button in (self.back_btn, self.next_btn):
             button.configure(state="disabled")
+        self.cancel_btn.configure(text="Прервать запись", command=self._abort)
         self._stages = UiMailbox(self, self._show_stage)
         self._stages.start()
         self.stage_var.set("Подготовка…")
@@ -309,8 +317,27 @@ class DeployWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
 
         run_in_background(self, work, on_success=self._done, on_error=self._failed)
 
+    def _abort(self) -> None:
+        """Останавливает запись по кнопке.
+
+        Носитель после этого непригоден — незавершённая установка не
+        загрузится, — но уборка отработает: тома закроются, разделы
+        размонтируются, и следующая попытка не упрётся в занятые ресурсы.
+        """
+        installer = getattr(self, "_installer", None)
+        if installer is None or not self._running:
+            return
+        self.cancel_btn.configure(state="disabled")
+        self.message_bar.info("Прерываю: жду, пока остановится текущая команда…")
+        installer.abort()
+
+    def _restore_cancel(self) -> None:
+        if widget_alive(self.cancel_btn):
+            self.cancel_btn.configure(text="Отмена", command=self.on_cancel, state="normal")
+
     def _stop_progress(self) -> None:
         self._running = False
+        self._restore_cancel()
         self._restore_signal_guard()
         if getattr(self, "_stages", None) is not None:
             self._stages.stop()
@@ -348,7 +375,10 @@ class DeployWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
                 " Не удалось освободить: " + ", ".join(stuck)
                 + ". Уберите на панели («Состояние»)."
             )
-        if isinstance(exc, (DeviceNotEligibleError, InstallError)) or isinstance(exc, KNOWN_ERRORS):
+        if isinstance(exc, InstallAborted):
+            # Не ошибка, а решение человека: так и сказать.
+            self.message_bar.info(f"Запись прервана.{suffix}")
+        elif isinstance(exc, (DeviceNotEligibleError, InstallError)) or isinstance(exc, KNOWN_ERRORS):
             self.message_bar.error(f"{exc}{suffix}")
         else:
             self.message_bar.error(f"Непредвиденная ошибка: {exc}{suffix}")

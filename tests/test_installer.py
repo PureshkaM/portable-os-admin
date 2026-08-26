@@ -475,3 +475,31 @@ def test_teardown_waits_for_the_volume_instead_of_giving_up_silently(tmp_path, m
     assert source.index('["umount", mountpoint]') < source.index('["umount", "-l", mountpoint]')
     # И кэш выгоняется до того, как что-то размонтируется.
     assert source.index('["sync"]') < source.index('["umount", mountpoint]')
+
+
+def test_an_abort_stops_the_running_command_and_refuses_the_next(tmp_path):
+    """Прерывание должно доходить до запущенного процесса, а не только до экрана.
+
+    Раньше остановить начатую запись было нечем: CommandRunner не хранил
+    ссылку на дочерний процесс, и единственным способом оставалось закрыть
+    программу целиком.
+    """
+    from portable_os_admin.errors import InstallError
+    from portable_os_admin.install.command_runner import (
+        CommandPlan,
+        CommandRunner,
+        InstallAborted,
+    )
+
+    runner = CommandRunner()
+    plan = CommandPlan(device="/dev/null")
+
+    runner.abort()
+    assert runner.aborted is True
+
+    # После прерывания следующая команда не начинается вовсе.
+    with pytest.raises(InstallAborted):
+        runner.run(["true"], plan, dry_run=False, confirm_device="/dev/null")
+
+    # И это отдельный тип, а не «ошибка команды»: обходиться с ним надо иначе.
+    assert issubclass(InstallAborted, InstallError)

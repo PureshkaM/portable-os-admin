@@ -23,6 +23,7 @@ from tkinter import ttk
 from tkinter import filedialog
 
 from ...errors import DeviceNotEligibleError, InstallError
+from ...install.command_runner import InstallAborted
 from ...install import BlockDevice, DeviceLister, OSInstaller
 from ...install import image_source, leftovers
 from ...install.emulation import probe as probe_emulation
@@ -508,7 +509,10 @@ class InstallWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
         # reach save_container(). Lock navigation until it's done.
         self.back_btn.configure(state="disabled")
         self.next_btn.configure(state="disabled")
-        self.cancel_btn.configure(state="disabled")
+        # «Отмена» превращается в «Прервать»: навигацию блокировать надо (уход
+        # с экрана уничтожит виджеты и потеряет код восстановления), а вот
+        # остановить многочасовую запись должно быть чем.
+        self.cancel_btn.configure(text="Прервать установку", command=self._abort)
         self._stages = UiMailbox(self, self._show_stage)
         self._stages.start()
         self.stage_var.set("Подготовка…")
@@ -550,9 +554,25 @@ class InstallWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
         self.progress.configure(value=int(index * 100 / max(total, 1)))
         self._log(f"[{index}/{total}] {text}")
 
+    def _abort(self) -> None:
+        """Останавливает установку по кнопке.
+
+        Носитель после этого непригоден, но уборка отработает: тома
+        закроются, разделы размонтируются, и следующая попытка не упрётся в
+        занятые ресурсы.
+        """
+        installer = getattr(self, "_installer", None)
+        if installer is None or not self._running:
+            return
+        self.cancel_btn.configure(state="disabled")
+        self.message_bar.info("Прерываю: жду, пока остановится текущая команда…")
+        installer.abort()
+
     def _stop_progress(self) -> None:
         self._running = False
         self._restore_signal_guard()
+        if widget_alive(self.cancel_btn):
+            self.cancel_btn.configure(text="Отмена", command=self.on_cancel, state="normal")
         if getattr(self, "_stages", None) is not None:
             self._stages.stop()
         self.progress.pack_forget()
@@ -606,7 +626,9 @@ class InstallWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
                 " Не удалось освободить: " + ", ".join(stuck)
                 + ". Уберите на панели («Состояние»)."
             )
-        if isinstance(exc, (DeviceNotEligibleError, InstallError)) or isinstance(exc, KNOWN_ERRORS):
+        if isinstance(exc, InstallAborted):
+            self.message_bar.info(f"Установка прервана.{suffix}")
+        elif isinstance(exc, (DeviceNotEligibleError, InstallError)) or isinstance(exc, KNOWN_ERRORS):
             self.message_bar.error(f"{exc}{suffix}")
         else:
             self.message_bar.error(f"Непредвиденная ошибка: {exc}{suffix}")

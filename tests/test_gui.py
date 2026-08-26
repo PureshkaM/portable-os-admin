@@ -924,3 +924,81 @@ def test_dashboard_offers_both_halves_and_fits_its_buttons(gui_app, tmp_path):
             "ряд кнопок не помещается в окно минимальной ширины: "
             + ", ".join(str(b.cget("text")) for b in buttons)
         )
+
+
+def test_a_long_write_can_be_aborted_from_the_interface(gui_app, tmp_path, monkeypatch):
+    """Прервать многочасовую запись должно быть чем.
+
+    Пользователь заметил: во время записи заблокированы все кнопки, включая
+    «Отмену». Блокировка навигации осмысленна — уход с экрана уничтожит
+    виджеты, и код восстановления от уже записанного носителя не попадёт в
+    контейнер. Но вместе с ней отключалась и единственная кнопка, которой
+    можно было остановить работу: оставалось закрыть программу целиком.
+    """
+    from portable_os_admin.gui.screens.deploy_wizard import DeployWizardFrame
+
+    app = gui_app
+    _open_container(app, tmp_path)
+    app.show_frame(DeployWizardFrame)
+    app.update()
+    wizard = app._current_frame
+
+    _write_distribution(tmp_path / "dist")
+    wizard.directory_var.set(str(tmp_path / "dist"))
+    wizard.save_step(0)
+    wizard.validate_step(0)
+    wizard.device_path = "/dev/sdz"
+    wizard.device_size_gb = "16"
+    wizard.passphrase = "CorrectHorse123"
+    wizard.step_index = 3
+    wizard._render_step()
+    app.update()
+
+    aborted = []
+
+    class FakeInstaller:
+        medium_modified = True
+        unreleased_resources = ()
+
+        def abort(self):
+            aborted.append(True)
+
+    wizard._installer = FakeInstaller()
+    wizard._running = True
+    wizard.cancel_btn.configure(text="Прервать запись", command=wizard._abort)
+
+    wizard._abort()
+    app.update()
+
+    assert aborted, "кнопка не останавливает работу"
+    assert "рерыв" in wizard.message_bar.var.get()
+
+
+def test_an_abort_is_reported_as_a_decision_not_a_failure(gui_app, tmp_path):
+    """«Ошибка» там, где человек сам нажал «Прервать», сбивает с толку."""
+    from portable_os_admin.gui.screens.deploy_wizard import DeployWizardFrame
+    from portable_os_admin.install.command_runner import InstallAborted
+
+    app = gui_app
+    _open_container(app, tmp_path)
+    app.show_frame(DeployWizardFrame)
+    app.update()
+    wizard = app._current_frame
+
+    _write_distribution(tmp_path / "dist")
+    wizard.directory_var.set(str(tmp_path / "dist"))
+    wizard.save_step(0)
+    wizard.validate_step(0)
+    wizard.device_path = "/dev/sdz"
+    wizard.device_size_gb = "16"
+    wizard.passphrase = "CorrectHorse123"
+    wizard.step_index = 3
+    wizard._render_step()
+    app.update()
+
+    wizard._failed(InstallAborted("работа прервана администратором"))
+    app.update()
+
+    shown = wizard.message_bar.var.get()
+    assert "рервана" in shown
+    assert "Непредвиденная ошибка" not in shown
