@@ -89,3 +89,64 @@ def test_the_root_is_not_described_in_fstab():
     понимании не существует.
     """
     assert overlay.fstab_rows() == []
+
+
+def test_both_families_get_the_same_body_with_their_own_wrapper():
+    """Действие одно, обвязка разная — и разойтись они не должны.
+
+    initramfs-tools зовёт точку монтирования будущего корня `$rootmnt`,
+    dracut — `$NEWROOT`. Разница ровно в имени: две копии текста разошлись бы
+    при первой же правке, и на одном из семейств носитель перестал бы
+    грузиться незаметно.
+    """
+    from portable_os_admin.config import InstallConfig
+    from portable_os_admin.install.backends import get_backend
+    from portable_os_admin.install.disk import build_media_layout, plan_partitions
+
+    config = InstallConfig.create_baseline("stick", "debian")
+    layout = build_media_layout(
+        plan_partitions("/dev/sdb", config.disk), mapper_name="poa-x", mount_root="/mnt/root"
+    )
+
+    debian = get_backend("debian").overlay_boot_files(layout)
+    redos = get_backend("redos").overlay_boot_files(layout)
+
+    deb_script = debian["etc/initramfs-tools/scripts/local-bottom/poa-overlay"][0]
+    red_script = redos["usr/lib/dracut/modules.d/50poa-overlay/poa-overlay-hook.sh"][0]
+
+    assert "$rootmnt" in deb_script and "$NEWROOT" not in deb_script
+    assert "$NEWROOT" in red_script and "$rootmnt" not in red_script
+    # Тело одно: сравниваем по опорным строкам, а не по всему тексту.
+    for landmark in ("не подключить образ системы", "lowerdir=", "poa-overlay"):
+        assert landmark in deb_script and landmark in red_script
+
+
+def test_the_kernel_modules_are_put_into_the_image_explicitly():
+    """Ни dracut, ни initramfs-tools не положат их сами.
+
+    Оба кладут то, что нужно найденной конфигурации, а overlay, squashfs и
+    loop в неё не входят: на момент сборки корень — обычная ext4.
+    """
+    from portable_os_admin.config import InstallConfig
+    from portable_os_admin.install.backends import get_backend
+    from portable_os_admin.install.disk import build_media_layout, plan_partitions
+
+    config = InstallConfig.create_baseline("stick", "debian")
+    layout = build_media_layout(
+        plan_partitions("/dev/sdb", config.disk), mapper_name="poa-x", mount_root="/mnt/root"
+    )
+
+    deb_hook = get_backend("debian").overlay_boot_files(layout)[
+        "etc/initramfs-tools/hooks/poa-overlay"
+    ][0]
+    red_setup = get_backend("redos").overlay_boot_files(layout)[
+        "usr/lib/dracut/modules.d/50poa-overlay/module-setup.sh"
+    ][0]
+
+    for module in ("overlay", "squashfs", "loop"):
+        assert module in deb_hook, f"initramfs-tools не получит {module}"
+        assert module in red_setup, f"dracut не получит {module}"
+
+    # dracut не включает модуль просто потому, что он есть.
+    conf = get_backend("redos").overlay_boot_files(layout)["etc/dracut.conf.d/50-poa-overlay.conf"][0]
+    assert "add_dracutmodules" in conf
