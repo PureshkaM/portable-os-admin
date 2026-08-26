@@ -14,6 +14,22 @@ DEFAULT_CIPHER = "aes-xts-plain64"
 DEFAULT_KEY_SIZE = 512
 DEFAULT_KDF = "argon2id"
 
+#: Потолок стоимости argon2id по памяти, КиБ.
+#:
+#: cryptsetup подбирает эту стоимость под ту машину, где том создаётся, и
+#: записывает её в заголовок LUKS навсегда. Для обычного диска это правильно:
+#: он останется в той же машине. Для переносного носителя — нет. Носитель,
+#: собранный на машине с 32 ГБ памяти, потребует при разблокировке больше,
+#: чем есть на машине, куда его принесли, и откроется медленно или не
+#: откроется вовсе. Наблюдалось: «Warning: keyslot operation could fail as it
+#: requires more than available memory» при загрузке в машине с 2 ГБ.
+#:
+#: 256 МиБ — значение, выбранное пользователем 26.08.2026: для argon2id это
+#: по-прежнему стойко, и столько памяти есть у любой машины, на которой имеет
+#: смысл запускать этот носитель. Число захардкожено намеренно, в
+#: конфигурацию не вынесено.
+MAX_PBKDF_MEMORY_KIB = 262144
+
 
 @contextlib.contextmanager
 def _key_path(data: bytes, dry_run: bool):
@@ -61,6 +77,7 @@ class LuksManager:
                 # field the user could set that changed nothing: cryptsetup
                 # silently used its own default instead.
                 "--pbkdf", kdf,
+                "--pbkdf-memory", str(MAX_PBKDF_MEMORY_KIB),
                 "--key-file", str(key_path), "--batch-mode", partition,
             ]
             self.runner.run(argv, plan, dry_run=dry_run, confirm_device=confirm_device)
@@ -81,7 +98,15 @@ class LuksManager:
         successful recovery, mirrored in recovery_module.sh)."""
         plan = plan if plan is not None else CommandPlan(device=partition)
         with _key_path(existing_passphrase, dry_run) as existing_path, _key_path(new_passphrase, dry_run) as new_path:
-            argv = ["cryptsetup", "luksAddKey", partition, "--key-file", str(existing_path)]
+            # Тот же потолок, что и при создании тома: каждый keyslot несёт
+            # собственную стоимость, и слот, добавленный без ограничения,
+            # свёл бы всю меру на нет — носитель открылся бы пользовательским
+            # паролем, но не служебным ключом или кодом восстановления.
+            argv = [
+                "cryptsetup", "luksAddKey", partition,
+                "--pbkdf-memory", str(MAX_PBKDF_MEMORY_KIB),
+                "--key-file", str(existing_path),
+            ]
             if slot is not None:
                 argv += ["--key-slot", str(slot)]
             argv.append(str(new_path))

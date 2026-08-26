@@ -68,3 +68,34 @@ def test_luks_add_keyslot_dry_run():
     assert "new-pass" not in argv
     assert "--key-slot" in argv
     assert "7" in argv
+
+
+def test_every_keyslot_is_capped_to_a_memory_a_weak_machine_has():
+    """Носитель переносной, а стоимость argon2id пишется в заголовок навсегда.
+
+    cryptsetup подбирает её под машину-изготовитель. Носитель, собранный на
+    машине с 32 ГБ, требовал бы при разблокировке больше, чем есть на машине,
+    куда его принесли. Наблюдалось на живой загрузке: «keyslot operation could
+    fail as it requires more than available memory».
+
+    Проверяются оба пути: создание тома и добавление слота. Слот, добавленный
+    без ограничения, свёл бы меру на нет — том открывался бы паролем
+    пользователя, но не служебным ключом и не кодом восстановления.
+    """
+    from portable_os_admin.install import luks as luks_module
+
+    formatted = LuksManager().format(
+        "/dev/sdb2", b"passphrase", dry_run=True, confirm_device="/dev/sdb2"
+    )
+    added = LuksManager().add_keyslot(
+        "/dev/sdb2", b"passphrase", b"recovery", dry_run=True, confirm_device="/dev/sdb2"
+    )
+
+    for plan in (formatted, added):
+        argv = plan.results[0].argv
+        assert "--pbkdf-memory" in argv, " ".join(argv)
+        assert argv[argv.index("--pbkdf-memory") + 1] == str(luks_module.MAX_PBKDF_MEMORY_KIB)
+
+    # 256 МиБ: достаточно для стойкости argon2id и есть на любой машине,
+    # на которой имеет смысл запускать этот носитель.
+    assert luks_module.MAX_PBKDF_MEMORY_KIB == 262144

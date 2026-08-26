@@ -130,7 +130,11 @@ done
 cryptsetup luksKillSlot "$device" "$POA_USER_SLOT" --batch-mode \
     --key-file "$RECOVERY_KEY" 2>/dev/null || true
 
+# Тот же потолок памяти, что и при создании тома (install/luks.py): слот,
+# созданный здесь без ограничения, получил бы стоимость по этой машине — а
+# носитель переносной, и следующая машина может оказаться слабее.
 cryptsetup luksAddKey "$device" "$NEW_KEY" \
+    --pbkdf-memory 262144 \
     --key-slot "$POA_USER_SLOT" --key-file "$RECOVERY_KEY" \
     || fail "не удалось создать новый пользовательский keyslot"
 
