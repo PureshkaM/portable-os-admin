@@ -478,8 +478,14 @@ def test_labels_are_set_once_per_distribution_not_per_medium():
     relabel = " ".join(" ".join(argv) for argv in redos.relabel_commands("/mnt/root"))
     assert "setfiles" in relabel and "file_contexts" in relabel
 
+    # setfiles, а не restorecon: последний разговаривает с работающим SELinux,
+    # которого внутри chroot нет, и молча ничего не делает. Проверено на
+    # носителе: SDDM не смог прочитать собственную конфигурацию, потому что у
+    # неё не было метки.
     restore = redos.restore_labels_command("/mnt/root", ("/etc", "/boot"))
-    assert restore is not None and "restorecon" in " ".join(restore)
+    assert restore is not None
+    assert "setfiles" in " ".join(restore)
+    assert "restorecon" not in " ".join(restore)
 
     files = redos.config_files(config, layout)
     assert "SELINUX=enforcing" in files["etc/selinux/config"]

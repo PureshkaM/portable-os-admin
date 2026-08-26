@@ -456,9 +456,24 @@ class RedOSInstallBackend(InstallBackend):
         ]
 
     def restore_labels_command(self, mount_root: str, paths: tuple[str, ...] = ("/etc",)) -> list[str] | None:
+        """Метки для файлов, дописанных на носитель после разметки эталона.
+
+        `setfiles`, а не `restorecon`, и это не вкусовщина: restorecon
+        разговаривает с работающим SELinux, а внутри chroot его нет — команда
+        молча ничего не делает. Проверено на носителе: у файлов из
+        дистрибутива метки были, у fstab и настройки автовхода — нет, и SDDM
+        не смог прочитать собственную конфигурацию:
+
+            avc: denied { getattr } comm="sddm"
+                 path="/etc/sddm.conf.d/50-poa-kiosk.conf"
+                 tcontext=system_u:object_r:unlabeled_t:s0
+
+        setfiles берёт правила из файла политики и работает без ядра — тем же
+        способом, что и разметка эталона при сборке.
+        """
         return self.chroot(
             mount_root, "sh", "-c",
-            "restorecon -R -F " + " ".join(paths) + " 2>/dev/null || true",
+            f"setfiles -F {self.FILE_CONTEXTS} " + " ".join(paths) + " 2>/dev/null || true",
         )
 
     def generic_initramfs_files(self) -> dict[str, tuple[str, int | None]]:
