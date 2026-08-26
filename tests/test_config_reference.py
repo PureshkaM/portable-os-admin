@@ -76,3 +76,18 @@ def test_the_reference_admits_what_cannot_be_configured_yet():
 
     assert "Чего пока нельзя задать" in text
     assert "system_tasks" in text.split("Чего пока нельзя задать")[1]
+
+
+def test_every_field_has_a_human_label():
+    """В таблице отличий сырое имя поля читается как недоделка.
+
+    Так и было: новые поля показывались как `localisation.locale` рядом с
+    «Архитектура носителя».
+    """
+    from portable_os_admin.config.schema import FIELD_LABELS
+
+    unlabelled = [
+        name for name in _fields(InstallConfig)
+        if name not in FIELD_LABELS and not name.startswith("validation_")
+    ]
+    assert not unlabelled, "нет подписей для полей: " + ", ".join(unlabelled)
