@@ -28,6 +28,7 @@ from ..session import AdminSession
 from .backends import get_backend
 from .backends.base import (
     EXCHANGE_MOUNTPOINT,
+    LOG_MOUNTPOINT,
     RECOVERY_DIR,
     SERVICE_KEY_DIR,
     SERVICE_KEY_PATH,
@@ -582,6 +583,7 @@ class OSInstaller:
         # `cp -a` на нём спотыкается о невозможность их сохранить.
         self._progress.step("Подключение служебных разделов")
         self._mount_boot_partition(layout, state, plan, dry_run, confirm_device)
+        self._mount_logs_volume(layout, state, plan, dry_run, confirm_device)
 
         self._progress.step("Копирование системы на носитель")
         archive = distribution.archive_path(directory, metadata)
@@ -682,6 +684,28 @@ class OSInstaller:
     def _mount_boot_partitions(self, layout, state, plan, dry_run, confirm_device) -> None:
         self._mount_boot_partition(layout, state, plan, dry_run, confirm_device)
         self._mount_esp(layout, state, plan, dry_run, confirm_device)
+
+    def _mount_logs_volume(self, layout, state, plan, dry_run, confirm_device) -> None:
+        """Том журналов — та же история, что и /boot, этажом ниже.
+
+        Пакеты создают свои каталоги в /var/log при установке: auditd —
+        /var/log/audit, и так же sssd, samba, cups. Каждый со своим
+        владельцем, правами и меткой SELinux. Служба, не нашедшая своего
+        каталога, его не создаёт — она отказывается стартовать.
+
+        Если подключить том после копирования, эти каталоги лягут на корневой
+        раздел, а поверх встанет пустая файловая система и закроет их собой.
+        Носитель загрузится, но auditd будет падать при каждой попытке, и по
+        содержимому корня этого не увидеть: каталоги на месте, просто не на
+        том томе. Наблюдалось на РЕД ОС 26.08.2026.
+
+        Подключение до копирования снимает вопрос целиком: дерево каталогов
+        приезжает на том вместе со всем остальным, с метками и правами.
+        """
+        run = lambda argv, **kw: self._run(argv, plan, dry_run, confirm_device, **kw)  # noqa: E731
+        run(["mkdir", "-p", f"{layout.mount_root}{LOG_MOUNTPOINT}"])
+        run(["mount", layout.logs_mapper_path, f"{layout.mount_root}{LOG_MOUNTPOINT}"])
+        state.mounts.append(f"{layout.mount_root}{LOG_MOUNTPOINT}")
 
     def _mount_boot_partition(self, layout, state, plan, dry_run, confirm_device) -> None:
         run = lambda argv, **kw: self._run(argv, plan, dry_run, confirm_device, **kw)  # noqa: E731

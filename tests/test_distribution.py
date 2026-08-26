@@ -339,6 +339,46 @@ def test_deploying_generates_the_encryption_afresh(session, kiosk_config, big_de
     assert result.recovery_record.code
 
 
+def test_service_volumes_are_mounted_before_the_system_is_copied(
+    session, kiosk_config, big_device, tmp_path
+):
+    """Иначе пустая файловая система накрывает собой то, что должна была принять.
+
+    Дважды пройденные грабли. Сначала так потерялся /boot: ядро и записи
+    загрузчика легли на корневой раздел, а сверху встал пустой /boot.
+    Потом — /var/log: каталоги, которые пакеты создают при установке
+    (auditd, sssd, samba), остались на корне, а том журналов пришёл пустым.
+    auditd без своего каталога не стартует, и записи аудита, которым некуда
+    деться, ядро печатает на консоль.
+
+    Проверяется порядок команд: монтирование обоих томов должно стоять до
+    копирования, а не после.
+    """
+    directory = tmp_path / "dist"
+    directory.mkdir()
+    archive = directory / distribution.ARCHIVE_NAME
+    archive.write_bytes(b"not a real archive")
+    metadata = distribution.DistributionMetadata.for_config(
+        kiosk_config, release="trixie", arch="amd64", rootfs_bytes=1024, emulated=False
+    )
+    metadata.sha256 = distribution.sha256_of(str(archive))
+    distribution.write_metadata(str(directory), metadata)
+
+    result = OSInstaller(session).deploy_distribution(
+        big_device, str(directory), b"user-passphrase", dry_run=True, confirm_device="/dev/sdb"
+    )
+    commands = [" ".join(r.argv) for r in result.plan.results]
+
+    copy = next(i for i, c in enumerate(commands) if c.startswith("cp -a"))
+    for mountpoint in ("/boot", "/var/log"):
+        mounts = [
+            i for i, c in enumerate(commands)
+            if c.startswith("mount ") and c.rstrip().endswith(mountpoint)
+        ]
+        assert mounts, f"{mountpoint} не подключается вовсе"
+        assert min(mounts) < copy, f"{mountpoint} подключается после копирования"
+
+
 def test_two_deployments_get_different_identities(session, kiosk_config, big_device, tmp_path):
     """Same distribution, two media -- and nothing shared between them."""
     directory = tmp_path / "dist"

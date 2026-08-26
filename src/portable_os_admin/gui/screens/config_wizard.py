@@ -216,7 +216,7 @@ class ConfigWizardFrame(WizardFrame):
         self.kernel_params_var = tk.StringVar(value=self.config.boot.kernel_parameters)
         _, row = add_field(
             form, row, "Параметры ядра:", self.kernel_params_var,
-            hint="добавляются к тем, что задаёт программа; например nomodeset",
+            hint="добавляются к тем, что задаёт программа; nomodeset отключает KMS — сеанс не запустится",
             width=36,
         )
         self.timezone_var = tk.StringVar(value=loc.timezone)
