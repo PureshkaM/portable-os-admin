@@ -126,3 +126,59 @@ def test_native_rendering_carries_the_authored_values(make_config):
     assert "htop" in text
     assert "openssh-server" in text
     assert f"--cipher={config.luks.cipher}" in text
+
+
+def test_localisation_reaches_both_the_native_file_and_the_medium():
+    """Язык, раскладка и пояс должны доходить до системы, а не только до валидатора.
+
+    До 26.08.2026 они были зашиты (`en_US.UTF-8`, `us`, `UTC`) и попадали
+    только в файл для проверки: администратор мог задать что угодно, а
+    носитель всё равно получал английскую систему по UTC. Для РЕД ОС в
+    российской организации это неверное умолчание, которое ещё и не
+    исправлялось.
+    """
+    from portable_os_admin.config import native
+    from portable_os_admin.install.backends import get_backend
+    from portable_os_admin.install.disk import build_media_layout, plan_partitions
+
+    config = InstallConfig.create_baseline("stick", "redos")
+    config.release = "8.0"
+    config.hostname = "kiosk-07"
+    config.localisation.locale = "ru_RU.UTF-8"
+    config.localisation.keymap = "ru"
+    config.localisation.x11_layouts = "us,ru"
+    config.localisation.x11_options = "grp:alt_shift_toggle"
+    config.localisation.timezone = "Europe/Moscow"
+
+    fmt, text = native.render(config)
+    assert fmt == "kickstart"
+    assert "lang ru_RU.UTF-8" in text
+    assert "keyboard --vckeymap=ru" in text
+    assert "timezone Europe/Moscow" in text
+    assert "kiosk-07" in text
+
+    backend = get_backend("redos")
+    layout = build_media_layout(
+        plan_partitions("/dev/sdb", config.disk), mapper_name="poa-x", mount_root="/mnt/root"
+    )
+    files = backend.config_files(config, layout)
+    assert files["etc/locale.conf"] == "LANG=ru_RU.UTF-8\n"
+    assert files["etc/vconsole.conf"] == "KEYMAP=ru\n"
+    assert files["etc/hostname"] == "kiosk-07\n"
+    assert "kiosk-07" in files["etc/hosts"]
+    keyboard = files["etc/X11/xorg.conf.d/00-poa-keyboard.conf"]
+    assert '"us,ru"' in keyboard, "раскладка графического сеанса не задана"
+    assert "grp:alt_shift_toggle" in keyboard
+
+    # И часовой пояс — командой, потому что /etc/localtime это ссылка.
+    commands = [" ".join(argv) for argv in backend.localisation_commands("/mnt/root", config)]
+    assert any("zoneinfo/Europe/Moscow" in c for c in commands)
+
+
+def test_a_configuration_written_before_localisation_existed_still_loads():
+    """Старые файлы не имеют этого ключа и должны получать прежние значения."""
+    config = InstallConfig.from_dict({"name": "old", "target_os": "debian", "release": "trixie"})
+
+    assert config.localisation.locale == "en_US.UTF-8"
+    assert config.localisation.timezone == "UTC"
+    assert config.hostname == "portable-os"

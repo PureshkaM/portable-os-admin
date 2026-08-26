@@ -499,6 +499,28 @@ class DebianInstallBackend(InstallBackend):
             self.syslog_package,
         ]
 
+    def locale_generation_commands(self, mount_root, config) -> list[list[str]]:
+        """В Debian локаль надо собрать: в образе её нет.
+
+        Без этого LANG указывает на локаль, которой в системе не существует, и
+        всё молча откатывается к C — то есть заданный язык просто не работает,
+        а сообщения об этом нет.
+        """
+        locale = config.localisation.locale
+        return [
+            self.chroot(
+                mount_root, "sh", "-c",
+                f"grep -q '^{locale} ' /etc/locale.gen 2>/dev/null || "
+                f"printf '%s UTF-8\\n' '{locale}' >> /etc/locale.gen",
+            ),
+            self.chroot(mount_root, "locale-gen"),
+            # В Debian systemd читает /etc/default/locale, а не только
+            # /etc/locale.conf.
+            self.chroot(
+                mount_root, "sh", "-c", f"printf 'LANG=%s\\n' '{locale}' > /etc/default/locale"
+            ),
+        ]
+
     def initramfs_command(self, mount_root: str) -> list[str]:
         return self.chroot(mount_root, "update-initramfs", "-u", "-k", "all")
 
