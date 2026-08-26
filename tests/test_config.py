@@ -182,3 +182,81 @@ def test_a_configuration_written_before_localisation_existed_still_loads():
     assert config.localisation.locale == "en_US.UTF-8"
     assert config.localisation.timezone == "UTC"
     assert config.hostname == "portable-os"
+
+
+def test_the_new_fields_reach_the_installed_system_not_just_the_schema():
+    """Поле, которое никуда не передаётся, — худший вид «настраиваемости».
+
+    В этом проекте такое уже находили: `luks.kdf` существовал, но в
+    cryptsetup не попадал, и заданное значение ничего не меняло. Поэтому
+    каждое новое поле проверяется по тому, доходит ли оно до системы.
+    """
+    from portable_os_admin.install.backends import get_backend
+    from portable_os_admin.install.disk import build_media_layout, plan_partitions
+
+    config = InstallConfig.create_baseline("stick", "redos")
+    config.release = "8.0"
+    config.network.method = "static"
+    config.network.address = "192.168.1.50/24"
+    config.network.gateway = "192.168.1.1"
+    config.network.nameservers = "192.168.1.1,8.8.8.8"
+    config.firewall.selinux = "permissive"
+    config.firewall.enabled = False
+    config.extra_users = [
+        {"username": "service", "sudo": True, "ssh_keys": ["ssh-ed25519 AAAA test@host"]}
+    ]
+
+    backend = get_backend("redos")
+    layout = build_media_layout(
+        plan_partitions("/dev/sdb", config.disk), mapper_name="poa-x", mount_root="/mnt/root"
+    )
+    files = backend.config_files(config, layout)
+
+    network = files["etc/NetworkManager/system-connections/poa-static.nmconnection"]
+    assert "192.168.1.50/24,192.168.1.1" in network
+    assert "8.8.8.8" in network
+    assert "SELINUX=permissive" in files["etc/selinux/config"]
+
+    commands = [" ".join(argv) for argv in backend.chroot_setup_commands("/mnt/root", config)]
+    joined = "\n".join(commands)
+    assert "useradd" in joined and "service" in joined
+    assert "authorized_keys" in joined
+    assert "disable firewalld" in joined
+
+
+def test_dhcp_writes_no_network_file_at_all():
+    """Переносной носитель не знает, в какой сети окажется.
+
+    Лишний файл настройки тут не нейтрален: он помешал бы NetworkManager
+    поднять интерфейс так, как надо на месте.
+    """
+    from portable_os_admin.install.backends import get_backend
+    from portable_os_admin.install.disk import build_media_layout, plan_partitions
+
+    config = InstallConfig.create_baseline("stick", "debian")
+    config.release = "trixie"
+    layout = build_media_layout(
+        plan_partitions("/dev/sdb", config.disk), mapper_name="poa-x", mount_root="/mnt/root"
+    )
+
+    files = get_backend("debian").config_files(config, layout)
+    assert not any("NetworkManager" in path for path in files)
+
+
+def test_kernel_parameters_reach_the_bootloader():
+    from portable_os_admin.install.backends import get_backend
+    from portable_os_admin.install.disk import build_media_layout, plan_partitions
+
+    config = InstallConfig.create_baseline("stick", "debian")
+    config.release = "trixie"
+    config.boot.kernel_parameters = "intel_iommu=on"
+    config.boot.menu_timeout_seconds = 0
+    config.boot.quiet = True
+    layout = build_media_layout(
+        plan_partitions("/dev/sdb", config.disk), mapper_name="poa-x", mount_root="/mnt/root"
+    )
+
+    grub = get_backend("debian").config_files(config, layout)["etc/default/grub"]
+    assert 'GRUB_CMDLINE_LINUX="intel_iommu=on"' in grub
+    assert "GRUB_TIMEOUT=0" in grub
+    assert "quiet splash" in grub

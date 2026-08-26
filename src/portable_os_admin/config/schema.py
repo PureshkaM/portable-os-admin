@@ -274,6 +274,73 @@ class AutoUpdateConfig:
 
 
 @dataclass
+class BootConfig:
+    """Как ведёт себя загрузчик и с чем стартует ядро."""
+
+    #: Сколько секунд показывать меню загрузчика. `0` — не показывать.
+    menu_timeout_seconds: int = 5
+    #: Дополнительные параметры ядра. Добавляются к тем, что программа задаёт
+    #: сама (корень, разблокировка тома): их она не отдаёт, потому что от них
+    #: зависит, загрузится ли носитель вообще.
+    kernel_parameters: str = ""
+    #: Тихая загрузка: `quiet splash`. Для киоска обычно да, для отладки нет.
+    quiet: bool = False
+
+
+@dataclass
+class NetworkConfig:
+    """Сеть устанавливаемой системы.
+
+    Пустые поля означают «как решит NetworkManager», то есть DHCP на всех
+    интерфейсах. Статический адрес имеет смысл, только когда носитель
+    привязан к известному месту в сети, — а он переносной, поэтому умолчание
+    именно такое.
+    """
+
+    #: `dhcp` или `static`.
+    method: str = "dhcp"
+    #: Адрес с длиной префикса: `192.168.1.50/24`. Только при method=static.
+    address: str = ""
+    gateway: str = ""
+    #: Серверы имён через запятую.
+    nameservers: str = ""
+    #: Интерфейс, к которому это относится. Пусто — первый проводной.
+    interface: str = ""
+
+
+@dataclass
+class FirewallConfig:
+    """Брандмауэр и мандатный контроль доступа."""
+
+    #: Включать ли службу брандмауэра дистрибутива.
+    enabled: bool = True
+    #: Открытые порты: `22/tcp`, `5900/tcp`. Пусто — политика по умолчанию.
+    open_ports: list[str] = field(default_factory=list)
+    #: Режим SELinux в RHEL-семействе: `enforcing`, `permissive`, `disabled`.
+    #: В Debian не действует: там AppArmor, и его режим здесь не задаётся.
+    selinux: str = "enforcing"
+
+
+@dataclass
+class ExtraUserConfig:
+    """Дополнительная учётная запись сверх основной.
+
+    Пароль здесь не задаётся намеренно: единственный секрет носителя — фраза
+    LUKS, и заводить второй способ входа значит менять модель угроз. Такая
+    запись годится для служебных нужд — например, для входа по ключу.
+    """
+
+    username: str = ""
+    full_name: str = ""
+    sudo: bool = False
+    shell: str = "/bin/bash"
+    #: Дополнительные группы через запятую.
+    groups: str = ""
+    #: Открытые ключи SSH, по одному на строку.
+    ssh_keys: list[str] = field(default_factory=list)
+
+
+@dataclass
 class PackageSetsConfig:
     """Чем заменить наборы пакетов, которые иначе выбирает программа.
 
@@ -402,6 +469,11 @@ class InstallConfig:
     luks: LuksConfig = field(default_factory=LuksConfig)
     account: UserAccountConfig = field(default_factory=UserAccountConfig)
     localisation: LocalisationConfig = field(default_factory=LocalisationConfig)
+    boot: BootConfig = field(default_factory=BootConfig)
+    network: NetworkConfig = field(default_factory=NetworkConfig)
+    firewall: FirewallConfig = field(default_factory=FirewallConfig)
+    #: Дополнительные учётные записи сверх `account`.
+    extra_users: list[dict] = field(default_factory=list)
     package_sets: PackageSetsConfig = field(default_factory=PackageSetsConfig)
     services: ServicesConfig = field(default_factory=ServicesConfig)
     remote_access: RemoteAccessConfig = field(default_factory=RemoteAccessConfig)
@@ -442,6 +514,9 @@ class InstallConfig:
         # Конфигурации, написанные до того, как язык и часовой пояс стали
         # настраиваемыми, этого ключа не имеют и получают прежние значения.
         localisation = LocalisationConfig(**data.pop("localisation", {}))
+        boot = BootConfig(**data.pop("boot", {}))
+        network = NetworkConfig(**data.pop("network", {}))
+        firewall = FirewallConfig(**data.pop("firewall", {}))
         package_sets = PackageSetsConfig(**data.pop("package_sets", {}))
         services = ServicesConfig(**data.pop("services", {}))
         return cls(
@@ -452,6 +527,9 @@ class InstallConfig:
             kiosk=kiosk,
             auto_update=auto_update,
             localisation=localisation,
+            boot=boot,
+            network=network,
+            firewall=firewall,
             package_sets=package_sets,
             services=services,
             **data,
