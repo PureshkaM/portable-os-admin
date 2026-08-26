@@ -12,6 +12,18 @@ from .command_runner import CommandPlan, CommandRunner, secret_file
 
 DEFAULT_CIPHER = "aes-xts-plain64"
 DEFAULT_KEY_SIZE = 512
+#: Размер сектора шифрования, байт.
+#:
+#: По умолчанию cryptsetup берёт 512 — размер логического сектора, о котором
+#: сообщает устройство. Но страница флеш-памяти давно не 512 байт, а 16 КБ и
+#: больше, и каждая запись по 512 байт превращается для контроллера в
+#: чтение-изменение-запись целой страницы. Замер на тестовой флешке: носитель
+#: держит 2,9 МБ/с последовательной записи, а развёртывание шло со скоростью
+#: 0,49 МБ/с — вшестеро медленнее, и это одна из причин.
+#:
+#: 4096 — размер, с которым работают все современные ФС; устройства с
+#: логическим сектором 512 его принимают.
+DEFAULT_SECTOR_SIZE = 4096
 DEFAULT_KDF = "argon2id"
 
 #: Потолок стоимости argon2id по памяти, КиБ.
@@ -55,6 +67,7 @@ class LuksManager:
         cipher: str = DEFAULT_CIPHER,
         key_size: int = DEFAULT_KEY_SIZE,
         kdf: str = DEFAULT_KDF,
+        sector_size: int = DEFAULT_SECTOR_SIZE,
         dry_run: bool = True,
         confirm_device: str | None = None,
         plan: CommandPlan | None = None,
@@ -78,6 +91,7 @@ class LuksManager:
                 # silently used its own default instead.
                 "--pbkdf", kdf,
                 "--pbkdf-memory", str(MAX_PBKDF_MEMORY_KIB),
+                "--sector-size", str(sector_size),
                 "--key-file", str(key_path), "--batch-mode", partition,
             ]
             self.runner.run(argv, plan, dry_run=dry_run, confirm_device=confirm_device)

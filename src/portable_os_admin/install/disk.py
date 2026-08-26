@@ -157,6 +157,13 @@ class DiskManager:
         cmds: list[list[str]] = []
         for partition in existing_partitions:
             cmds.append(["wipefs", "--all", "--force", partition])
+        # Сообщить флешке, что все её блоки свободны. Запись в предварительно
+        # стёртый блок идёт заметно быстрее, чем в занятый: иначе контроллер
+        # стирает страницу прямо во время записи. Не все носители это умеют,
+        # поэтому команда выполняется как необязательная.
+        # `|| true`, потому что необязательная: дешёвые носители TRIM не
+        # поддерживают, и отказ здесь не повод срывать установку.
+        cmds.append(["sh", "-c", f"blkdiscard --force {plan.device} || true"])
         cmds += [
             ["wipefs", "--all", "--force", plan.device],
             ["sgdisk", "--zap-all", plan.device],

@@ -99,3 +99,38 @@ def test_every_keyslot_is_capped_to_a_memory_a_weak_machine_has():
     # 256 МиБ: достаточно для стойкости argon2id и есть на любой машине,
     # на которой имеет смысл запускать этот носитель.
     assert luks_module.MAX_PBKDF_MEMORY_KIB == 262144
+
+
+def test_the_medium_is_trimmed_before_partitioning_but_a_refusal_is_not_fatal():
+    """Запись в стёртый блок быстрее, а TRIM умеют не все флешки.
+
+    Замер на тестовом носителе: 2,9 МБ/с последовательной записи против
+    0,49 МБ/с, которые давал прогон, — и это одна из причин разрыва.
+    """
+    plan = plan_partitions("/dev/sdb", DiskLayoutConfig())
+    commands = [" ".join(argv) for argv in DiskManager().commands_for(plan)]
+
+    discard = [c for c in commands if "blkdiscard" in c]
+    assert discard, "носитель не очищается перед разметкой"
+    assert "|| true" in discard[0], "отказ TRIM сорвёт установку"
+    # До разметки, а не после: смысл в том, чтобы писать в уже стёртые блоки.
+    assert commands.index(discard[0]) < min(i for i, c in enumerate(commands) if "mklabel" in c)
+
+
+def test_encryption_uses_a_sector_size_flash_memory_likes():
+    """512-байтные секторы заставляют контроллер переписывать целую страницу.
+
+    Страница флеш-памяти — 16 КБ и больше, так что запись по 512 байт
+    превращается в чтение-изменение-запись. 4096 принимают и устройства с
+    логическим сектором 512.
+    """
+    from portable_os_admin.install import luks as luks_module
+
+    plan = LuksManager().format(
+        "/dev/sdb2", b"passphrase", dry_run=True, confirm_device="/dev/sdb2"
+    )
+    argv = plan.results[0].argv
+
+    assert "--sector-size" in argv
+    assert argv[argv.index("--sector-size") + 1] == str(luks_module.DEFAULT_SECTOR_SIZE)
+    assert luks_module.DEFAULT_SECTOR_SIZE == 4096

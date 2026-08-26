@@ -91,13 +91,18 @@ def test_target_system_is_actually_written_onto_the_medium(session, make_config)
     open_idx = next(i for i, a in enumerate(argvs) if a[0] == "cryptsetup" and "luksOpen" in a)
     mapper = argvs[open_idx][3]
     mkfs_idx = next(i for i, a in enumerate(argvs) if a[0] == "mkfs.ext4" and a[-1].endswith(mapper))
-    mount_idx = next(i for i, a in enumerate(argvs) if a[0] == "mount" and a[1].endswith(mapper))
+    # Путь к устройству — последний аргумент минус точка монтирования: между
+    # `mount` и им теперь стоят параметры записи (noatime и прочее).
+    mount_idx = next(
+        i for i, a in enumerate(argvs)
+        if a[0] == "mount" and any(part.endswith(mapper) for part in a[1:])
+    )
     # "debootstrap" is not necessarily argv[0] -- it may be wrapped in eatmydata
     bootstrap_idx = next(i for i, a in enumerate(argvs) if "debootstrap" in a)
 
     # unlock -> make a filesystem -> mount it -> only then install into it
     assert open_idx < mkfs_idx < mount_idx < bootstrap_idx
-    mount_root = argvs[mount_idx][2]
+    mount_root = argvs[mount_idx][-1]
     assert mount_root in argvs[bootstrap_idx], "bootstrap does not target the mounted medium"
 
     # the medium is unmounted first: a stick is automounted by the desktop the
@@ -434,3 +439,17 @@ def test_a_dry_run_never_claims_the_medium_was_touched(session, big_removable_de
     installer.run(big_removable_device, config, b"user-passphrase-123", dry_run=True)
 
     assert installer.medium_modified is False
+
+
+def test_a_slow_medium_is_given_time_to_answer_a_probe():
+    """Проба blkid не должна убивать развёртывание таймаутом.
+
+    Найдено живым прогоном: развёртывание падало на шаге 12 из 14, после часа
+    записи, потому что `_read_output` жёстко задавал 30 секунд. Проба
+    читающая, но читает она носитель, в очередь которого ещё сливаются
+    гигабайты записанного, и на дешёвой флешке чтение встаёт за этой
+    очередью.
+    """
+    from portable_os_admin.install import installer as installer_module
+
+    assert installer_module.PROBE_TIMEOUT >= 600

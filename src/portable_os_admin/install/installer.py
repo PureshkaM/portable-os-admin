@@ -543,6 +543,12 @@ class OSInstaller:
             # Дистрибутив версии 1: корень лежит в tar-архиве.
             run(distribution.unpack_command(archive, layout.mount_root), timeout=BOOTSTRAP_TIMEOUT)
 
+        # Копирование считается законченным только когда данные на носителе, а
+        # не в кэше страниц. Без этого следующая же команда — чтение UUID —
+        # встаёт в очередь за гигабайтами записанного и упирается в таймаут.
+        self._progress.step("Сброс кэшей на носитель")
+        run(["sync"], timeout=BOOTSTRAP_TIMEOUT)
+
         self._progress.step("Подключение служебных разделов")
         self._mount_boot_partitions(layout, state, plan, dry_run, confirm_device)
         self._mount_pseudo_filesystems(layout.mount_root, state, plan, dry_run, confirm_device)
@@ -1166,6 +1172,9 @@ class OSInstaller:
         # mapping, which is the step whose absence made every earlier install
         # write the target system into a directory on the admin host instead.
         self._progress.step("Создание файловых систем")
+        # `-E lazy_itable_init=0,lazy_journal_init=0` намеренно НЕ ставится: на
+        # медленном носителе это заставило бы mkfs записать все таблицы inode
+        # сразу, а ленивая инициализация как раз экономит запись.
         run(["mkfs.ext4", "-F", "-L", "POA_ROOT", layout.mapper_path])
         run(["mkfs.vfat", "-F", "32", "-n", "POA_ESP", layout.esp_partition])
         run(["mkfs.ext4", "-F", "-L", "POA_BOOT", layout.boot_partition])
@@ -1175,7 +1184,18 @@ class OSInstaller:
         self._progress.step("Монтирование носителя")
         # Mount the target tree, outermost first.
         run(["mkdir", "-p", layout.mount_root])
-        run(["mount", layout.mapper_path, layout.mount_root])
+        # Параметры монтирования — только на время записи; в fstab носителя
+        # попадают другие. `noatime` убирает запись метки времени на каждое
+        # чтение, `commit=600` заставляет журнал сбрасываться раз в десять
+        # минут вместо пяти секунд, `barrier=0` снимает принудительный сброс
+        # кэша устройства после каждой транзакции. Всё это безопасно ровно
+        # потому, что незавершённая установка и так не годится к
+        # использованию: терять при сбое питания тут нечего, а выигрыш на
+        # дешёвой флешке измеримый.
+        run([
+            "mount", "-o", "noatime,commit=600,barrier=0",
+            layout.mapper_path, layout.mount_root,
+        ])
         state.mounts.append(layout.mount_root)
 
         return recovery_code, recovery_salt, service_key, boot_key
@@ -1426,7 +1446,7 @@ class _Progress:
     #: Building a distribution skips everything to do with a medium.
     BUILD_STAGES = 10
     #: Deploying one skips everything to do with packages.
-    DEPLOY_STAGES = 14
+    DEPLOY_STAGES = 15
 
     def __init__(self, callback, expected: int | None = None):
         self._callback = callback
@@ -1476,11 +1496,30 @@ def _blkid_uuid(path: str) -> str:
     return _read_output(["blkid", "-s", "UUID", "-o", "value", path])
 
 
+#: Сколько ждать пробу вроде `blkid`.
+#:
+#: Раньше здесь стояло 30 секунд, и это убивало развёртывание на шаге 12 из
+#: 14 — после часа записи. Проба читающая, но читает она носитель, в очередь
+#: которого ещё сливаются гигабайты только что записанного: на дешёвой флешке
+#: чтение встаёт за этой очередью и тридцати секунд не хватает. Значение то
+#: же, что у обычных команд (DEFAULT_TIMEOUT), потому что ограничение здесь —
+#: скорость носителя, а не сложность самой команды.
+PROBE_TIMEOUT = 600
+
+
 def _read_output(argv: list[str]) -> str:
     """Read-only probe, so it does not go through CommandRunner's destructive
     gate -- but a failure here still has to stop the install, because a blank
     UUID would produce an fstab that cannot mount anything."""
-    proc = subprocess.run(resolve_argv(argv), capture_output=True, text=True, timeout=30, check=False)
+    try:
+        proc = subprocess.run(
+            resolve_argv(argv), capture_output=True, text=True, timeout=PROBE_TIMEOUT, check=False
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise InstallError(
+            f"носитель не ответил за {PROBE_TIMEOUT} с на чтение: {' '.join(argv)}.\n"
+            "Обычно это значит, что он слишком медленный или неисправен."
+        ) from exc
     value = proc.stdout.strip()
     if proc.returncode != 0 or not value:
         raise InstallError(f"не удалось определить UUID: {' '.join(argv)}\n{proc.stderr.strip()}")
