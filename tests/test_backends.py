@@ -252,3 +252,60 @@ def test_redos_does_not_put_a_rescue_initramfs_on_the_medium():
 
     assert "dracut-config-rescue" not in backend.core_package_names()
     assert "bash" in backend.core_package_names()
+
+
+def test_grub_config_is_written_where_grub_looks_for_it():
+    """Раздел EFI смонтирован в /boot/efi, а не в /boot.
+
+    Ошибка стоила часового прогона: grub2-mkconfig отвечает «нет такого файла»
+    про свой временный grub.cfg.new, и по сообщению не догадаться, что не
+    найден каталог назначения.
+    """
+    from portable_os_admin.config import InstallConfig
+    from portable_os_admin.install.backends import get_backend
+    from portable_os_admin.install.disk import build_media_layout, plan_partitions
+
+    config = InstallConfig.create_baseline("stick", "redos")
+    config.release = "8.0"
+    config.arch = "amd64"
+    layout = build_media_layout(
+        plan_partitions("/dev/sdb", config.disk), mapper_name="poa-x", mount_root="/mnt/root"
+    )
+
+    commands = [" ".join(argv) for argv in get_backend("redos").bootloader_commands(layout, config)]
+    mkconfig = next(c for c in commands if "grub2-mkconfig" in c)
+
+    assert "/boot/efi/EFI/redos/grub.cfg" in mkconfig
+    assert "/boot/EFI/" not in mkconfig
+
+
+def test_boot_entries_are_rewritten_for_a_separate_boot_partition():
+    """Пути в записях BLS считаются от файловой системы, где лежит /boot.
+
+    Найдено загрузкой: GRUB отвечал «file `/boot/vmlinuz-…' not found», потому
+    что искал его внутри раздела /boot, где ядро лежит в корне. Записи
+    написаны при сборке дистрибутива, где /boot — каталог корня (у РЕД ОС это
+    раскладка по умолчанию: в anaconda.conf образа только /, /home и swap), а
+    на носителе он отдельный раздел.
+    """
+    from portable_os_admin.config import InstallConfig
+    from portable_os_admin.install.backends import get_backend
+    from portable_os_admin.install.disk import build_media_layout, plan_partitions
+
+    config = InstallConfig.create_baseline("stick", "redos")
+    config.release = "8.0"
+    config.arch = "amd64"
+    layout = build_media_layout(
+        plan_partitions("/dev/sdb", config.disk), mapper_name="poa-x", mount_root="/mnt/root"
+    )
+
+    commands = [" ".join(argv) for argv in get_backend("redos").bootloader_commands(layout, config)]
+    rewrite = next(c for c in commands if "loader/entries" in c)
+
+    assert "s|^linux /boot/|linux /|" in rewrite
+    assert "s|^initrd /boot/|initrd /|" in rewrite
+    # И до генерации конфигурации, а не после: иначе grub2-mkconfig прочитает
+    # ещё не исправленные записи.
+    assert commands.index(rewrite) < next(
+        i for i, c in enumerate(commands) if "grub2-mkconfig" in c
+    )

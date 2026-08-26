@@ -532,6 +532,25 @@ class RedOSInstallBackend(InstallBackend):
         efi = f"{root}/boot/efi"
         vendor = f"{efi}/{self.EFI_VENDOR_DIR}"
         return [
+            # Пути в записях загрузчика приводятся к раскладке носителя.
+            #
+            # RHEL-семейство описывает варианты загрузки файлами BLS в
+            # /boot/loader/entries, и пути в них считаются от той файловой
+            # системы, на которой лежит /boot. По умолчанию у РЕД ОС
+            # отдельного /boot нет (проверено по anaconda.conf образа:
+            # разметка по умолчанию — только /, /home и swap), поэтому
+            # kernel-install при сборке дистрибутива записал `/boot/vmlinuz-…`
+            # — и для той раскладки это верно.
+            #
+            # На носителе /boot обязан быть отдельным и незашифрованным, иначе
+            # прошивке нечего загружать. Внутри этого раздела путь начинается
+            # с его корня, и запись должна говорить `/vmlinuz-…`. Иначе GRUB
+            # ищет `POA_BOOT:/boot/vmlinuz-…`, которого там нет, и отвечает
+            # «file not found» с последующим «you need to load the kernel
+            # first» — по этим сообщениям причину не угадать.
+            ["sh", "-c",
+             f"sed -i -e 's|^linux /boot/|linux /|' -e 's|^initrd /boot/|initrd /|' "
+             f"{root}/boot/loader/entries/*.conf 2>/dev/null || true"],
             ["mkdir", "-p", f"{efi}/EFI/BOOT"],
             # Shim ищет grubx64.efi рядом с собой, а пакет кладёт его в
             # каталог дистрибутива.
@@ -545,5 +564,10 @@ class RedOSInstallBackend(InstallBackend):
             # Конфигурация пишется туда, откуда её читает grub: путь вшит в
             # двоичный файл при сборке пакета, и от того, откуда grub
             # запустили, он не зависит.
-            self.chroot(root, "grub2-mkconfig", "-o", f"/boot/{self.EFI_VENDOR_DIR}/grub.cfg"),
+            # Путь внутри chroot: раздел EFI смонтирован в /boot/efi, поэтому
+            # каталог дистрибутива — /boot/efi/EFI/redos, а не /boot/EFI/redos.
+            # На этом я и ошибся: grub2-mkconfig отвечает «нет такого файла»
+            # про свой временный grub.cfg.new, и по сообщению не догадаться,
+            # что не найден каталог назначения.
+            self.chroot(root, "grub2-mkconfig", "-o", f"/boot/efi/{self.EFI_VENDOR_DIR}/grub.cfg"),
         ]

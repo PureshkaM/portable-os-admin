@@ -103,3 +103,25 @@ def test_check_install_eligible_rejects_too_small():
     )
     with pytest.raises(DeviceNotEligibleError):
         check_install_eligible(device, required_bytes=32_000_000_000)
+
+
+def test_a_non_removable_device_is_refused_unless_the_stand_hatch_is_open(monkeypatch):
+    """Проверка стоит между «стереть флешку» и «стереть системный диск».
+
+    Снимать её можно только явной переменной окружения и только на стенде:
+    развёртывание на файл-образ через losetup выполняет тот же код, но
+    занимает секунды вместо часа.
+    """
+    from portable_os_admin.install import devices as devices_module
+
+    disk = BlockDevice(
+        name="loop0", path="/dev/loop0", size_bytes=32_000_000_000,
+        model="", removable=False, mountpoints=(),
+    )
+
+    monkeypatch.delenv(devices_module.ALLOW_NON_REMOVABLE, raising=False)
+    with pytest.raises(DeviceNotEligibleError):
+        check_install_eligible(disk, 1_000_000)
+
+    monkeypatch.setenv(devices_module.ALLOW_NON_REMOVABLE, "1")
+    check_install_eligible(disk, 1_000_000)

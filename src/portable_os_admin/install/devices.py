@@ -6,6 +6,8 @@ canned JSON without a real block device or even a Linux host.
 """
 from __future__ import annotations
 
+import os
+
 import json
 import subprocess
 from dataclasses import dataclass
@@ -196,6 +198,23 @@ def _truthy(value) -> bool:
     return bool(value)
 
 
+#: Отмычка для стенда, наружу не выводится — как POA_NO_ELEVATE.
+#:
+#: Нужна ровно для одного: разворачивать на файл-образ через losetup вместо
+#: настоящей флешки. Цена вопроса измерена — копирование 4 ГБ на тестовый
+#: носитель занимает час, на файл в ВМ секунды, и однострочная ошибка на
+#: последнем шаге стоит этого часа. Установщик при этом выполняет ровно тот же
+#: код: разметку, LUKS, копирование, chroot, dracut, загрузчик.
+#:
+#: В обычной работе снимать эту проверку нельзя: она стоит между «стереть
+#: флешку» и «стереть системный диск».
+ALLOW_NON_REMOVABLE = "POA_ALLOW_NON_REMOVABLE"
+
+
+def _non_removable_allowed() -> bool:
+    return bool(os.environ.get(ALLOW_NON_REMOVABLE))
+
+
 def check_install_eligible(
     device: BlockDevice, required_bytes: int, *, require_unmounted: bool = True
 ) -> None:
@@ -206,7 +225,7 @@ def check_install_eligible(
     device as an explicit, logged preflight step instead of refusing outright --
     the user has already confirmed they are about to erase it.
     """
-    if not device.removable:
+    if not device.removable and not _non_removable_allowed():
         raise DeviceNotEligibleError(f"устройство {device.path} не является съёмным")
     if require_unmounted and device.is_mounted:
         raise DeviceNotEligibleError(
