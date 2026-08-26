@@ -572,10 +572,11 @@ class OSInstaller:
             source = ""
             run(distribution.unpack_command(archive, layout.mount_root), timeout=BOOTSTRAP_TIMEOUT)
 
-        # Копирование считается законченным только когда данные на носителе, а
-        # не в кэше страниц. Без этого следующая же команда — чтение UUID —
-        # встаёт в очередь за гигабайтами записанного и упирается в таймаут.
-        self._progress.step("Сброс кэшей на носитель")
+        # Часть того же шага, а не отдельный: копирование не закончено, пока
+        # данные не на носителе, а не в кэше страниц. Без этого следующая же
+        # команда — чтение UUID — встаёт в очередь за гигабайтами записанного
+        # и упирается в таймаут. Для администратора это та же запись, которая
+        # ещё идёт, поэтому и показывается как она.
         run(["sync"], timeout=BOOTSTRAP_TIMEOUT)
 
         self._progress.step("Запись загрузчика на раздел EFI")
@@ -1517,7 +1518,7 @@ class _Progress:
     #: Building a distribution skips everything to do with a medium.
     BUILD_STAGES = 10
     #: Deploying one skips everything to do with packages.
-    DEPLOY_STAGES = 15
+    DEPLOY_STAGES = 14
 
     def __init__(self, callback, expected: int | None = None):
         self._callback = callback
