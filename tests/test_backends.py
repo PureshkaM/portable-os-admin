@@ -399,6 +399,12 @@ def test_redos_tells_the_initramfs_to_unlock_the_volume():
     grub_defaults = get_backend("redos").config_files(config, layout)["etc/default/grub"]
     assert f"rd.luks.uuid={layout.luks_uuid}" in grub_defaults
 
+    # И дописывание не повторяет то, что генератор уже поставил. Первая версия
+    # дописывала всегда, параметры оказывались в строке дважды, а dracut
+    # склеивал два имени тома через пробел и искал службу, которой нет.
+    append = next(c for c in order if "loader/entries" in c and "rd.luks.uuid" in c)
+    assert "grep -q" in append, "дописывание не проверяет, нет ли параметров уже"
+
 
 def test_both_families_build_a_generic_initramfs():
     """Носитель поедет на машину, которой никто не видел.

@@ -552,10 +552,13 @@ class RedOSInstallBackend(InstallBackend):
         extra = self._kernel_cmdline(config, layout)
         if not extra:
             return "true"
+        marker = extra.split()[0]
         return (
-            f"sed -i 's|^options .*|& {extra}|' "
-            f"{root}/boot/loader/entries/*.conf 2>/dev/null || true"
-        )
+            "for f in {root}/boot/loader/entries/*.conf; do "
+            "[ -f \"$f\" ] || continue; "
+            "grep -q '{marker}' \"$f\" || sed -i 's|^options .*|& {extra}|' \"$f\"; "
+            "done 2>/dev/null || true"
+        ).format(root=root, marker=marker, extra=extra)
 
     def config_files(self, config: InstallConfig, layout: MediaLayout) -> dict[str, str]:
         files = super().config_files(config, layout)
@@ -663,7 +666,11 @@ class RedOSInstallBackend(InstallBackend):
             self.chroot(root, "grub2-mkconfig", "-o", f"/boot/efi/{self.EFI_VENDOR_DIR}/grub.cfg"),
             # После генерации, а не до: grub2-mkconfig перезаписывает строку
             # `options` в записях BLS, и всё, что дописано раньше, теряется.
-            # Здесь то же значение проставляется ещё раз — на случай сборки
-            # grub2, которая записи не трогает.
+            #
+            # Дописывается только если генератор этого не сделал сам. Первая
+            # версия дописывала всегда — и параметры оказывались в строке
+            # дважды. Для rd.luks.name это не безобидно: dracut склеивал два
+            # имени через пробел и пытался запустить службу
+            # `systemd-cryptsetup@poa-xxx poa-xxx`, которой нет.
             ["sh", "-c", self._append_kernel_parameters(root, config, layout)],
         ]
