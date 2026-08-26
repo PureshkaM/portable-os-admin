@@ -386,3 +386,15 @@ def test_redos_tells_the_initramfs_to_unlock_the_volume():
     assert f"rd.luks.uuid={layout.luks_uuid}" in commands
     # Имя тома задаётся явно: fstab и crypttab носителя ссылаются на него.
     assert f"rd.luks.name={layout.luks_uuid}=poa-abc" in commands
+
+    # И главное: параметры проставляются ПОСЛЕ grub2-mkconfig. Он
+    # перезаписывает строку `options` в записях BLS значением
+    # GRUB_CMDLINE_LINUX, и всё, что дописано раньше, теряется молча.
+    order = [" ".join(argv) for argv in get_backend("redos").bootloader_commands(layout, config)]
+    sed_at = next(i for i, c in enumerate(order) if "rd.luks.uuid" in c)
+    mkconfig_at = next(i for i, c in enumerate(order) if "grub2-mkconfig" in c)
+    assert sed_at > mkconfig_at, "параметры допишутся до генерации и будут стёрты"
+
+    # А в самом /etc/default/grub они тоже есть — оттуда их и берёт генератор.
+    grub_defaults = get_backend("redos").config_files(config, layout)["etc/default/grub"]
+    assert f"rd.luks.uuid={layout.luks_uuid}" in grub_defaults
