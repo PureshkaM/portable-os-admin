@@ -850,7 +850,9 @@ def test_deploy_wizard_shows_what_it_is_about_to_write(gui_app, tmp_path):
     app.update()
 
     shown = _visible_text(wizard)
-    assert metadata.sha256 in shown
+    # Показана целиком, но разбита пополам — иначе строка без пробелов уезжает
+    # за край окна.
+    assert metadata.sha256[:32] in shown and metadata.sha256[32:] in shown
     assert "redos 8.0" in shown
     assert "kde" in shown
     assert "/dev/sdz" in shown

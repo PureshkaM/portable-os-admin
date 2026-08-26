@@ -278,7 +278,8 @@ class OSInstaller:
         self._source_core_packages = ()
         warnings = self._check_arch(backend, config)
         if not dry_run:
-            check_tools_available([*backend.required_tools(), "tar"])
+            unpacking = ["mount", "umount", "cp"] if distribution.is_squashfs(metadata.archive) else ["tar"]
+            check_tools_available([*backend.required_tools(), *unpacking])
 
         build_id = crypto.new_media_id()
         root = os.path.join(destination, f"rootfs-{build_id}")
@@ -334,7 +335,7 @@ class OSInstaller:
         self._progress.step("Подготовка каталога сборки")
         run(["mkdir", "-p", root])
 
-        self._progress.step("Развёртывание базовой системы с образа — самый долгий шаг")
+        self._progress.step("Развёртывание базовой системы с образа")
         argv = backend.bootstrap_command(root, config, image_url, release)
         run(argv, timeout=BOOTSTRAP_TIMEOUT)
 
@@ -406,6 +407,8 @@ class OSInstaller:
             self._try(argv, plan, dry_run, confirm)
 
         self._progress.step("Упаковка дистрибутива")
+        if not dry_run:
+            check_tools_available(["mksquashfs"])
         compressor, archive_name = _pick_compressor()
         archive = os.path.join(destination, archive_name)
         run(distribution.archive_command(root, archive, compressor=compressor), timeout=BOOTSTRAP_TIMEOUT)
@@ -457,7 +460,8 @@ class OSInstaller:
         backend = get_backend(config.target_os)
         warnings = self._check_arch(backend, config)
         if not dry_run:
-            check_tools_available([*backend.required_tools(), "tar"])
+            unpacking = ["mount", "umount", "cp"] if distribution.is_squashfs(metadata.archive) else ["tar"]
+            check_tools_available([*backend.required_tools(), *unpacking])
             # Before anything is erased. This is the whole point of doing it
             # here rather than discovering a truncated archive mid-unpack.
             distribution.verify_archive(directory, metadata)
@@ -523,9 +527,21 @@ class OSInstaller:
             device, config, layout, user_passphrase, plan, state, dry_run, confirm_device
         )
 
-        self._progress.step("Распаковка дистрибутива на носитель")
+        self._progress.step("Копирование системы на носитель")
         archive = distribution.archive_path(directory, metadata)
-        run(distribution.unpack_command(archive, layout.mount_root), timeout=BOOTSTRAP_TIMEOUT)
+        if distribution.is_squashfs(metadata.archive):
+            # Эталон монтируется только на чтение, и система копируется из него
+            # в уже открытый том. Копия сохраняет владельцев, права, ACL и
+            # xattr — без последних перестают работать программы с
+            # capabilities, и понять почему по симптомам трудно.
+            source = f"/mnt/poa-dist-{media_id}"
+            run(["mkdir", "-p", source])
+            run(distribution.mount_command(archive, source))
+            state.mounts.append(source)
+            run(distribution.copy_command(source, layout.mount_root), timeout=BOOTSTRAP_TIMEOUT)
+        else:
+            # Дистрибутив версии 1: корень лежит в tar-архиве.
+            run(distribution.unpack_command(archive, layout.mount_root), timeout=BOOTSTRAP_TIMEOUT)
 
         self._progress.step("Подключение служебных разделов")
         self._mount_boot_partitions(layout, state, plan, dry_run, confirm_device)
@@ -615,7 +631,7 @@ class OSInstaller:
 
         desktop_packages = backend.desktop_packages(config)
         if desktop_packages:
-            self._progress.step("Установка графического окружения — долгий шаг")
+            self._progress.step("Установка графического окружения")
             desktop_cmd = backend.package_install_command(root, desktop_packages)
             if desktop_cmd is not None:
                 run(desktop_cmd, timeout=BOOTSTRAP_TIMEOUT)
@@ -807,7 +823,7 @@ class OSInstaller:
             device, config, layout, user_passphrase, plan, state, dry_run, confirm_device
         )
 
-        self._progress.step("Развёртывание базовой системы с образа — самый долгий шаг")
+        self._progress.step("Развёртывание базовой системы с образа")
         self._run_bootstrap(backend, config, layout, image_url, release, plan, dry_run, confirm_device)
 
         self._progress.step("Подключение служебных разделов")
@@ -932,7 +948,7 @@ class OSInstaller:
         # be tens of minutes during which the interface names the wrong thing.
         desktop_packages = backend.desktop_packages(config)
         if desktop_packages:
-            self._progress.step("Установка графического окружения — долгий шаг")
+            self._progress.step("Установка графического окружения")
             desktop_cmd = backend.package_install_command(layout.mount_root, desktop_packages)
             if desktop_cmd is not None:
                 run(desktop_cmd, timeout=BOOTSTRAP_TIMEOUT)
@@ -1428,18 +1444,22 @@ class _Progress:
 
 
 def _pick_compressor() -> tuple[str, str]:
-    """(compressor, archive name), preferring zstd where it exists.
+    """(алгоритм сжатия squashfs, имя файла образа).
 
-    zstd compresses a root filesystem several times faster than gzip at a
-    better ratio, which matters when the artefact is gigabytes; gzip is the
-    fallback because it is everywhere.
+    zstd жмёт корень заметно быстрее gzip при сопоставимом размере, но собран
+    ли он в mksquashfs — зависит от сборки пакета, поэтому спрашиваем у самой
+    программы, а не предполагаем. Имя файла от выбора не зависит: алгоритм
+    записан внутри образа.
     """
-    import shutil as _shutil
-
-    if _shutil.which("zstd"):
-        return "zstd -T0 -3", distribution.ARCHIVE_NAME
-    return "gzip -1", distribution.ARCHIVE_NAME_GZ
-
+    try:
+        help_text = subprocess.run(
+            ["mksquashfs", "-help"], capture_output=True, text=True, timeout=20
+        )
+        supported = f"{help_text.stdout}{help_text.stderr}"
+    except (OSError, subprocess.SubprocessError):
+        supported = ""
+    compressor = "zstd" if "zstd" in supported else "gzip"
+    return compressor, distribution.ARCHIVE_NAME
 
 def _directory_size(path: str) -> int:
     total = 0

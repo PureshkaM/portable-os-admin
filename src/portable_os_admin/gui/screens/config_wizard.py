@@ -95,14 +95,13 @@ class ConfigWizardFrame(WizardFrame):
                 "Проверка и сохранение",
             ],
             step_hints=[
-                "Что вы устанавливаете на носитель? Это определяет всё, что будет дальше.",
-                "Учётная запись, которая будет создана на установленной системе.",
-                "Размеры служебных разделов и параметры шифрования системного раздела (LUKS).",
-                "Необязательно: доступ по SSH на установленной системе.",
-                "Необязательно: подключитесь к репозиторию выбранной ОС и выберите пакеты.",
-                "Обычная консольная система или киоск с ограниченным набором приложений; "
-                "нужно ли носителю обновляться самому.",
-                "Проверьте конфигурацию целиком, при необходимости поправьте вручную, затем сохраните.",
+                "",
+                "",
+                "",
+                "Необязательно.",
+                "Необязательно.",
+                "",
+                "",
             ],
             finish_label="Сохранить конфигурацию",
         )
@@ -519,7 +518,7 @@ class ConfigWizardFrame(WizardFrame):
         self.catalog_table.pack(fill="both", expand=True)
         ttk.Label(
             left,
-            text="Несколько пакетов: Ctrl — по одному, Shift — диапазоном. Щелчок по заголовку столбца сортирует.",
+            text="Ctrl — по одному, Shift — диапазоном.",
             foreground="#777777",
             font=("TkDefaultFont", 9),
             wraplength=420,
@@ -711,11 +710,8 @@ class ConfigWizardFrame(WizardFrame):
         ).pack(side="left", padx=(theme.SPACE_MD, 0))
         ttk.Label(
             inner,
-            text="MATE — то, на чём построен штатный режим киоска РЕД ОС; ограничения "
-            "задаются через dconf. KDE использует встроенный механизм Kiosk: запрет "
-            "проверяют сами приложения, поэтому закрываются терминал и запуск "
-            "принесённых ярлыков, а диалоги открытия файлов не выходят за пределы "
-            "домашнего каталога и раздела обмена. KDE тяжелее и дольше ставится.",
+            text="KDE ограничивает строже (запрет проверяют сами приложения), "
+            "но тяжелее и дольше ставится.",
             style="Hint.TLabel",
             wraplength=theme.TEXT_WRAP,
         ).pack(anchor="w", pady=(0, theme.SPACE_SM))
@@ -734,18 +730,14 @@ class ConfigWizardFrame(WizardFrame):
         ).pack(side="left", padx=(theme.SPACE_MD, 0))
         ttk.Label(
             inner,
-            text="Plasma переходит на Wayland, поэтому выбор явный. Под Wayland файл "
-            "xorg.conf не читается, и запрет Ctrl+Alt+F1..F12 держится не на нём, а на "
-            "правиле polkit и отключённых текстовых консолях — так ограничение работает "
-            "при любом протоколе. В образе РЕД ОС Wayland-сеанса Plasma нет, там только X11.",
+            text="В образе РЕД ОС Wayland-сеанса Plasma нет — только X11.",
             style="Hint.TLabel",
             wraplength=theme.TEXT_WRAP,
         ).pack(anchor="w", pady=(0, theme.SPACE_SM))
 
         ttk.Label(
             inner,
-            text="Имена desktop-записей без «.desktop» — так же, как их задаёт РЕД ОС "
-            "(например: mate-calc, libreoffice-writer, firefox-esr).",
+            text="Имена desktop-записей без «.desktop»: mate-calc, firefox-esr.",
             style="Hint.TLabel",
             wraplength=theme.TEXT_WRAP,
         ).pack(anchor="w", pady=(0, theme.SPACE_SM))
@@ -1023,7 +1015,7 @@ class ConfigWizardFrame(WizardFrame):
 
         ttk.Label(
             body,
-            text="Файл конфигурации целиком. Можно править прямо здесь — изменения применятся по кнопке ниже.",
+            text="Можно править прямо здесь — изменения применятся по кнопке ниже.",
             style="Hint.TLabel",
             wraplength=theme.TEXT_WRAP,
             justify="left",
@@ -1099,9 +1091,7 @@ class ConfigWizardFrame(WizardFrame):
         table.pack(fill="x")
         ttk.Label(
             frame,
-            text=f"Изменений: {len(changes)}. Исходная конфигурация — самая ограниченная "
-            "из тех, что умеет собирать программа; всё перечисленное здесь администратор "
-            "разрешил или изменил сознательно.",
+            text=f"Изменений: {len(changes)}.",
             style="Hint.TLabel",
             wraplength=theme.TEXT_WRAP,
         ).pack(anchor="w", pady=(theme.SPACE_XS, 0))

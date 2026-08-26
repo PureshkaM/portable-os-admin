@@ -37,10 +37,7 @@ class StartupFrame(ttk.Frame):
         ttk.Label(card, text="Контейнер администратора", style="Title.TLabel").pack(anchor="w")
         ttk.Label(
             card,
-            text=(
-                "Укажите файл контейнера и пароль. Если файла ещё нет — нажмите "
-                "«Создать новый», он будет создан по этому пути."
-            ),
+            text="Если файла ещё нет — «Создать новый» создаст его по этому пути.",
             style="Muted.TLabel",
             wraplength=theme.TEXT_WRAP,
             justify="left",

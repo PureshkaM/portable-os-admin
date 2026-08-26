@@ -36,6 +36,12 @@ from .device_step import (
 )
 
 
+def _split_digest(digest: str) -> str:
+    if not digest:
+        return "нет"
+    return f"{digest[:32]}\n{digest[32:]}"
+
+
 class DeployWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
     def __init__(self, parent: tk.Widget, app):
         self.app = app
@@ -52,13 +58,10 @@ class DeployWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
             app,
             step_titles=["Дистрибутив", "Носитель", "Пароль", "Подтверждение и запись"],
             step_hints=[
-                "Каталог с собранным дистрибутивом: архив системы, его описание "
-                "и контрольная сумма.",
-                "Носитель, на который будет записан дистрибутив. Он будет полностью "
-                "очищен.",
-                "Парольная фраза LUKS. У каждого носителя она своя — как и ключ "
-                "шифрования, который создаётся здесь заново.",
-                "Последняя проверка перед записью. Отсюда назад пути нет.",
+                "",
+                "",
+                "",
+                "",
             ],
             finish_label="К панели",
         )
@@ -72,17 +75,6 @@ class DeployWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
         ttk.Button(body, text="Выбрать каталог…", command=self._browse_directory).pack(
             anchor="w", pady=(theme.SPACE_SM, 0)
         )
-        ttk.Label(
-            body,
-            text=(
-                "В каталоге должны лежать файл системы, его контрольная сумма и "
-                "описание (distribution.json). Описание читается сразу: если это "
-                "не дистрибутив или он собран более новой версией программы, "
-                "мастер откажется идти дальше — до того, как будет выбран носитель."
-            ),
-            wraplength=theme.TEXT_WRAP,
-            justify="left",
-        ).pack(anchor="w", pady=(theme.SPACE_MD, 0))
 
     def _browse_directory(self) -> None:
         chosen = filedialog.askdirectory(
@@ -117,16 +109,6 @@ class DeployWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
         add_field(form, 0, "Пароль пользователя (LUKS):", self.passphrase_var, show="*", width=30)
         self.passphrase_confirm_var = tk.StringVar(value=self.passphrase)
         add_field(form, 2, "Повторите пароль:", self.passphrase_confirm_var, show="*", width=30)
-        ttk.Label(
-            body,
-            text=(
-                "Это единственный секрет, который спрашивают у пользователя носителя. "
-                "Второй носитель из этого же дистрибутива получит другой ключ "
-                "шифрования, даже если задать ту же самую фразу."
-            ),
-            wraplength=theme.TEXT_WRAP,
-            justify="left",
-        ).pack(anchor="w", pady=(theme.SPACE_MD, 0))
 
     def _save_step_passphrase(self) -> None:
         self.passphrase = self.passphrase_var.get()
@@ -156,9 +138,11 @@ class DeployWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
             ("Режим:", mode),
             ("Размер системы:", f"{meta.rootfs_bytes / 1024**3:.1f} ГБ"),
             ("Собран:", meta.built_at or "неизвестно"),
-            # Показывается целиком, а не первыми символами: её сверяют глазами
-            # с той, что записана рядом с архивом.
-            ("Контрольная сумма:", meta.sha256 or "нет"),
+            # Целиком, а не первыми символами: её сверяют глазами с той, что
+            # записана рядом с образом. Пополам — потому что в шестидесяти
+            # четырёх символах без пробелов переносить нечего, и строка просто
+            # уезжала за край окна.
+            ("Контрольная сумма:", _split_digest(meta.sha256)),
         ]
         for label, value in rows:
             row = ttk.Frame(box)
@@ -166,25 +150,12 @@ class DeployWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
             ttk.Label(row, text=label, width=20).pack(side="left")
             ttk.Label(row, text=value, wraplength=520, justify="left").pack(side="left")
 
-        ttk.Label(
-            box,
-            text=(
-                "Контрольная сумма будет проверена до того, как носитель тронут. "
-                "Она защищает от повреждения и случайной подмены, но не от намеренной: "
-                "кто подменит архив, подменит и сумму рядом с ним."
-            ),
-            wraplength=theme.TEXT_WRAP,
-            justify="left",
-        ).pack(anchor="w", padx=10, pady=(6, 8))
 
         if meta.built_under_emulation:
             ttk.Label(
                 body,
                 text=(
-                    "Дистрибутив собран под эмуляцией: ни одна программа целевой "
-                    f"системы не выполнялась на настоящем процессоре {meta.arch}. "
-                    "Проверьте загрузку носителя на машине этой архитектуры, прежде "
-                    "чем выдавать его."
+                    f"Собран под эмуляцией: проверьте загрузку на машине {meta.arch}."
                 ),
                 foreground=DANGER_COLOR,
                 wraplength=theme.TEXT_WRAP,
@@ -317,10 +288,7 @@ class DeployWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
         self.stage_label.pack(anchor="w", pady=(4, 2), before=self.log_text)
         self.progress.configure(value=0)
         self.progress.pack(fill="x", pady=(0, 8), before=self.log_text)
-        self.message_bar.info(
-            "Идёт запись: очистка носителя, разметка, шифрование, распаковка системы. "
-            "Долгая часть уже сделана при сборке. Окно останется отзывчивым."
-        )
+        self.message_bar.info("Идёт запись на носитель.")
         self._log(f"--- РАЗВЁРТЫВАНИЕ НА {device.path} ---")
         self._log(f"Дистрибутив: {self.directory}")
 

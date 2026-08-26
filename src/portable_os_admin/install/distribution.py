@@ -61,15 +61,22 @@ from ..errors import InstallError
 
 #: Version of the archive layout. Read back on deployment so a distribution
 #: made by a newer program is refused with an explanation rather than unpacked
-#: into something subtly wrong.
-FORMAT_VERSION = 1
+#: into something subtly wrong. Version 2 stores the root as squashfs; version
+#: 1 distributions (tar) are still read, see `unpack_command`.
+FORMAT_VERSION = 2
 
 #: Name of the metadata file inside the distribution directory.
 METADATA_NAME = "distribution.json"
-#: Name of the root filesystem archive inside it.
-ARCHIVE_NAME = "rootfs.tar.zst"
-#: Fallback when zstd is unavailable on the building machine.
-ARCHIVE_NAME_GZ = "rootfs.tar.gz"
+#: Name of the root filesystem image inside it.
+#:
+#: squashfs rather than a tar archive, and the difference is not cosmetic: the
+#: image mounts as a filesystem, so deployment is literally "смонтировать и
+#: скопировать систему в зашифрованный том", the reference root can be opened
+#: and inspected without unpacking four gigabytes, and ownership, permissions
+#: and xattrs survive because squashfs stores them itself.
+ARCHIVE_NAME = "rootfs.squashfs"
+#: Names used by version 1 distributions, still accepted on deployment.
+LEGACY_ARCHIVE_NAMES = ("rootfs.tar.zst", "rootfs.tar.gz")
 
 #: Paths removed from the root before it is archived.
 #:
@@ -327,35 +334,51 @@ def sanitise_commands(root: str) -> list[list[str]]:
     return commands
 
 
+def is_squashfs(archive: str) -> bool:
+    """Whether this distribution's root is a squashfs image (format 2)."""
+    return archive.endswith(".squashfs")
+
+
 def archive_command(root: str, destination: str, *, compressor: str) -> list[str]:
-    """Packs the root into a single file.
+    """Packs the root into a single squashfs image.
 
-    `--numeric-owner` because the archive is unpacked on a machine whose
-    /etc/passwd is not the target's: without it tar would map uid 1000 through
-    the *host's* names and the medium's files could end up owned by whoever
-    happens to be uid 1000 there.
+    `-xattrs` matters more than it looks: capabilities set on binaries live in
+    xattrs, and silently dropping them leaves programs that fail in ways that
+    have nothing obviously to do with the medium being built. POSIX ACLs ride
+    along as xattrs too.
 
-    `--acls --xattrs` so capabilities set on binaries survive; some of them
-    stop working when silently dropped.
+    Ownership is stored numerically, which is what a root filesystem built for
+    another machine needs -- the target's /etc/passwd is not this machine's.
     """
     return [
-        "tar",
-        "--create",
-        f"--use-compress-program={compressor}",
-        "--file",
-        destination,
-        "--numeric-owner",
-        "--acls",
-        "--xattrs",
-        "--preserve-permissions",
-        "--one-file-system",
-        "--directory",
+        "mksquashfs",
         root,
-        ".",
+        destination,
+        "-comp", compressor,
+        "-xattrs",
+        "-noappend",
+        "-no-progress",
+        "-quiet",
     ]
 
 
+def mount_command(archive: str, mountpoint: str) -> list[str]:
+    """Mounts the reference root read-only, so it can be copied out of."""
+    return ["mount", "-t", "squashfs", "-o", "loop,ro", archive, mountpoint]
+
+
+def copy_command(mountpoint: str, root: str) -> list[str]:
+    """Copies the reference system into the (already unlocked) volume.
+
+    `-a` is `--preserve=all`: ownership, permissions, timestamps, ACLs and
+    xattrs. `mountpoint/.` rather than `mountpoint` so the contents land in
+    `root` instead of a subdirectory of it.
+    """
+    return ["cp", "-a", f"{mountpoint}/.", f"{root}/"]
+
+
 def unpack_command(archive: str, root: str) -> list[str]:
+    """Version 1 distributions, kept readable so an existing one still deploys."""
     return [
         "tar",
         "--extract",

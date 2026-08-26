@@ -22,6 +22,7 @@ Depends: ${misc:Depends}, ${python3:Depends},
  cryptsetup,
  debootstrap,
  zstd,
+ squashfs-tools,
  ca-certificates
 Recommends: eatmydata,
  polkit-kde-agent-1 | policykit-1-gnome | mate-polkit | xfce-polkit | lxqt-policykit | lxpolkit,

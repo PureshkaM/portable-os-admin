@@ -33,6 +33,7 @@ Requires:       util-linux
 Requires:       systemd-udev
 # Reading RedOS repository metadata: its primary.xml is zstd-compressed.
 Requires:       zstd
+Requires:       squashfs-tools
 Requires:       ca-certificates
 # rpm2cpio, used to read the target distribution's own kickstart parser out of
 # an installation image. It is part of a RHEL-family base system, but naming it

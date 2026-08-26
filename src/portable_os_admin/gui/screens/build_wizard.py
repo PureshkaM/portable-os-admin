@@ -34,13 +34,10 @@ class BuildWizardFrame(WizardFrame):
             app,
             step_titles=["Образ ОС", "Конфигурация", "Куда сохранить", "Сборка"],
             step_hints=[
-                "Установочный образ, из которого будет собрана система. "
-                "Из интернета ничего не скачивается.",
-                "Конфигурация определяет, что войдёт в дистрибутив: режим системы, "
-                "рабочая среда, разрешённые приложения.",
-                "Каталог, в котором появится файл дистрибутива и его контрольная сумма.",
-                "Носитель не участвует: ничего не будет стёрто. "
-                "Это самая долгая часть работы, и делается она один раз.",
+                "",
+                "",
+                "",
+                "",
             ],
             finish_label="К панели",
         )
@@ -78,14 +75,6 @@ class BuildWizardFrame(WizardFrame):
 
     # -- step 1: configuration ---------------------------------------------
     def _build_step_config(self, body: ttk.Frame) -> None:
-        ttk.Label(
-            body,
-            text="Дистрибутив собирается по проверенной конфигурации — так же, как обычная "
-            "установка. Отличие в том, что результат можно развернуть на много носителей.",
-            style="Hint.TLabel",
-            wraplength=theme.TEXT_WRAP,
-        ).pack(anchor="w", pady=(0, theme.SPACE_SM))
-
         self.config_table = ttk.Treeview(
             body, columns=("name", "os", "profile"), show="headings", height=8
         )
@@ -142,15 +131,6 @@ class BuildWizardFrame(WizardFrame):
         ttk.Button(body, text="Выбрать каталог…", command=self._browse_destination).pack(
             anchor="w", pady=(theme.SPACE_SM, 0)
         )
-        ttk.Label(
-            body,
-            text="Дистрибутив не содержит ни ключей, ни парольных фраз, ни данных "
-            "восстановления: всё это создаётся заново при записи на каждый носитель. "
-            "Поэтому его можно хранить и передавать как обычный файл.",
-            style="Hint.TLabel",
-            wraplength=theme.TEXT_WRAP,
-        ).pack(anchor="w", pady=(theme.SPACE_MD, 0))
-
     def _browse_destination(self) -> None:
         chosen = filedialog.askdirectory(parent=self, title="Куда сохранить дистрибутив")
         if chosen:
@@ -222,10 +202,7 @@ class BuildWizardFrame(WizardFrame):
         self.cancel_btn.configure(state="disabled")
         self._stages = UiMailbox(self, self._show_stage)
         self._stages.start()
-        self.message_bar.info(
-            "Идёт сборка. Носитель не участвует — ничего не стирается. "
-            "Окно останется отзывчивым."
-        )
+        self.message_bar.info("Идёт сборка.")
         self._log(f"--- СБОРКА ДИСТРИБУТИВА {config.name} ---")
 
         installer = OSInstaller(self.app.session)
@@ -249,9 +226,7 @@ class BuildWizardFrame(WizardFrame):
         self._log(f"Готово. Архив: {meta.archive}")
         self._log(f"Контрольная сумма: {meta.sha256}")
         self.message_bar.success(
-            f"Дистрибутив собран: {meta.archive}. Контрольная сумма записана рядом "
-            f"({meta.archive}.sha256) — её можно проверить командой sha256sum -c. "
-            "Теперь его можно разворачивать на носители."
+            f"Дистрибутив собран: {meta.archive}, сумма записана в {meta.archive}.sha256."
         )
         if widget_alive(self.start_btn):
             self.start_btn.configure(state="disabled")

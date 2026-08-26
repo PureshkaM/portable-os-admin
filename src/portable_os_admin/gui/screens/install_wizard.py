@@ -57,11 +57,11 @@ class InstallWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
             app,
             step_titles=["Образ ОС", "Конфигурация", "Носитель", "Пароль", "Подтверждение и установка"],
             step_hints=[
-                "Укажите установочный образ. Система ставится с него, из интернета ничего не скачивается.",
-                "Выберите конфигурацию. Подходящие для выбранного образа отмечены отдельно.",
-                "Выберите внешний носитель: из автоматически найденных устройств, либо укажите путь вручную.",
-                "Пароль пользователя, которым будет защищён системный раздел (LUKS).",
-                "Последний шаг перед необратимым стиранием носителя. Проверьте, что указан именно тот диск.",
+                "",
+                "",
+                "",
+                "",
+                "Проверьте, что указан именно тот диск.",
             ],
             finish_label="К панели",
         )
@@ -180,12 +180,7 @@ class InstallWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
     def _build_step_image(self, body: ttk.Frame) -> None:
         ttk.Label(
             body,
-            text=(
-                "Система устанавливается с локального установочного образа — программа "
-                "ничего не скачивает из интернета. Подойдёт полный установочный образ "
-                "дистрибутива (DVD); образы сетевой установки (netinst) не годятся, в них "
-                "нет ядра и загрузчика."
-            ),
+            text="Полный установочный образ (DVD); netinst не годится.",
             wraplength=740,
             justify="left",
             foreground="#555555",
@@ -520,10 +515,7 @@ class InstallWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
         self.stage_label.pack(anchor="w", pady=(4, 2), before=self.log_text)
         self.progress.configure(value=0)
         self.progress.pack(fill="x", pady=(0, 8), before=self.log_text)
-        self.message_bar.info(
-            "Идёт установка — это надолго: очистка носителя, разметка, шифрование, "
-            "загрузка базовой системы по сети. Окно останется отзывчивым."
-        )
+        self.message_bar.info("Идёт установка.")
         self._log(f"--- УСТАНОВКА НА {device.path} ---")
 
         passphrase_bytes = self.passphrase.encode("utf-8")

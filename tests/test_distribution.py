@@ -239,22 +239,35 @@ def test_the_metadata_describes_what_was_built(session, kiosk_config, tmp_path):
     assert result.metadata.config["kiosk"]["allowed_apps"] == ["mate-calc"]
 
 
-def test_the_archive_is_packed_with_ownership_and_attributes_preserved():
-    """Unpacked on a machine whose /etc/passwd is not the target's.
+def test_the_image_keeps_ownership_and_extended_attributes():
+    """Разворачивается на машине, чей /etc/passwd — не целевой.
 
-    Without --numeric-owner tar maps uid 1000 through the *host's* names, and
-    the medium's files end up owned by whoever is uid 1000 there.
+    squashfs хранит владельцев численно сам, а вот xattr пишутся только по
+    явному ключу — без них у программ пропадают capabilities, и понять это по
+    симптомам трудно. Копирование наружу должно сохранять то же самое.
     """
-    argv = distribution.archive_command("/mnt/root", "/out/rootfs.tar.zst", compressor="zstd -T0")
+    argv = distribution.archive_command("/mnt/root", "/out/rootfs.squashfs", compressor="zstd")
 
-    assert "--numeric-owner" in argv
-    assert "--xattrs" in argv
-    assert "--acls" in argv
-    # One filesystem only: /proc and /dev are bind-mounted during the build.
-    assert "--one-file-system" in argv
+    assert argv[0] == "mksquashfs"
+    assert "-xattrs" in argv
+    assert "-noappend" in argv
 
-    unpack = distribution.unpack_command("/d/rootfs.tar.zst", "/mnt/target")
-    assert "--numeric-owner" in unpack
+    mount = distribution.mount_command("/d/rootfs.squashfs", "/mnt/dist")
+    assert "ro" in " ".join(mount) and "squashfs" in mount
+    # -a — это --preserve=all: владельцы, права, времена, ACL и xattr.
+    assert distribution.copy_command("/mnt/dist", "/mnt/target")[:2] == ["cp", "-a"]
+
+
+def test_a_version_1_distribution_still_deploys():
+    """Дистрибутив, собранный до перехода на squashfs, должен разворачиваться.
+
+    Формат образа — деталь переноса эталона, а не свойство носителя, и менять
+    его нельзя ценой того, что уже собранное перестаёт ставиться.
+    """
+    assert distribution.is_squashfs("rootfs.squashfs") is True
+    for legacy in distribution.LEGACY_ARCHIVE_NAMES:
+        assert distribution.is_squashfs(legacy) is False
+        assert "--numeric-owner" in distribution.unpack_command(f"/d/{legacy}", "/mnt/target")
 
 
 # ----------------------------------------------------------------------
@@ -291,7 +304,8 @@ def test_deploying_generates_the_encryption_afresh(session, kiosk_config, big_de
 
     commands = [" ".join(r.argv) for r in result.plan.results]
     assert any("luksFormat" in c for c in commands), "шифрование не создаётся заново"
-    assert any("tar" in c and "--extract" in c for c in commands), "эталон не распаковывается"
+    assert any("mount" in c and "squashfs" in c for c in commands), "эталон не монтируется"
+    assert any(c.startswith("cp -a") for c in commands), "система не копируется на носитель"
     # And the medium gets its own identity.
     assert result.media_record.media_id
     assert result.recovery_record.code
