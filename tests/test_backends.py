@@ -531,3 +531,42 @@ def test_the_kernel_command_line_is_built_in_one_place():
     redos_layout.luks_uuid = "U1"
     assert get_backend("redos").unlock_kernel_parameters(redos_layout)
     assert get_backend("debian").unlock_kernel_parameters(redos_layout) == []
+
+
+# ----------------------------------------------------------------------
+# Ожидание зашифрованных томов при загрузке
+# ----------------------------------------------------------------------
+def test_service_volumes_get_more_than_the_default_wait():
+    """Стоимость argon2id записана сборочной машиной, а платит целевая.
+
+    systemd ждёт устройство 90 секунд и снимает задание. Том, открытие
+    которого на слабой машине занимает больше, до этого срока не успевает:
+    /var/log не монтируется, auditd не стартует, и всё это выглядит как
+    неверный ключ, хотя ключ верный. Замер на стенде: 164 и 206 секунд.
+
+    Проверяются оба файла: crypttab отвечает за исходный раздел, fstab — за
+    том, который из него получается. Запаса в одном без другого не хватит.
+    """
+    from portable_os_admin.install.backends.base import SERVICE_DEVICE_TIMEOUT
+    from portable_os_admin.install.disk import build_media_layout, plan_partitions
+
+    assert SERVICE_DEVICE_TIMEOUT > 90, "запас меньше значения systemd по умолчанию бессмыслен"
+
+    for family in ("redos", "debian"):
+        config = InstallConfig.create_default("stick1", family)
+        backend = get_backend(family)
+        layout = build_media_layout(
+            plan_partitions("/dev/sdb", config.disk),
+            mapper_name="poa-x",
+            mount_root="/mnt/root",
+        )
+        files = backend.config_files(config, layout)
+        option = f"x-systemd.device-timeout={SERVICE_DEVICE_TIMEOUT}"
+
+        for line in files["etc/fstab"].splitlines():
+            if "/var/log" in line or "/mnt/exchange" in line:
+                assert option in line, f"{family}: том службы в fstab ждёт по умолчанию: {line}"
+
+        for line in files["etc/crypttab"].splitlines():
+            if "-logs" in line or "-exch" in line:
+                assert option in line, f"{family}: том службы в crypttab ждёт по умолчанию: {line}"

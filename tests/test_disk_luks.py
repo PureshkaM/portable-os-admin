@@ -100,6 +100,17 @@ def test_every_keyslot_is_capped_to_a_memory_a_weak_machine_has():
     # на которой имеет смысл запускать этот носитель.
     assert luks_module.MAX_PBKDF_MEMORY_KIB == 262144
 
+    # Та же болезнь, что и с памятью, только незаметнее: число потоков
+    # cryptsetup тоже берёт с машины-изготовителя. Четыре дорожки,
+    # подобранные на восьмиядерной станции, на двухъядерном терминале
+    # считаются вдвое дольше — и это уже разница между «том открылся» и
+    # «systemd перестал его ждать».
+    for plan in (formatted, added):
+        argv = plan.results[0].argv
+        assert "--pbkdf-parallel" in argv, " ".join(argv)
+        assert argv[argv.index("--pbkdf-parallel") + 1] == str(luks_module.PBKDF_PARALLEL)
+    assert luks_module.PBKDF_PARALLEL == 2
+
 
 def test_the_medium_is_trimmed_before_partitioning_but_a_refusal_is_not_fatal():
     """Запись в стёртый блок быстрее, а TRIM умеют не все флешки.

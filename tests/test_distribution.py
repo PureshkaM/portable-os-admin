@@ -91,6 +91,34 @@ def test_build_caches_are_dropped():
         assert path in joined
 
 
+def test_log_directories_survive_the_cleanup(tmp_path):
+    """Журналы удаляются, каталоги под них — нет.
+
+    Каталоги в /var/log создают пакеты при установке, каждый со своими
+    правами и меткой. Служба, не нашедшая своего каталога, не создаёт его —
+    она отказывается стартовать. На РЕД ОС так падал auditd, а записи аудита,
+    которым некуда деться, заливали консоль.
+
+    Команды здесь именно выполняются, а не сверяются по тексту: разница между
+    `rm -rf` и `find -delete` видна только по результату.
+    """
+    import subprocess
+
+    root = tmp_path / "root"
+    (root / "var/log/audit").mkdir(parents=True)
+    (root / "var/log/audit/audit.log").write_text("старый журнал сборки")
+    (root / "var/log/messages").write_text("тоже сборочный")
+    (root / "var/log/sssd").mkdir()
+
+    for argv in distribution.sanitise_commands(str(root)):
+        subprocess.run(argv, check=False)
+
+    assert (root / "var/log/audit").is_dir(), "каталог auditd не пережил очистку"
+    assert (root / "var/log/sssd").is_dir()
+    assert not (root / "var/log/audit/audit.log").exists(), "журнал сборки уехал на носитель"
+    assert not (root / "var/log/messages").exists()
+
+
 # ----------------------------------------------------------------------
 # Integrity
 # ----------------------------------------------------------------------

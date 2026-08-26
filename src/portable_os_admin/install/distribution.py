@@ -117,14 +117,33 @@ EMPTIED_PATHS = (
     "var/lib/dbus/machine-id",
 )
 
-#: Directories whose contents are dropped -- caches and logs of the build,
+#: Directories whose contents are dropped entirely -- caches of the build,
 #: which are dead weight on every medium made from this distribution.
 CLEARED_DIRECTORIES = (
     "var/cache/apt/archives",
     "var/lib/apt/lists",
-    "var/log",
     "tmp",
     "var/tmp",
+)
+
+#: Каталоги, из которых удаляются файлы, но **сохраняется дерево подкаталогов**.
+#:
+#: Журналы сборки на носителе не нужны, поэтому var/log очищается. Но раньше он
+#: очищался целиком, вместе с подкаталогами, — и это ломало систему. Пакеты
+#: создают свои каталоги в /var/log при установке (auditd — /var/log/audit,
+#: и точно так же sssd, samba, cups), причём с собственным владельцем, правами
+#: и меткой SELinux. Служба, не нашедшая своего каталога, не создаёт его, а
+#: отказывается стартовать.
+#:
+#: Наблюдалось на РЕД ОС 26.08.2026: auditd падал при каждой попытке запуска,
+#: systemd повторял её пять раз и сдавался. Записи аудита, которые ядро копит
+#: для несуществующего демона, уходили на консоль — экран заливало так, что
+#: остальную загрузку было не прочитать.
+#:
+#: Каталоги сохраняются вместе с правами и метками: `find -delete` по файлам
+#: не трогает сами каталоги, так что xattr с меткой SELinux остаётся на месте.
+EMPTIED_DIRECTORIES = (
+    "var/log",
 )
 
 
@@ -343,6 +362,13 @@ def sanitise_commands(root: str) -> list[list[str]]:
     for relative in CLEARED_DIRECTORIES:
         commands.append(
             ["sh", "-c", f"rm -rf {root}/{relative}/* {root}/{relative}/.[!.]* 2>/dev/null || true"]
+        )
+    for relative in EMPTIED_DIRECTORIES:
+        # Всё, что не каталог: обычные файлы, ссылки, сокеты. Сами каталоги
+        # остаются — вместе с владельцем, правами и меткой SELinux, которые
+        # службы ожидают увидеть.
+        commands.append(
+            ["sh", "-c", f"find {root}/{relative} -mindepth 1 ! -type d -delete 2>/dev/null || true"]
         )
     return commands
 

@@ -42,6 +42,18 @@ DEFAULT_KDF = "argon2id"
 #: конфигурацию не вынесено.
 MAX_PBKDF_MEMORY_KIB = 262144
 
+#: Число потоков argon2id, записываемое в заголовок.
+#:
+#: Та же болезнь, что и с памятью, только незаметнее. cryptsetup берёт число
+#: потоков по числу ядер сборочной машины — на восьмиядерной рабочей станции
+#: в заголовок уходит 4. Носитель уносят в терминал с двумя ядрами, и те же
+#: четыре потока считаются вдвое дольше: стоимость подобрана под чужое железо.
+#:
+#: 2 — то, что есть у любой машины, на которой имеет смысл запускать этот
+#: носитель. Стойкость от этого не страдает: у argon2id её определяет память,
+#: а не число дорожек.
+PBKDF_PARALLEL = 2
+
 
 @contextlib.contextmanager
 def _key_path(data: bytes, dry_run: bool):
@@ -91,6 +103,7 @@ class LuksManager:
                 # silently used its own default instead.
                 "--pbkdf", kdf,
                 "--pbkdf-memory", str(MAX_PBKDF_MEMORY_KIB),
+                "--pbkdf-parallel", str(PBKDF_PARALLEL),
                 "--sector-size", str(sector_size),
                 "--key-file", str(key_path), "--batch-mode", partition,
             ]
@@ -119,6 +132,7 @@ class LuksManager:
             argv = [
                 "cryptsetup", "luksAddKey", partition,
                 "--pbkdf-memory", str(MAX_PBKDF_MEMORY_KIB),
+                "--pbkdf-parallel", str(PBKDF_PARALLEL),
                 "--key-file", str(existing_path),
             ]
             if slot is not None:
