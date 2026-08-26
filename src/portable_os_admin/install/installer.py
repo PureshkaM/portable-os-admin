@@ -626,6 +626,12 @@ class OSInstaller:
             plan, state, dry_run, confirm_device,
         )
 
+        # Файлы, уникальные для носителя, появились после разметки эталона —
+        # у них меток нет.
+        restore = backend.restore_labels_command(layout.mount_root, ("/etc", "/boot"))
+        if restore is not None:
+            run(restore, timeout=BOOTSTRAP_TIMEOUT)
+
         self._progress.step("Сборка initramfs с разблокировкой диска")
         run(backend.initramfs_command(layout.mount_root), timeout=BOOTSTRAP_TIMEOUT)
 
@@ -729,6 +735,16 @@ class OSInstaller:
         self._progress.step("Создание учётной записи и служб")
         for argv in backend.chroot_setup_commands(root, config):
             run(argv, timeout=BOOTSTRAP_TIMEOUT)
+
+        # Метки мандатного контроля — один раз на дистрибутив. Они живут в
+        # расширенных атрибутах, которые сохраняют и squashfs, и копирование,
+        # поэтому каждый носитель получает их вместе с системой. Без них
+        # система замирает при первой загрузке, не дойдя до служебных ФС.
+        relabel = backend.relabel_commands(root)
+        if relabel:
+            self._progress.step("Расстановка меток безопасности")
+            for argv in relabel:
+                run(argv, timeout=BOOTSTRAP_TIMEOUT)
 
     def _mount_pseudo_filesystems(self, root, state, plan, dry_run, confirm_device) -> None:
         """/proc, /sys, /dev inside the target.

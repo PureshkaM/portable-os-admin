@@ -452,16 +452,17 @@ def test_the_generic_setting_reaches_the_medium():
         assert any(marker in path for path in scripted), f"{family}: настройка не пишется"
 
 
-def test_redos_marks_the_medium_for_relabelling():
-    """Систему разворачивают с машины, где SELinux не работает.
+def test_labels_are_set_once_per_distribution_not_per_medium():
+    """Систему разворачивают с машины, где мандатного контроля может не быть.
 
-    Значит, файлы попадают на носитель без меток безопасности, и при первой
-    загрузке SELinux в режиме enforcing запрещает systemd всё подряд:
-    «Failed to mount API filesystems. Freezing execution.» — система замирает,
-    не дойдя до монтирования служебных ФС.
+    Тогда файлы попадают в систему без меток, и при первой загрузке она
+    замирает: «Failed to mount API filesystems. Freezing execution.» — не
+    дойдя даже до служебных файловых систем.
 
-    /.autorelabel — штатный механизм дистрибутива: anaconda создаёт этот файл
-    ровно в том же случае. Отключать SELinux вместо этого нельзя.
+    /.autorelabel не годится: он срабатывает после старта systemd, а без
+    меток systemd не стартует. Поэтому метки ставятся при сборке дистрибутива
+    — они живут в расширенных атрибутах, которые сохраняют и squashfs, и
+    копирование, так что каждый носитель получает их даром.
     """
     from portable_os_admin.config import InstallConfig
     from portable_os_admin.install.backends import get_backend
@@ -472,12 +473,16 @@ def test_redos_marks_the_medium_for_relabelling():
     layout = build_media_layout(
         plan_partitions("/dev/sdb", config.disk), mapper_name="poa-x", mount_root="/mnt/root"
     )
+    redos = get_backend("redos")
 
-    files = get_backend("redos").config_files(config, layout)
-    assert ".autorelabel" in files
+    relabel = " ".join(" ".join(argv) for argv in redos.relabel_commands("/mnt/root"))
+    assert "setfiles" in relabel and "file_contexts" in relabel
+
+    restore = redos.restore_labels_command("/mnt/root", ("/etc", "/boot"))
+    assert restore is not None and "restorecon" in " ".join(restore)
+
+    files = redos.config_files(config, layout)
     assert "SELINUX=enforcing" in files["etc/selinux/config"]
+    assert ".autorelabel" not in files, "этот путь не работает без меток"
 
-    # А когда SELinux выключен, размечать нечего — и лишняя перезагрузка не
-    # нужна.
-    config.firewall.selinux = "disabled"
-    assert ".autorelabel" not in get_backend("redos").config_files(config, layout)
+    assert get_backend("debian").relabel_commands("/mnt/root") == []
