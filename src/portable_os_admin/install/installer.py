@@ -609,6 +609,12 @@ class OSInstaller:
         run(["sync"], timeout=BOOTSTRAP_TIMEOUT)
 
         self._progress.step("Запись загрузчика на раздел EFI")
+        # Копия дерева положила файлы загрузчика в <корень>/boot/efi, то есть
+        # на раздел /boot. Сейчас поверх встанет настоящий ESP и закроет их
+        # собой — ровно та ситуация, из-за которой носитель не загружался.
+        # Здесь она безвредна, но оставлять спрятанные файлы нельзя: место они
+        # занимают, а найти их потом невозможно.
+        run(["sh", "-c", f"rm -rf {layout.mount_root}/boot/efi/* || true"])
         self._mount_esp(layout, state, plan, dry_run, confirm_device)
         for argv in backend.esp_population_commands(layout, config, source=source):
             run(argv, timeout=BOOTSTRAP_TIMEOUT)
