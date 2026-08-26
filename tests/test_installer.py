@@ -503,3 +503,29 @@ def test_an_abort_stops_the_running_command_and_refuses_the_next(tmp_path):
 
     # И это отдельный тип, а не «ошибка команды»: обходиться с ним надо иначе.
     assert issubclass(InstallAborted, InstallError)
+
+
+def test_filesystems_are_made_readable_by_the_target_not_just_by_this_machine():
+    """Форматирует одна система, а читать будет другая.
+
+    Найдено загрузкой: Debian trixie (e2fsprogs 1.47) включает по умолчанию
+    orphan_file, а e2fsck из РЕД ОС 8 (1.46) о такой возможности не знает и
+    отказывается проверять раздел — «has unsupported feature(s): FEATURE_C12,
+    fsck failed with exit status 12». systemd после этого не монтирует корень
+    и уходит в аварийный режим, хотя сама файловая система исправна.
+
+    Требование общее для обоих семейств, поэтому проверяется на уровне
+    установщика, а не бэкенда.
+    """
+    from portable_os_admin.install import installer as installer_module
+
+    assert "^orphan_file" in installer_module.CONSERVATIVE_EXT4_FEATURES
+    assert "^metadata_csum_seed" in installer_module.CONSERVATIVE_EXT4_FEATURES
+
+    source = inspect.getsource(installer_module.OSInstaller)
+    made = [line for line in source.splitlines() if "mkfs.ext4" in line]
+    assert made, "файловые системы больше не создаются — тест потерял смысл"
+    for line in made:
+        assert "CONSERVATIVE_EXT4_FEATURES" in line, (
+            "раздел создаётся с возможностями по умолчанию: " + line.strip()
+        )

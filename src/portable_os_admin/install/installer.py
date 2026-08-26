@@ -1249,11 +1249,11 @@ class OSInstaller:
         # `-E lazy_itable_init=0,lazy_journal_init=0` намеренно НЕ ставится: на
         # медленном носителе это заставило бы mkfs записать все таблицы inode
         # сразу, а ленивая инициализация как раз экономит запись.
-        run(["mkfs.ext4", "-F", "-L", "POA_ROOT", layout.mapper_path])
+        run(["mkfs.ext4", "-F", "-O", CONSERVATIVE_EXT4_FEATURES, "-L", "POA_ROOT", layout.mapper_path])
         run(["mkfs.vfat", "-F", "32", "-n", "POA_ESP", layout.esp_partition])
-        run(["mkfs.ext4", "-F", "-L", "POA_BOOT", layout.boot_partition])
-        run(["mkfs.ext4", "-F", "-L", "POA_LOGS", layout.logs_mapper_path])
-        run(["mkfs.ext4", "-F", "-L", "POA_EXCHANGE", layout.exchange_mapper_path])
+        run(["mkfs.ext4", "-F", "-O", CONSERVATIVE_EXT4_FEATURES, "-L", "POA_BOOT", layout.boot_partition])
+        run(["mkfs.ext4", "-F", "-O", CONSERVATIVE_EXT4_FEATURES, "-L", "POA_LOGS", layout.logs_mapper_path])
+        run(["mkfs.ext4", "-F", "-O", CONSERVATIVE_EXT4_FEATURES, "-L", "POA_EXCHANGE", layout.exchange_mapper_path])
 
         self._progress.step("Монтирование носителя")
         # Mount the target tree, outermost first.
@@ -1606,6 +1606,27 @@ def _directory_size(path: str) -> int:
 def _blkid_uuid(path: str) -> str:
     return _read_output(["blkid", "-s", "UUID", "-o", "value", path])
 
+
+#: Возможности ext4, которые НЕ включаются при разметке носителя.
+#:
+#: Файловую систему создаёт машина администратора, а работать с ней будет
+#: устанавливаемая система — и они разные. Debian trixie несёт e2fsprogs 1.47,
+#: который по умолчанию включает `orphan_file`; e2fsck из РЕД ОС 8 (1.46) о
+#: такой возможности не знает и отказывается проверять раздел:
+#:
+#:     /dev/mapper/poa-… has unsupported feature(s): FEATURE_C12
+#:     e2fsck: Get a newer version of e2fsck!
+#:     fsck failed with exit status 12
+#:
+#: Дальше systemd не монтирует корень и уходит в аварийный режим. Файловая
+#: система при этом **исправна** — e2fsck новой версии проверяет её без
+#: замечаний, — то есть носитель нерабочий не из-за повреждения, а из-за
+#: несовпадения версий инструментов.
+#:
+#: Требование общее для обоих семейств: носитель форматируется здесь, а
+#: читается там. `metadata_csum_seed` отключён по той же причине — он новее,
+#: чем инструменты в старых выпусках.
+CONSERVATIVE_EXT4_FEATURES = "^orphan_file,^metadata_csum_seed"
 
 #: Сколько раз и с какой паузой пытаться закрыть том при уборке. Минута в
 #: сумме: столько занимает дозапись кэша на медленном носителе, после чего
