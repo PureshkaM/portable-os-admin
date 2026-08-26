@@ -535,6 +535,16 @@ class OSInstaller:
             device, config, layout, user_passphrase, plan, state, dry_run, confirm_device
         )
 
+        # Разделы подключаются ДО копирования, а не после. Иначе всё, что
+        # дистрибутив держит в /boot — ядро, initramfs, записи загрузчика —
+        # ложится на корневой раздел, а следом поверх монтируется пустой
+        # /boot и прячет их. Носитель с пустым /boot не загрузится, и понять
+        # это по содержимому корня нельзя: файлы на месте, просто не на том
+        # разделе. ESP подключается отдельно, ниже: на FAT нет владельцев, и
+        # `cp -a` на нём спотыкается о невозможность их сохранить.
+        self._progress.step("Подключение служебных разделов")
+        self._mount_boot_partition(layout, state, plan, dry_run, confirm_device)
+
         self._progress.step("Копирование системы на носитель")
         archive = distribution.archive_path(directory, metadata)
         if distribution.is_squashfs(metadata.archive):
@@ -548,7 +558,9 @@ class OSInstaller:
             state.mounts.append(source)
             run(distribution.copy_command(source, layout.mount_root), timeout=BOOTSTRAP_TIMEOUT)
         else:
-            # Дистрибутив версии 1: корень лежит в tar-архиве.
+            # Дистрибутив версии 1: корень лежит в tar-архиве, и отдельного
+            # смонтированного эталона, из которого можно взять файлы EFI, нет.
+            source = ""
             run(distribution.unpack_command(archive, layout.mount_root), timeout=BOOTSTRAP_TIMEOUT)
 
         # Копирование считается законченным только когда данные на носителе, а
@@ -557,8 +569,10 @@ class OSInstaller:
         self._progress.step("Сброс кэшей на носитель")
         run(["sync"], timeout=BOOTSTRAP_TIMEOUT)
 
-        self._progress.step("Подключение служебных разделов")
-        self._mount_boot_partitions(layout, state, plan, dry_run, confirm_device)
+        self._progress.step("Запись загрузчика на раздел EFI")
+        self._mount_esp(layout, state, plan, dry_run, confirm_device)
+        for argv in backend.esp_population_commands(layout, config, source=source):
+            run(argv, timeout=BOOTSTRAP_TIMEOUT)
         self._mount_pseudo_filesystems(layout.mount_root, state, plan, dry_run, confirm_device)
 
         self._progress.step("Настройка носителя")
@@ -615,10 +629,17 @@ class OSInstaller:
         )
 
     def _mount_boot_partitions(self, layout, state, plan, dry_run, confirm_device) -> None:
+        self._mount_boot_partition(layout, state, plan, dry_run, confirm_device)
+        self._mount_esp(layout, state, plan, dry_run, confirm_device)
+
+    def _mount_boot_partition(self, layout, state, plan, dry_run, confirm_device) -> None:
         run = lambda argv, **kw: self._run(argv, plan, dry_run, confirm_device, **kw)  # noqa: E731
         run(["mkdir", "-p", f"{layout.mount_root}/boot"])
         run(["mount", layout.boot_partition, f"{layout.mount_root}/boot"])
         state.mounts.append(f"{layout.mount_root}/boot")
+
+    def _mount_esp(self, layout, state, plan, dry_run, confirm_device) -> None:
+        run = lambda argv, **kw: self._run(argv, plan, dry_run, confirm_device, **kw)  # noqa: E731
         run(["mkdir", "-p", f"{layout.mount_root}/boot/efi"])
         run(["mount", layout.esp_partition, f"{layout.mount_root}/boot/efi"])
         state.mounts.append(f"{layout.mount_root}/boot/efi")

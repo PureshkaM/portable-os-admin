@@ -188,3 +188,51 @@ def test_a_network_mirror_is_not_marked_as_unsigned():
     backend.bind_install_source("https://repo.example.org/redos/8.0/x86_64/os", "8.0")
     argv = backend.package_install_command("/mnt/poa", ["kernel"])
     assert "--nogpgcheck" not in argv
+
+
+def test_redos_installs_the_bootloader_by_copying_signed_binaries():
+    """grub2-install в RHEL-семействе для EFI отключён патчем Red Hat.
+
+    Найдено живым прогоном: команда отвечает «This utility should not be used
+    for EFI platforms because it does not support UEFI Secure Boot». И это по
+    существу: собранный на месте grubx64.efi неподписан, а носитель переносной
+    — на машине с включённым Secure Boot он не загрузится. Подписанные shim и
+    grub приходят готовыми в пакетах, и ставятся копированием.
+    """
+    from portable_os_admin.config import InstallConfig
+    from portable_os_admin.install.backends import get_backend
+    from portable_os_admin.install.disk import build_media_layout, plan_partitions
+
+    config = InstallConfig.create_baseline("stick", "redos")
+    config.release = "8.0"
+    config.arch = "amd64"
+    layout = build_media_layout(
+        plan_partitions("/dev/sdb", config.disk), mapper_name="poa-x", mount_root="/mnt/root"
+    )
+
+    commands = [" ".join(argv) for argv in get_backend("redos").bootloader_commands(layout, config)]
+    joined = "\n".join(commands)
+
+    assert "grub2-install" not in joined, "grub2-install на EFI в РЕД ОС не работает"
+    # Путь, который прошивка ищет на съёмном носителе.
+    assert "EFI/BOOT/BOOTX64.EFI" in joined
+    # Shim ищет grub рядом с собой.
+    assert "EFI/BOOT/grubx64.efi" in joined
+    # NVRAM не трогаем: запись привязала бы носитель к одной машине.
+    assert "efibootmgr" not in joined
+
+
+def test_the_distribution_keeps_the_bootloader_it_was_given():
+    """Эталон не должен терять то, что нельзя восстановить.
+
+    Уборка перед упаковкой вычищала boot/efi/EFI — то есть единственный
+    загрузчик, который есть у RHEL-семейства, потому что там он приходит
+    файлами в пакетах, а не собирается на месте.
+    """
+    from portable_os_admin.install import distribution
+
+    joined = "\n".join(" ".join(argv) for argv in distribution.sanitise_commands("/mnt/root"))
+
+    assert "boot/efi/EFI" not in joined, "сборка выбрасывает загрузчик из эталона"
+    # А вот метка носителя на ESP уникальна и остаться не должна.
+    assert "boot/efi/poa" in joined

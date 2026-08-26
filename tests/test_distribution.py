@@ -415,3 +415,37 @@ def test_redos_installs_every_package_for_the_target_architecture():
     backend.bind_install_source("file:///mnt/image", "8.0", (), "")
     native = backend.package_install_command("/mnt/root", ["kernel"])
     assert "--forcearch" not in native
+
+
+def test_boot_partition_is_mounted_before_the_system_is_copied(session, kiosk_config, big_device, tmp_path):
+    """Иначе ядро ложится на корневой раздел, а сверху монтируется пустой /boot.
+
+    Найдено живым прогоном: дистрибутив копировался целиком, и только потом
+    подключались служебные разделы. Всё, что дистрибутив держит в /boot —
+    ядро, initramfs, записи загрузчика — оказывалось спрятано под пустым
+    разделом. По содержимому корня это не видно: файлы на месте, просто не на
+    том разделе, а носитель не загружается.
+    """
+    directory = tmp_path / "dist"
+    directory.mkdir()
+    archive = directory / distribution.ARCHIVE_NAME
+    archive.write_bytes(b"not a real image")
+    metadata = distribution.DistributionMetadata.for_config(
+        kiosk_config, release="trixie", arch="amd64", rootfs_bytes=1024, emulated=False
+    )
+    metadata.sha256 = distribution.sha256_of(str(archive))
+    distribution.write_metadata(str(directory), metadata)
+
+    result = OSInstaller(session).deploy_distribution(
+        big_device, str(directory), b"user-passphrase", dry_run=True, confirm_device="/dev/sdb"
+    )
+    commands = [" ".join(r.argv) for r in result.plan.results]
+
+    boot_mount = next(i for i, c in enumerate(commands) if "mount" in c and c.endswith("/boot"))
+    copy = next(i for i, c in enumerate(commands) if c.startswith("cp -a"))
+    assert boot_mount < copy, "/boot подключается после копирования — ядро окажется спрятано"
+
+    # А раздел EFI — наоборот, после: на FAT нет владельцев, и `cp -a` на нём
+    # спотыкается о невозможность их сохранить.
+    esp_mount = next(i for i, c in enumerate(commands) if "mount" in c and c.endswith("/boot/efi"))
+    assert esp_mount > copy, "ESP подключён до копирования — cp -a на FAT откажет"

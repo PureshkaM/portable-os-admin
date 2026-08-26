@@ -274,6 +274,49 @@ class AutoUpdateConfig:
 
 
 @dataclass
+class PackageSetsConfig:
+    """Чем заменить наборы пакетов, которые иначе выбирает программа.
+
+    Пустой список означает «как решит бэкенд»: для РЕД ОС базовый состав
+    читается из `comps.xml` самого образа, остальные наборы — списки,
+    подобранные вручную (и подобранные не случайно: в набор графики нарочно
+    не входят терминал, системный монитор и центр управления — их отсутствие
+    и есть самое сильное ограничение режима киоска).
+
+    Заданный список **заменяет** набор целиком, а не дополняет его. Дополнять
+    нужно через `packages`.
+    """
+
+    #: Базовая система. Осторожно: слишком короткий список даёт корень, в
+    #: котором нечему работать, и это выяснится через полчаса установки.
+    base: list[str] = field(default_factory=list)
+    #: Ядро, загрузчик, генератор initramfs, cryptsetup. Без них носитель не
+    #: загрузится, поэтому заменять стоит только зная, чем.
+    boot: list[str] = field(default_factory=list)
+    #: Графическое окружение режима киоска.
+    desktop: list[str] = field(default_factory=list)
+    #: Дополнения самого режима киоска поверх графики.
+    kiosk: list[str] = field(default_factory=list)
+    #: Что выкинуть из любого набора, включая вычисленный из образа. Работает
+    #: и когда набор не переопределён — это способ убрать один пакет, не
+    #: переписывая весь список.
+    exclude: list[str] = field(default_factory=list)
+
+
+@dataclass
+class ServicesConfig:
+    """Службы, которые надо включить, выключить или замаскировать.
+
+    Применяется в chroot целевой системы после установки пакетов. Маскировка
+    сильнее выключения: замаскированную службу не поднимет и зависимость.
+    """
+
+    enable: list[str] = field(default_factory=list)
+    disable: list[str] = field(default_factory=list)
+    mask: list[str] = field(default_factory=list)
+
+
+@dataclass
 class LocalisationConfig:
     """Язык, раскладка и часовой пояс устанавливаемой системы.
 
@@ -359,6 +402,8 @@ class InstallConfig:
     luks: LuksConfig = field(default_factory=LuksConfig)
     account: UserAccountConfig = field(default_factory=UserAccountConfig)
     localisation: LocalisationConfig = field(default_factory=LocalisationConfig)
+    package_sets: PackageSetsConfig = field(default_factory=PackageSetsConfig)
+    services: ServicesConfig = field(default_factory=ServicesConfig)
     remote_access: RemoteAccessConfig = field(default_factory=RemoteAccessConfig)
     kiosk: KioskConfig = field(default_factory=KioskConfig)
     auto_update: AutoUpdateConfig = field(default_factory=AutoUpdateConfig)
@@ -397,6 +442,8 @@ class InstallConfig:
         # Конфигурации, написанные до того, как язык и часовой пояс стали
         # настраиваемыми, этого ключа не имеют и получают прежние значения.
         localisation = LocalisationConfig(**data.pop("localisation", {}))
+        package_sets = PackageSetsConfig(**data.pop("package_sets", {}))
+        services = ServicesConfig(**data.pop("services", {}))
         return cls(
             disk=disk,
             luks=luks,
@@ -405,6 +452,8 @@ class InstallConfig:
             kiosk=kiosk,
             auto_update=auto_update,
             localisation=localisation,
+            package_sets=package_sets,
+            services=services,
             **data,
         )
 

@@ -100,7 +100,13 @@ SENSITIVE_PATHS = (
     "etc/ssh/ssh_host_ed25519_key.pub",
     # The bootloader and initramfs are rebuilt per medium: both embed the
     # UUID of the volume they unlock.
-    "boot/efi/EFI",
+    # boot/efi/EFI отсюда убрано намеренно. В RHEL-семействе загрузчик
+    # приходит готовым и подписанным в пакетах shim-x64 и grub2-efi-x64 и
+    # ставится копированием файлов; grub2-install там для EFI отключён
+    # патчем Red Hat. Вычищая этот каталог, сборка выбрасывала единственный
+    # загрузчик, который у неё был, и развёртывание не могло его вернуть.
+    # Секрета в этих файлах нет, и для всех носителей из одного дистрибутива
+    # они одинаковы.
     "boot/efi/poa",
 )
 

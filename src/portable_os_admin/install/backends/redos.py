@@ -416,17 +416,47 @@ class RedOSInstallBackend(InstallBackend):
     def initramfs_command(self, mount_root: str) -> list[str]:
         return self.chroot(mount_root, "dracut", "--force", "--regenerate-all")
 
+    #: Каталог этого дистрибутива на разделе EFI. Туда пакеты кладут grub, и
+    #: оттуда же он читает свою конфигурацию: путь вшит в сам grubx64.efi.
+    EFI_VENDOR_DIR = "EFI/redos"
+
     def bootloader_commands(self, layout: MediaLayout, config: InstallConfig) -> list[list[str]]:
+        """Загрузчик ставится копированием, а не grub2-install.
+
+        В RHEL-семействе `grub2-install` для EFI отключён патчем Red Hat и
+        отвечает буквально: «This utility should not be used for EFI platforms
+        because it does not support UEFI Secure Boot». И это не придирка:
+        собранный на месте grubx64.efi окажется неподписанным, а носитель
+        задуман переносным — на машине с включённым Secure Boot он не
+        загрузится вовсе.
+
+        Правильный способ здесь — тот, которым пользуется сам дистрибутив:
+        подписанные shim и grub приходят готовыми в пакетах shim-x64 и
+        grub2-efi-x64, а установка сводится к тому, чтобы положить их по
+        пути, который прошивка ищет на съёмном носителе:
+        `EFI/BOOT/BOOTX64.EFI`. Shim там уже лежит — его кладёт сам пакет, — а
+        рядом с ним нужен grubx64.efi, потому что shim ищет его в своём
+        каталоге.
+
+        NVRAM не трогается: запись в переменные прошивки привязала бы носитель
+        к одной машине, а он ездит между ними.
+        """
+        root = layout.mount_root
+        efi = f"{root}/boot/efi"
+        vendor = f"{efi}/{self.EFI_VENDOR_DIR}"
         return [
-            self.chroot(
-                layout.mount_root,
-                "grub2-install",
-                f"--target={self.grub_target(config.arch)}",
-                "--efi-directory=/boot/efi",
-                "--boot-directory=/boot",
-                "--removable",
-                "--no-nvram",
-                "--recheck",
-            ),
-            self.chroot(layout.mount_root, "grub2-mkconfig", "-o", "/boot/grub2/grub.cfg"),
+            ["mkdir", "-p", f"{efi}/EFI/BOOT"],
+            # Shim ищет grubx64.efi рядом с собой, а пакет кладёт его в
+            # каталог дистрибутива.
+            ["sh", "-c", f"cp -f {vendor}/grubx64.efi {efi}/EFI/BOOT/grubx64.efi"],
+            # Если shim в EFI/BOOT почему-то не оказалось (пакет не поставлен
+            # или файл вычищен), берём его из каталога дистрибутива: без
+            # BOOTX64.EFI прошивка съёмный носитель просто не увидит.
+            ["sh", "-c",
+             f"[ -f {efi}/EFI/BOOT/BOOTX64.EFI ] || cp -f {vendor}/shimx64.efi {efi}/EFI/BOOT/BOOTX64.EFI"],
+            ["sh", "-c", f"[ -f {vendor}/mmx64.efi ] && cp -f {vendor}/mmx64.efi {efi}/EFI/BOOT/ || true"],
+            # Конфигурация пишется туда, откуда её читает grub: путь вшит в
+            # двоичный файл при сборке пакета, и от того, откуда grub
+            # запустили, он не зависит.
+            self.chroot(root, "grub2-mkconfig", "-o", f"/boot/{self.EFI_VENDOR_DIR}/grub.cfg"),
         ]

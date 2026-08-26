@@ -133,6 +133,41 @@ class InstallBackend(ABC):
     #: Family-specific additions (the bootstrapper, mostly).
     EXTRA_TOOLS: tuple[str, ...] = ()
 
+    def apply_package_overrides(
+        self, config: InstallConfig, chosen: str, packages: list[str] | tuple[str, ...]
+    ) -> list[str]:
+        """Подставляет заданный администратором набор и вычитает исключения.
+
+        Одна точка на все наборы: иначе `exclude` работал бы там, где о нём
+        вспомнили, и молча не работал в остальных местах — а «пакет, который я
+        убрал, всё равно установился» это худший вид дефекта, потому что он не
+        выглядит дефектом.
+        """
+        override = getattr(config.package_sets, chosen, None) or None
+        result = list(override if override is not None else packages)
+        excluded = set(config.package_sets.exclude)
+        return [name for name in result if name not in excluded]
+
+    def service_commands(self, mount_root: str, config: InstallConfig) -> list[list[str]]:
+        """Включение, выключение и маскировка служб из конфигурации.
+
+        Маскировка идёт последней и сильнее прочего: замаскированную службу не
+        поднимет и зависимость. Порядок важен, если одна и та же служба попала
+        в два списка — тогда выигрывает более строгое.
+        """
+        commands: list[list[str]] = []
+        for unit in config.services.enable:
+            commands.append(self.systemctl_enable(mount_root, unit))
+        for unit in config.services.disable:
+            commands.append(
+                self.chroot(mount_root, "env", "SYSTEMD_OFFLINE=1", "systemctl", "disable", unit)
+            )
+        for unit in config.services.mask:
+            commands.append(
+                self.chroot(mount_root, "env", "SYSTEMD_OFFLINE=1", "systemctl", "mask", unit)
+            )
+        return commands
+
     def required_tools(self) -> list[str]:
         """Everything that must exist before an install may start, so a missing
         utility is reported up front rather than halfway through writing the
@@ -321,6 +356,27 @@ class InstallBackend(ABC):
     def bootloader_commands(self, layout: MediaLayout, config: InstallConfig) -> list[list[str]]:
         """argv list (chroot) installing the bootloader onto the ESP."""
 
+    def esp_population_commands(
+        self, layout: MediaLayout, config: InstallConfig, *, source: str = ""
+    ) -> list[list[str]]:
+        """Что положить на смонтированный раздел EFI до сборки загрузчика.
+
+        `source` — смонтированный эталон дистрибутива, если он есть. Оттуда
+        берутся файлы, которые пришли в пакетах: копировать их из целевого
+        дерева нельзя, потому что раздел EFI уже смонтирован поверх того
+        места, где они лежали.
+
+        `cp -r` без `-a`: на FAT нет владельцев, и попытка их сохранить
+        завершается ошибкой, то есть валит установку на ровном месте.
+        """
+        if not source:
+            return []
+        return [
+            ["sh", "-c",
+             f"[ -d {source}/boot/efi/EFI ] && "
+             f"cp -r {source}/boot/efi/. {layout.mount_root}/boot/efi/ || true"],
+        ]
+
     def chroot(self, mount_root: str, *argv_inside: str) -> list[str]:
         return ["chroot", mount_root, *argv_inside]
 
@@ -349,6 +405,7 @@ class InstallBackend(ABC):
             commands.append(self.chroot(mount_root, "usermod", "-aG", self.sudo_group, account.username))
 
         commands += self.localisation_commands(mount_root, config)
+        commands += self.service_commands(mount_root, config)
 
         pkg_cmd = self.package_install_command(mount_root, config.packages)
         if pkg_cmd is not None:
