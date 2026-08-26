@@ -29,27 +29,16 @@ from ...install.emulation import probe as probe_emulation
 from ...install.installer import IMAGE_FAMILY
 from ..elevate import invoking_user_home
 from ..widgets import KNOWN_ERRORS, UiMailbox, WizardFrame, add_field, run_in_background, widget_alive
-
-#: Used for the "this will be destroyed" copy. A plain red rather than a theme
-#: colour, because the warning has to read as a warning under whatever ttk
-#: theme the host desktop supplies.
-DANGER_COLOR = "#c0362c"
-
-NOT_ROOT_MESSAGE = (
-    "Реальная установка требует прав root: разметка диска, cryptsetup и mkfs "
-    "обычному пользователю недоступны. Закройте программу и запустите её от root "
-    "(например, «sudo portable-os-admin»), иначе установка прервётся на первой же команде. "
-    "Режим плана (без изменений) работает и без root."
+from .device_step import (
+    DANGER_COLOR,
+    NOT_ROOT_MESSAGE,
+    DeviceStepMixin,
+    TerminationGuardMixin,
+    is_root as _is_root,
 )
 
 
-def _is_root() -> bool:
-    # getuid is absent on Windows; this application only performs real installs
-    # on Linux, so treat "cannot tell" as root and let the OS refuse instead.
-    return getattr(os, "geteuid", lambda: 0)() == 0
-
-
-class InstallWizardFrame(WizardFrame):
+class InstallWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
     def __init__(self, parent: tk.Widget, app, config_path: Path | None = None):
         self.preselected_config_path = config_path
         self.selected_config_path: Path | None = None
@@ -325,87 +314,6 @@ class InstallWizardFrame(WizardFrame):
         return True
 
     # -- step 2: device -----------------------------------------------------
-    def _build_step_device(self, body: ttk.Frame) -> None:
-        ttk.Button(body, text="Обновить список устройств", command=self._refresh_devices).pack(anchor="w")
-        ttk.Label(
-            body,
-            text=(
-                "Список ниже определяется автоматически по данным системы и может быть неполным -- "
-                "многие USB-накопители не всегда опознаются как съёмные. Если нужного носителя нет в "
-                "списке, это нормально: просто укажите его путь вручную в поле ниже."
-            ),
-            foreground="#777777",
-            wraplength=700,
-            justify="left",
-        ).pack(anchor="w", pady=(6, 8))
-
-        self.devices_table = ttk.Treeview(body, columns=("path", "model", "size"), show="headings", height=6)
-        for col, text in (("path", "устройство"), ("model", "модель"), ("size", "размер (байт)")):
-            self.devices_table.heading(col, text=text)
-            self.devices_table.column(col, width=180, anchor="w")
-        self.devices_table.pack(fill="both", expand=False, pady=(0, 8))
-        self.devices_table.bind("<<TreeviewSelect>>", self._on_device_row_selected)
-
-        form = ttk.Frame(body)
-        form.pack(anchor="w", pady=(4, 0))
-        self.device_path_var = tk.StringVar(value=self.device_path)
-        add_field(
-            form,
-            0,
-            "Путь к устройству:",
-            self.device_path_var,
-            hint="например /dev/sdb -- заполняется автоматически при выборе строки выше, либо введите вручную",
-            width=32,
-        )
-        self.device_size_var = tk.StringVar(value=self.device_size_gb)
-        add_field(form, 2, "Размер устройства (ГБ):", self.device_size_var, hint="для проверки достаточности места", width=10)
-
-        self._refresh_devices()
-
-    def _refresh_devices(self) -> None:
-        run_in_background(self, lambda: DeviceLister().list_removable(), on_success=self._on_devices_loaded, on_error=self._on_devices_error)
-
-    def _on_devices_loaded(self, devices: list[BlockDevice]) -> None:
-        self._devices = devices
-        # The step's widgets are gone if the user moved on while lsblk ran.
-        if not widget_alive(self.devices_table):
-            return
-        for item in self.devices_table.get_children():
-            self.devices_table.delete(item)
-        for device in devices:
-            self.devices_table.insert("", "end", values=(device.path, device.model, device.size_bytes))
-        if not devices:
-            self.message_bar.info("Съёмные устройства не найдены автоматически -- укажите путь вручную ниже.")
-
-    def _on_devices_error(self, exc: BaseException) -> None:
-        if not widget_alive(self.devices_table):
-            return
-        self.message_bar.info(f"Список устройств недоступен ({exc}); укажите путь вручную ниже.")
-
-    def _on_device_row_selected(self, _event) -> None:
-        selection = self.devices_table.selection()
-        if not selection:
-            return
-        index = self.devices_table.index(selection[0])
-        device = self._devices[index]
-        self.device_path_var.set(device.path)
-        self.device_size_var.set(f"{device.size_bytes / 1024**3:.1f}")
-
-    def _save_step_device(self) -> None:
-        self.device_path = self.device_path_var.get().strip()
-        self.device_size_gb = self.device_size_var.get().strip()
-
-    def _validate_step_device(self) -> bool:
-        if not self.device_path:
-            self.message_bar.error("Укажите путь к устройству.")
-            return False
-        try:
-            float(self.device_size_gb or "0")
-        except ValueError:
-            self.message_bar.error("Некорректный размер устройства.")
-            return False
-        return True
-
     # -- step 2: passphrase --------------------------------------------------
     def _build_step_passphrase(self, body: ttk.Frame) -> None:
         form = ttk.Frame(body)
@@ -551,45 +459,11 @@ class InstallWizardFrame(WizardFrame):
         if not _is_root():
             self.message_bar.error(NOT_ROOT_MESSAGE)
 
-    def _parsed_size_gb(self) -> float:
-        try:
-            return float(self.device_size_gb or "0")
-        except ValueError:
-            return 0.0
-
     def _log(self, text: str) -> None:
         self.log_text.configure(state="normal")
         self.log_text.insert("end", text + "\n")
         self.log_text.configure(state="disabled")
         self.log_text.see("end")
-
-    def _resolve_device(self, size_gb: float) -> BlockDevice:
-        """Describes the target as the system currently reports it, falling back
-        to the form fields only when it cannot be read at all.
-
-        Building the device purely from the text fields (as this used to do)
-        threw away its mountpoints, and the installer uses exactly those to
-        unmount the medium before repartitioning it. A desktop automounter
-        mounts a stick the moment it is plugged in, so the invented
-        "no mountpoints" device meant partitioning over a live filesystem --
-        precisely the situation this wizard is most often used in. It also
-        recovers the real byte count instead of a rounded gigabyte figure, and
-        the real model name for the record written into the container.
-        """
-        probed = DeviceLister().describe(self.device_path)
-        if probed is not None:
-            return probed
-        for device in getattr(self, "_devices", []):
-            if device.path == self.device_path:
-                return device
-        return BlockDevice(
-            name=self.device_path.rsplit("/", 1)[-1],
-            path=self.device_path,
-            size_bytes=int(size_gb * 1024**3),
-            model="(введено вручную)",
-            removable=True,
-            mountpoints=(),
-        )
 
     def _start_install(self) -> None:
         if self._running:
@@ -675,38 +549,6 @@ class InstallWizardFrame(WizardFrame):
             on_error=self._on_install_error,
         )
 
-    def _install_signal_guard(self) -> None:
-        """Releases the medium if this process is asked to die mid-install.
-
-        Observed for real: the application was killed while installing, and the
-        bootstrap process it had started went on writing to the stick for nine
-        minutes, orphaned, with the volume left open. A terminated process
-        cannot finish the install, but it can at least stop it cleanly instead
-        of leaving the drive spinning.
-
-        SIGKILL cannot be caught -- that case is covered by the check for
-        leftovers when the application next starts.
-        """
-        self._previous_handlers = {}
-        for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
-            try:
-                self._previous_handlers[sig] = signal.signal(sig, self._on_termination_signal)
-            except (ValueError, OSError):
-                # Not the main thread, or the platform has no such signal.
-                pass
-
-    def _restore_signal_guard(self) -> None:
-        for sig, handler in getattr(self, "_previous_handlers", {}).items():
-            try:
-                signal.signal(sig, handler)
-            except (ValueError, OSError):
-                pass
-        self._previous_handlers = {}
-
-    def _on_termination_signal(self, _signum, _frame):
-        leftovers.clear()
-        os._exit(1)
-
     def _on_stage(self, index: int, total: int, text: str) -> None:
         """Called from the install thread; hands the update to the UI thread."""
         self._stages.post(index, total, text)
@@ -771,11 +613,11 @@ class InstallWizardFrame(WizardFrame):
 
     # -- WizardFrame hooks ------------------------------------------------
     _STEP_BUILDERS = [
-        _build_step_image, _build_step_config, _build_step_device, _build_step_passphrase, _build_step_confirm
+        _build_step_image, _build_step_config, DeviceStepMixin._build_step_device, _build_step_passphrase, _build_step_confirm
     ]
-    _STEP_SAVERS = [_save_step_image, None, _save_step_device, _save_step_passphrase, None]
+    _STEP_SAVERS = [_save_step_image, None, DeviceStepMixin._save_step_device, _save_step_passphrase, None]
     _STEP_VALIDATORS = [
-        _validate_step_image, _validate_step_config, _validate_step_device, _validate_step_passphrase, None
+        _validate_step_image, _validate_step_config, DeviceStepMixin._validate_step_device, _validate_step_passphrase, None
     ]
 
     def build_step(self, index: int, body: ttk.Frame) -> None:

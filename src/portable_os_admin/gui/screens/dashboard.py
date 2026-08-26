@@ -19,6 +19,14 @@ class DashboardFrame(ttk.Frame):
         self.message_bar = MessageBar(self)
         self.message_bar.pack(side="bottom", fill="x", padx=theme.SPACE_LG, pady=(0, theme.SPACE_MD))
 
+        # Два ряда, а не один. В один ряд кнопки перестали помещаться, когда их
+        # стало семь: «Восстановление» обрезалось по краю окна, «Состояние» не
+        # было видно вовсе, а прижатая вправо «Закрыть сеанс» наезжала на них.
+        # Тот же дефект уже правили однажды; лечить его шириной окна нельзя —
+        # окно меняет размер пользователь.
+        secondary = ttk.Frame(self, style="Window.TFrame")
+        secondary.pack(side="bottom", fill="x", padx=theme.SPACE_LG, pady=(theme.SPACE_SM, 0))
+
         actions = ttk.Frame(self, style="Window.TFrame")
         actions.pack(side="bottom", fill="x", padx=theme.SPACE_LG, pady=(theme.SPACE_MD, 0))
         # Packed before the left-hand buttons on purpose: Tk's packer serves
@@ -34,19 +42,25 @@ class DashboardFrame(ttk.Frame):
         ttk.Button(
             actions, text="Установка ОС", style="Accent.TButton", command=self._open_install
         ).pack(side="left")
+        # Верхний ряд — то, ради чего программу открывают: разовая установка и
+        # две половины разделённой. Порядок повторяет порядок работы: сначала
+        # собрать дистрибутив, потом разворачивать его на носители.
         for text, command in (
-            # Building a distribution comes before installing in the list
-            # because it comes before it in the work: one build, then a medium
-            # per person.
             ("Собрать дистрибутив", self._open_build),
+            ("Развернуть дистрибутив", self._open_deploy),
+        ):
+            ttk.Button(actions, text=text, command=command).pack(
+                side="left", padx=(theme.SPACE_SM, 0)
+            )
+        for text, command in (
             ("Конфигурации", self._open_configs),
             ("Журналы", self._open_logs),
             ("Обмен", self._open_exchange),
             ("Восстановление", self._open_recovery),
             ("Состояние", self._check_leftovers),
         ):
-            ttk.Button(actions, text=text, command=command).pack(
-                side="left", padx=(theme.SPACE_SM, 0)
+            ttk.Button(secondary, text=text, command=command).pack(
+                side="left", padx=(0, theme.SPACE_SM)
             )
 
         header = ttk.Frame(self, style="Window.TFrame")
@@ -135,6 +149,11 @@ class DashboardFrame(ttk.Frame):
         from .build_wizard import BuildWizardFrame
 
         self.app.show_frame(BuildWizardFrame)
+
+    def _open_deploy(self) -> None:
+        from .deploy_wizard import DeployWizardFrame
+
+        self.app.show_frame(DeployWizardFrame)
 
     def _open_configs(self) -> None:
         from .configs_list import ConfigsListFrame

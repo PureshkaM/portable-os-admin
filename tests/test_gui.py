@@ -9,13 +9,18 @@ from __future__ import annotations
 
 import time
 import tkinter as tk
+from tkinter import ttk
 
 import pytest
 
+from portable_os_admin.config import InstallConfig
 from portable_os_admin.config.repo_browser import RepoPackage
-from portable_os_admin.gui import screens as _screens_pkg  # noqa: F401 -- import-ability check
+from portable_os_admin.config.schema import KioskConfig
+from portable_os_admin.gui import screens as _screens_pkg
+from portable_os_admin.gui import theme  # noqa: F401 -- import-ability check
 from portable_os_admin.gui.app import PortableOSAdminGUI
 from portable_os_admin.gui.screens import config_wizard as config_wizard_module
+from portable_os_admin.gui.screens import device_step as device_step_module
 from portable_os_admin.gui.screens.config_wizard import ConfigWizardFrame
 from portable_os_admin.gui.screens.configs_list import ConfigsListFrame
 from portable_os_admin.gui.screens.install_wizard import InstallWizardFrame
@@ -398,7 +403,7 @@ def test_install_wizard_passes_the_real_device_not_the_form_fields(gui_app, tmp_
         def describe(self, path):
             return real_device if path == real_device.path else None
 
-    monkeypatch.setattr(install_wizard_module, "DeviceLister", FakeLister)
+    monkeypatch.setattr(device_step_module, "DeviceLister", FakeLister)
 
     app = gui_app
     _open_container(app, tmp_path)
@@ -493,7 +498,7 @@ def test_install_wizard_lists_what_will_be_destroyed(gui_app, tmp_path, monkeypa
         def describe(self, path):
             return device
 
-    monkeypatch.setattr(install_wizard_module, "DeviceLister", FakeLister)
+    monkeypatch.setattr(device_step_module, "DeviceLister", FakeLister)
 
     app = gui_app
     _open_container(app, tmp_path)
@@ -762,3 +767,158 @@ def test_building_a_distribution_is_reachable_and_asks_for_no_medium(gui_app, tm
     for medium_word in ("носитель", "пароль", "подтверждение"):
         assert medium_word not in titles, f"в сборке дистрибутива спрашивается «{medium_word}»"
     assert "образ" in titles
+
+
+# ----------------------------------------------------------------------
+# Развёртывание дистрибутива на носитель
+# ----------------------------------------------------------------------
+def _write_distribution(directory, **overrides):
+    """Каталог, который мастер развёртывания должен принять за дистрибутив."""
+    from portable_os_admin.install import distribution
+
+    directory.mkdir(parents=True, exist_ok=True)
+    config = InstallConfig.create_baseline("kiosk-stick", "redos")
+    config.release = "8.0"
+    config.arch = "amd64"
+    config.kiosk = KioskConfig(enabled=True, desktop_environment="kde", allowed_apps=["mate-calc"])
+    archive = directory / distribution.ARCHIVE_NAME
+    archive.write_bytes(b"not a real archive, only its name matters here")
+    metadata = distribution.DistributionMetadata.for_config(
+        config, release="8.0", arch="x86_64", rootfs_bytes=3 * 1024**3, emulated=True
+    )
+    metadata.sha256 = distribution.sha256_of(str(archive))
+    for key, value in overrides.items():
+        setattr(metadata, key, value)
+    distribution.write_metadata(str(directory), metadata)
+    return metadata
+
+
+def test_deploy_wizard_reads_the_distribution_before_asking_for_a_medium(gui_app, tmp_path):
+    """Отказ должен случиться до того, как выбран носитель.
+
+    Порядок шагов здесь и есть защита: каталог, который не дистрибутив,
+    отвергается на первом шаге, когда флешку ещё даже не спрашивали.
+    """
+    from portable_os_admin.gui.screens.deploy_wizard import DeployWizardFrame
+
+    app = gui_app
+    _open_container(app, tmp_path)
+    app.show_frame(DeployWizardFrame)
+    app.update()
+    wizard = app._current_frame
+    assert isinstance(wizard, DeployWizardFrame)
+    assert wizard.step_titles[0].lower().startswith("дистрибутив")
+
+    wizard.directory_var.set(str(tmp_path / "пусто"))
+    (tmp_path / "пусто").mkdir()
+    wizard.save_step(0)
+    assert wizard.validate_step(0) is False
+    assert wizard.metadata is None
+
+    _write_distribution(tmp_path / "dist")
+    wizard.directory_var.set(str(tmp_path / "dist"))
+    wizard.save_step(0)
+    assert wizard.validate_step(0) is True
+    assert wizard.metadata.target_os == "redos"
+
+
+def test_deploy_wizard_shows_what_it_is_about_to_write(gui_app, tmp_path):
+    """Перед стиранием видно, что именно ляжет на носитель.
+
+    Контрольная сумма показывается целиком: её сверяют глазами с файлом рядом
+    с архивом. Пометка об эмуляции едет вместе с дистрибутивом, потому что
+    забыть про неё — значит выдать носитель, ни разу не выполнявшийся на
+    настоящем процессоре своей архитектуры.
+    """
+    from portable_os_admin.gui.screens.deploy_wizard import DeployWizardFrame
+
+    app = gui_app
+    _open_container(app, tmp_path)
+    app.show_frame(DeployWizardFrame)
+    app.update()
+    wizard = app._current_frame
+
+    metadata = _write_distribution(tmp_path / "dist")
+    wizard.directory_var.set(str(tmp_path / "dist"))
+    wizard.save_step(0)
+    wizard.validate_step(0)
+    wizard.device_path = "/dev/sdz"
+    wizard.device_size_gb = "16"
+    wizard.passphrase = "CorrectHorse123"
+    wizard.step_index = 3
+    wizard._render_step()
+    app.update()
+
+    shown = _visible_text(wizard)
+    assert metadata.sha256 in shown
+    assert "redos 8.0" in shown
+    assert "kde" in shown
+    assert "/dev/sdz" in shown
+    assert "эмуляц" in shown
+
+
+def test_deploy_refuses_when_the_device_confirmation_does_not_match(gui_app, tmp_path):
+    """Последняя защита от записи не на тот диск, и она проверяется до root."""
+    from portable_os_admin.gui.screens.deploy_wizard import DeployWizardFrame
+
+    app = gui_app
+    _open_container(app, tmp_path)
+    app.show_frame(DeployWizardFrame)
+    app.update()
+    wizard = app._current_frame
+
+    _write_distribution(tmp_path / "dist")
+    wizard.directory_var.set(str(tmp_path / "dist"))
+    wizard.save_step(0)
+    wizard.validate_step(0)
+    wizard.device_path = "/dev/sdz"
+    wizard.device_size_gb = "16"
+    wizard.passphrase = "CorrectHorse123"
+    wizard.step_index = 3
+    wizard._render_step()
+    app.update()
+
+    wizard.confirm_device_var.set("/dev/sda")
+    wizard._start()
+    app.update()
+
+    assert wizard._running is False
+    assert "не совпадает" in wizard.message_bar.var.get()
+
+
+def test_dashboard_offers_both_halves_and_fits_its_buttons(gui_app, tmp_path):
+    """Обе половины разделённой установки доступны с панели.
+
+    И обе кнопки должны быть видны: ряд из семи кнопок в одну строку не
+    помещался — «Восстановление» обрезалось, «Состояние» уезжало за край.
+    """
+    app = gui_app
+    _open_container(app, tmp_path)
+    app.update()
+    dashboard = app._current_frame
+
+    shown = _visible_text(dashboard)
+    assert "Собрать дистрибутив" in shown
+    assert "Развернуть дистрибутив" in shown
+
+    app.update_idletasks()
+    # Минимальная ширина окна, а не текущая: пользователь вправе сжать окно до
+    # неё, и ряд кнопок обязан помещаться и тогда. В тестовой среде окно к тому
+    # же не отображается, и winfo_width() вернул бы единицу.
+    minimum_width = app.minsize()[0]
+    rows: dict = {}
+
+    def collect(widget):
+        for child in widget.winfo_children():
+            if isinstance(child, ttk.Button):
+                rows.setdefault(str(child.winfo_parent()), []).append(child)
+            collect(child)
+
+    collect(dashboard)
+    assert rows, "на панели не осталось кнопок — тест потерял смысл"
+    for parent, buttons in rows.items():
+        needed = sum(b.winfo_reqwidth() for b in buttons) + theme.SPACE_SM * len(buttons)
+        assert needed <= minimum_width - 2 * theme.SPACE_LG, (
+            "ряд кнопок не помещается в окно минимальной ширины: "
+            + ", ".join(str(b.cget("text")) for b in buttons)
+        )

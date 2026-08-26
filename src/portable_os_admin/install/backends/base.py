@@ -414,7 +414,7 @@ class InstallBackend(ABC):
         return files
 
     def scripted_files(
-        self, config: InstallConfig, layout: MediaLayout
+        self, config: InstallConfig, layout: MediaLayout | None = None
     ) -> dict[str, tuple[str, int | None]]:
         """Relative path -> (content, mode) for files that need an explicit mode.
 
@@ -423,6 +423,10 @@ class InstallBackend(ABC):
         is a script that never runs, and the failure is silent: the medium
         installs, boots, and simply never applies the kiosk whitelist or takes
         an update.
+
+        Nothing here depends on the medium -- unlike config_files(), which
+        addresses partitions by UUID -- so `layout` is optional and the
+        distribution build writes these into the reference root without one.
         """
         files: dict[str, tuple[str, int | None]] = {}
         files.update(kiosk_mode.config_files(config))

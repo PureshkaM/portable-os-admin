@@ -363,6 +363,18 @@ class OSInstaller:
             self._write_file(target, content, plan, dry_run, confirm, mode=mode)
             temporary_paths.append(target)
 
+        # Scripts and units that the chroot setup below is about to run. They
+        # are identical on every medium made from this distribution, so they
+        # belong to the build and not to the deployment -- and leaving them out
+        # is not a cosmetic omission: chroot_setup_commands calls
+        # /usr/local/sbin/poa-kiosk-apply, so a build without them dies at the
+        # account-and-services step with "no such file", after the base system
+        # and the whole desktop have already been installed.
+        for relative, (content, mode) in backend.scripted_files(config).items():
+            target = f"{root}/{relative}"
+            run(["mkdir", "-p", target.rsplit("/", 1)[0]])
+            self._write_file(target, content, plan, dry_run, confirm, mode=mode)
+
         self._install_packages_and_settings(
             config, backend, root, image_url, plan, dry_run, confirm
         )

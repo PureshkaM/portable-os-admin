@@ -176,6 +176,43 @@ def test_building_touches_no_medium(session, kiosk_config, tmp_path):
         assert destructive not in programs, f"сборка выполняет {destructive}"
 
 
+def test_the_build_writes_every_script_it_then_runs(session, kiosk_config, tmp_path):
+    """Каждый скрипт, который сборка запускает в chroot, она должна и положить.
+
+    Найдено живым прогоном, не тестами: сборка дистрибутива писала только
+    `temporary_files`, а `scripted_files` — где лежит `poa-kiosk-apply` —
+    оставалась за путём обычной установки. Прогон падал на шаге «Создание
+    учётной записи и служб» с «нет такого файла» — после того, как базовая
+    система и всё графическое окружение уже установлены, то есть ценой
+    двадцати минут.
+
+    Проверка нарочно общая: она смотрит не на конкретное имя, а на само
+    свойство «запускаем то, что положили», и поймает следующий скрипт,
+    добавленный в chroot-шаги и забытый в файлах.
+    """
+    result = OSInstaller(session).build_distribution(
+        kiosk_config, str(tmp_path / "dist"), image_path="", dry_run=True
+    )
+
+    written = {
+        entry.argv[1] for entry in result.plan.results
+        if entry.argv and entry.argv[0] == "<write-file>"
+    }
+    # `backend.chroot(root, ...)` даёт argv вида ["chroot", <корень>, ...], так
+    # что корень берётся из самой команды, а не угадывается.
+    executed_scripts = [
+        (entry.argv[1], entry.argv[-1]) for entry in result.plan.results
+        if entry.argv and os.path.basename(entry.argv[0]) == "chroot"
+        and entry.argv[-1].startswith("/") and entry.argv[-2] in ("/bin/sh", "sh", "/bin/bash")
+    ]
+
+    assert executed_scripts, "сборка киоска перестала запускать скрипты — тест потерял смысл"
+    for root, script in executed_scripts:
+        assert f"{root}{script}" in written, (
+            f"сборка запускает {script}, но нигде его не пишет"
+        )
+
+
 def test_building_refuses_an_unvalidated_configuration(session, tmp_path):
     config = InstallConfig.create_baseline("stick", "debian")  # validation_status unchecked
 
