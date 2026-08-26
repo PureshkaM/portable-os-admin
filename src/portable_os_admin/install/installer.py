@@ -15,6 +15,7 @@ import base64
 import importlib.resources
 import os
 import subprocess
+import time
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -113,6 +114,15 @@ class OSInstaller:
         #: the first write, and telling someone their medium was erased when it
         #: was not is its own kind of damage.
         self.medium_modified = False
+        #: Тома, которые уборка так и не смогла закрыть. Пусто в норме; если
+        #: не пусто, об этом надо сказать вслух — молчаливо занятый носитель
+        #: не даст запустить следующую установку, и человек не поймёт почему.
+        self._unreleased: list[str] = []
+
+    @property
+    def unreleased_resources(self) -> tuple[str, ...]:
+        """Что осталось занятым после уборки. Читается интерфейсом при отказе."""
+        return tuple(self._unreleased)
 
     def check_possible(self, device: BlockDevice, config: InstallConfig, *, require_unmounted: bool = True) -> None:
         """"Установка.Проверка.Носитель" / "Установка.Проверка.ДоИзменения":
@@ -1283,20 +1293,53 @@ class OSInstaller:
 
         Deliberately swallows errors: teardown runs on the failure path too,
         where reporting "umount failed" instead of the original cause would
-        hide what actually went wrong."""
+        hide what actually went wrong.
+
+        Порядок и повторы здесь не формальность. Прежняя версия делала
+        `umount -l` и тут же `cryptsetup luksClose`. Ленивое размонтирование
+        отцепляет точку сразу, но том освобождается только когда допишется
+        кэш, а на носителе, пишущем несколько мегабайт в секунду, это минуты.
+        Закрытие натыкалось на «устройство занято», ошибка съедалась — и от
+        прерванного прогона оставался открытый /dev/mapper, из-за которого
+        следующий запуск отказывался работать.
+        """
+        # Сначала выгнать кэш: тогда обычному umount нечего ждать.
+        self._try(["sync"], plan, dry_run, confirm_device)
         for mountpoint in reversed(state.mounts):
-            self._try(["umount", "-l", mountpoint], plan, dry_run, confirm_device)
+            try:
+                self._run(["umount", mountpoint], plan, dry_run, confirm_device)
+            except Exception:  # noqa: BLE001 - см. docstring
+                # Ленивое — только как запасной путь, а не как основной.
+                self._try(["umount", "-l", mountpoint], plan, dry_run, confirm_device)
         state.mounts.clear()
+
         for mapper in reversed(state.service_mappers):
-            self._try(["cryptsetup", "luksClose", mapper], plan, dry_run, confirm_device)
+            self._close_mapper(mapper, plan, dry_run, confirm_device)
         state.service_mappers.clear()
         if state.mapper_opened:
-            self._try(["cryptsetup", "luksClose", layout.mapper_name], plan, dry_run, confirm_device)
+            self._close_mapper(layout.mapper_name, plan, dry_run, confirm_device)
             state.mapper_opened = False
         self._try(["rmdir", layout.mount_root], plan, dry_run, confirm_device)
         if state.image is not None:
             state.image.unmount()
             state.image = None
+
+    def _close_mapper(self, mapper: str, plan: CommandPlan, dry_run: bool, confirm_device: str | None) -> bool:
+        """Закрывает том, дожидаясь, пока он освободится.
+
+        Возвращает False, если так и не закрылся: об этом надо сказать вслух,
+        иначе носитель останется занятым молча.
+        """
+        for attempt in range(TEARDOWN_CLOSE_ATTEMPTS):
+            try:
+                self._run(["cryptsetup", "luksClose", mapper], plan, dry_run, confirm_device)
+                return True
+            except Exception:  # noqa: BLE001 - см. docstring _teardown
+                if dry_run or attempt == TEARDOWN_CLOSE_ATTEMPTS - 1:
+                    break
+                time.sleep(TEARDOWN_CLOSE_PAUSE)
+        self._unreleased.append(f"/dev/mapper/{mapper}")
+        return False
 
     def _try(self, argv: list[str], plan: CommandPlan, dry_run: bool, confirm_device: str | None) -> None:
         try:
@@ -1493,6 +1536,12 @@ def _directory_size(path: str) -> int:
 def _blkid_uuid(path: str) -> str:
     return _read_output(["blkid", "-s", "UUID", "-o", "value", path])
 
+
+#: Сколько раз и с какой паузой пытаться закрыть том при уборке. Минута в
+#: сумме: столько занимает дозапись кэша на медленном носителе, после чего
+#: устройство освобождается само.
+TEARDOWN_CLOSE_ATTEMPTS = 12
+TEARDOWN_CLOSE_PAUSE = 5
 
 #: Сколько ждать пробу вроде `blkid`.
 #:

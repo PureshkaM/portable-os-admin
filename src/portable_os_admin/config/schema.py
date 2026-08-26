@@ -274,6 +274,36 @@ class AutoUpdateConfig:
 
 
 @dataclass
+class LocalisationConfig:
+    """Язык, раскладка и часовой пояс устанавливаемой системы.
+
+    До 26.08.2026 всё это было зашито в код (`en_US.UTF-8`, `us`, `UTC`) и
+    попадало только в файл для валидатора, а на носитель — нет. Для системы,
+    которую ставят в российской организации, неверно и то и другое.
+
+    Умолчания оставлены прежними намеренно: смена умолчания меняет поведение
+    у тех, кто ничего не менял. Кому нужен другой язык — задаёт его явно.
+    """
+
+    #: Значение LANG: `ru_RU.UTF-8`, `en_US.UTF-8`. Должно быть в списке
+    #: локалей, которые умеет собрать целевой дистрибутив.
+    locale: str = "en_US.UTF-8"
+    #: Раскладка текстовой консоли (`/etc/vconsole.conf`, KEYMAP): `us`, `ru`.
+    keymap: str = "us"
+    #: Раскладки графического сеанса через запятую: "us,ru". Пусто — берётся
+    #: раскладка консоли.
+    x11_layouts: str = ""
+    #: Как переключать раскладки в графическом сеансе: `grp:alt_shift_toggle`
+    #: и подобное. Пусто — переключателя нет.
+    x11_options: str = ""
+    #: Часовой пояс из базы tzdata: `Europe/Moscow`, `Asia/Yekaterinburg`.
+    timezone: str = "UTC"
+    #: Считать ли аппаратные часы идущими по UTC. Ставить false стоит только
+    #: если носитель будут запускать на машине с Windows на том же железе.
+    hardware_clock_utc: bool = True
+
+
+@dataclass
 class LuksConfig:
     cipher: str = "aes-xts-plain64"
     key_size_bits: int = 512
@@ -317,6 +347,10 @@ class InstallConfig:
     # with "Exec format error". Kept explicit in the config so a wrong value is
     # reported by validation instead of surfacing as a cryptic chroot failure.
     arch: str = ""
+    #: Имя устанавливаемой системы в сети. Прежде было зашито как
+    #: "portable-os", из-за чего все носители организации представлялись
+    #: одним и тем же именем.
+    hostname: str = "portable-os"
     # What kind of system to build: the text-only console system this project
     # produced originally, or the restricted desktop. Kept as a separate field
     # from kiosk.enabled so the two can never disagree -- see __post_init__.
@@ -324,6 +358,7 @@ class InstallConfig:
     disk: DiskLayoutConfig = field(default_factory=DiskLayoutConfig)
     luks: LuksConfig = field(default_factory=LuksConfig)
     account: UserAccountConfig = field(default_factory=UserAccountConfig)
+    localisation: LocalisationConfig = field(default_factory=LocalisationConfig)
     remote_access: RemoteAccessConfig = field(default_factory=RemoteAccessConfig)
     kiosk: KioskConfig = field(default_factory=KioskConfig)
     auto_update: AutoUpdateConfig = field(default_factory=AutoUpdateConfig)
@@ -359,6 +394,9 @@ class InstallConfig:
         # no such key, and default to the console system they were made for.
         kiosk = KioskConfig(**data.pop("kiosk", {}))
         auto_update = AutoUpdateConfig(**data.pop("auto_update", {}))
+        # Конфигурации, написанные до того, как язык и часовой пояс стали
+        # настраиваемыми, этого ключа не имеют и получают прежние значения.
+        localisation = LocalisationConfig(**data.pop("localisation", {}))
         return cls(
             disk=disk,
             luks=luks,
@@ -366,6 +404,7 @@ class InstallConfig:
             remote_access=remote_access,
             kiosk=kiosk,
             auto_update=auto_update,
+            localisation=localisation,
             **data,
         )
 

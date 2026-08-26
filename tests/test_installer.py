@@ -1,3 +1,4 @@
+import inspect
 import pytest
 
 from portable_os_admin.config import ConfigManager, InstallConfig
@@ -453,3 +454,24 @@ def test_a_slow_medium_is_given_time_to_answer_a_probe():
     from portable_os_admin.install import installer as installer_module
 
     assert installer_module.PROBE_TIMEOUT >= 600
+
+
+def test_teardown_waits_for_the_volume_instead_of_giving_up_silently(tmp_path, monkeypatch):
+    """Прерванный прогон не должен оставлять открытый том.
+
+    Прежняя уборка делала `umount -l` и сразу `luksClose`: ленивое
+    размонтирование отцепляет точку сразу, но том освобождается, только когда
+    допишется кэш — на медленном носителе это минуты. Закрытие натыкалось на
+    «устройство занято», ошибка съедалась, и от прогона оставался открытый
+    /dev/mapper, из-за которого следующий запуск отказывался работать.
+    """
+    from portable_os_admin.install import installer as installer_module
+
+    assert installer_module.TEARDOWN_CLOSE_ATTEMPTS * installer_module.TEARDOWN_CLOSE_PAUSE >= 60
+
+    source = inspect.getsource(installer_module.OSInstaller._teardown)
+    # Обычное размонтирование первым, ленивое — только запасным путём.
+    assert '["umount", mountpoint]' in source
+    assert source.index('["umount", mountpoint]') < source.index('["umount", "-l", mountpoint]')
+    # И кэш выгоняется до того, как что-то размонтируется.
+    assert source.index('["sync"]') < source.index('["umount", mountpoint]')

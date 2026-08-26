@@ -598,6 +598,14 @@ class InstallWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
             suffix = " Носитель не изменён — установка остановилась до записи на него."
         else:
             suffix = " Носитель уже изменён — прежние данные на нём не сохранились."
+        # Если уборка не смогла закрыть том, об этом надо сказать здесь же:
+        # иначе следующий запуск откажется работать, а причина будет неясна.
+        stuck = tuple(getattr(installer, "unreleased_resources", ()) or ())
+        if stuck:
+            suffix += (
+                " Не удалось освободить: " + ", ".join(stuck)
+                + ". Уберите на панели («Состояние»)."
+            )
         if isinstance(exc, (DeviceNotEligibleError, InstallError)) or isinstance(exc, KNOWN_ERRORS):
             self.message_bar.error(f"{exc}{suffix}")
         else:
