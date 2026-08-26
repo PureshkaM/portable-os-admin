@@ -22,6 +22,8 @@ CommandRunner's dry-run gate.
 """
 from __future__ import annotations
 
+import os
+
 import gzip
 import lzma
 import shutil
@@ -48,7 +50,28 @@ class RepoPackage:
     summary: str
 
 
+def as_repository_url(location: str) -> str:
+    """Приводит адрес репозитория к виду, который понимает загрузчик.
+
+    Смонтированный установочный образ — это тот же репозиторий: и rpm-md, и
+    apt раскладывают метаданные одинаково, где бы они ни лежали. Поэтому
+    обычный путь превращается в file://, и дальше всё работает без единой
+    правки в разборе.
+
+    Это важнее, чем кажется: основной путь проекта — контур без выхода в
+    интернет, а просмотр пакетов до сих пор требовал сети, то есть именно там,
+    где программой и пользуются, эта функция не работала.
+    """
+    location = location.strip()
+    if not location:
+        return ""
+    if "://" in location:
+        return location
+    return "file://" + os.path.abspath(location)
+
+
 def _fetch(url: str) -> bytes:
+    url = as_repository_url(url)
     request = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
     try:
         with urllib.request.urlopen(request, timeout=_TIMEOUT) as response:

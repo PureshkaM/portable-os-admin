@@ -491,10 +491,29 @@ class RedOSInstallBackend(InstallBackend):
             ),
         }
 
-    def _append_kernel_parameters(self, root: str, config: InstallConfig) -> str:
-        """Команда, дописывающая параметры ядра в записи загрузчика."""
+    def _append_kernel_parameters(self, root: str, config: InstallConfig, layout: MediaLayout) -> str:
+        """Команда, дописывающая параметры ядра в записи загрузчика.
+
+        Главное здесь — не пользовательские параметры, а `rd.luks.*`.
+
+        В RHEL-семействе указание расшифровать том приходит именно параметром
+        ядра: так пишет anaconda, и так это работает у самого дистрибутива. В
+        Debian ту же роль играет cryptsetup-initramfs, который читает crypttab
+        при сборке образа, — поэтому там носитель загружался, а здесь нет.
+        Без них initramfs молча ждёт появления устройства, которого без
+        расшифровки не бывает, и через две минуты уходит в аварийный режим с
+        сообщением про несуществующий UUID — по нему причину не угадать.
+
+        `rd.luks.name` задаёт имя тома: fstab и crypttab носителя ссылаются на
+        /dev/mapper/poa-<media_id>, и без этого имя оказалось бы другим.
+        """
+        luks_parts = []
+        if layout.luks_uuid:
+            luks_parts.append(f"rd.luks.uuid={layout.luks_uuid}")
+            luks_parts.append(f"rd.luks.name={layout.luks_uuid}={layout.mapper_name}")
         extra = " ".join(
             part for part in (
+                *luks_parts,
                 config.boot.kernel_parameters.strip(),
                 "quiet splash" if config.boot.quiet else "",
             ) if part
@@ -591,7 +610,7 @@ class RedOSInstallBackend(InstallBackend):
             # конфигурации, которое пишется только в /etc/default/grub, для
             # РЕД ОС не работает вовсе — а поле, которое ничего не делает,
             # хуже отсутствия поля.
-            ["sh", "-c", self._append_kernel_parameters(root, config)],
+            ["sh", "-c", self._append_kernel_parameters(root, config, layout)],
             ["mkdir", "-p", f"{efi}/EFI/BOOT"],
             # Shim ищет grubx64.efi рядом с собой, а пакет кладёт его в
             # каталог дистрибутива.

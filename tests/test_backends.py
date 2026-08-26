@@ -355,3 +355,34 @@ def test_redos_menu_does_not_wait_forever():
     grub = get_backend("redos").config_files(config, layout)["etc/default/grub"]
     assert f"GRUB_TIMEOUT={config.boot.menu_timeout_seconds}" in grub
     assert config.boot.menu_timeout_seconds >= 0
+
+
+def test_redos_tells_the_initramfs_to_unlock_the_volume():
+    """Без rd.luks.* initramfs ждёт устройство, которого без расшифровки нет.
+
+    Найдено по последовательному порту: загрузка две минуты ждала
+    /dev/disk/by-uuid/… и уходила в аварийный режим с сообщением про
+    несуществующий UUID — по нему причину не угадать. В RHEL-семействе
+    указание расшифровать том приходит параметром ядра (так пишет anaconda), а
+    в Debian ту же роль играет cryptsetup-initramfs, читающий crypttab при
+    сборке образа. Поэтому Debian загружался, а РЕД ОС нет.
+    """
+    from portable_os_admin.config import InstallConfig
+    from portable_os_admin.install.backends import get_backend
+    from portable_os_admin.install.disk import build_media_layout, plan_partitions
+
+    config = InstallConfig.create_baseline("stick", "redos")
+    config.release = "8.0"
+    config.arch = "amd64"
+    layout = build_media_layout(
+        plan_partitions("/dev/sdb", config.disk), mapper_name="poa-abc", mount_root="/mnt/root"
+    )
+    layout.luks_uuid = "11111111-2222-3333-4444-555555555555"
+
+    commands = "\n".join(
+        " ".join(argv) for argv in get_backend("redos").bootloader_commands(layout, config)
+    )
+
+    assert f"rd.luks.uuid={layout.luks_uuid}" in commands
+    # Имя тома задаётся явно: fstab и crypttab носителя ссылаются на него.
+    assert f"rd.luks.name={layout.luks_uuid}=poa-abc" in commands
