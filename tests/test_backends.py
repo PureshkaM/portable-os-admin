@@ -486,3 +486,42 @@ def test_labels_are_set_once_per_distribution_not_per_medium():
     assert ".autorelabel" not in files, "этот путь не работает без меток"
 
     assert get_backend("debian").relabel_commands("/mnt/root") == []
+
+
+def test_the_kernel_command_line_is_built_in_one_place():
+    """Параметр, забытый в одной из копий, проявится только на живой загрузке.
+
+    И по симптому его не найти: сегодня на это ушло два цикла. Поэтому
+    командная строка собирается общим кодом, а семейства добавляют лишь то,
+    чем у них сообщается о зашифрованном корне.
+    """
+    from portable_os_admin.config import InstallConfig
+    from portable_os_admin.install.backends import get_backend
+    from portable_os_admin.install.disk import build_media_layout, plan_partitions
+
+    for family, release in (("redos", "8.0"), ("debian", "trixie")):
+        config = InstallConfig.create_baseline("stick", family)
+        config.release = release
+        config.boot.kernel_parameters = "intel_iommu=on"
+        config.boot.menu_timeout_seconds = 3
+        layout = build_media_layout(
+            plan_partitions("/dev/sdb", config.disk), mapper_name="poa-x", mount_root="/mnt/root"
+        )
+        layout.luks_uuid = "U1"
+        backend = get_backend(family)
+
+        grub = backend.config_files(config, layout)["etc/default/grub"]
+        assert "intel_iommu=on" in grub, f"{family}: параметры администратора потерялись"
+        assert "GRUB_TIMEOUT=3" in grub, f"{family}: таймаут меню не задан"
+        # Носитель поедет на чужую машину: чужие диски в меню ему не нужны.
+        assert "GRUB_DISABLE_OS_PROBER=true" in grub
+
+    # Про зашифрованный корень сообщают по-разному, и это не стилистика:
+    # в Debian ту же роль играет cryptsetup-initramfs, читающий crypttab.
+    redos_layout = build_media_layout(
+        plan_partitions("/dev/sdb", InstallConfig.create_baseline("x", "redos").disk),
+        mapper_name="poa-x", mount_root="/m",
+    )
+    redos_layout.luks_uuid = "U1"
+    assert get_backend("redos").unlock_kernel_parameters(redos_layout)
+    assert get_backend("debian").unlock_kernel_parameters(redos_layout) == []

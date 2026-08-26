@@ -266,6 +266,8 @@ def test_kernel_parameters_reach_the_bootloader():
     )
 
     grub = get_backend("debian").config_files(config, layout)["etc/default/grub"]
-    assert 'GRUB_CMDLINE_LINUX="intel_iommu=on"' in grub
+    # Теперь строка одна на оба семейства: пользовательские параметры и
+    # «тихая загрузка» складываются в неё вместе.
+    assert "intel_iommu=on" in grub
     assert "GRUB_TIMEOUT=0" in grub
     assert "quiet splash" in grub
