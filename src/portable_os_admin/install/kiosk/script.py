@@ -12,7 +12,7 @@ from .environments import base as environments
 # ----------------------------------------------------------------------
 # The whitelist, applied inside the target
 # ----------------------------------------------------------------------
-def apply_script(config: InstallConfig) -> str:
+def apply_script(config: InstallConfig, image=None) -> str:
     """Shell script that hides every launcher outside the whitelist.
 
     It runs in the chroot rather than being a set of files written from here
@@ -44,7 +44,7 @@ def apply_script(config: InstallConfig) -> str:
     firejail_opts = kiosk.firejail_options.strip()
     use_firejail = "1" if kiosk.firejail else ""
     desktop = desktop_of(config)
-    environment = environments.for_config(config)
+    environment = environments.for_config(config, image)
     # Ярлык, который виден и не запускается, хуже отсутствующего -- отвечает
     # на это сама среда, потому что причина у каждой своя.
     shortcuts = "1" if environment.desktop_shortcuts_work(config) else ""

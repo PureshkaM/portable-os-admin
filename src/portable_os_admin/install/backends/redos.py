@@ -612,8 +612,8 @@ class RedOSInstallBackend(InstallBackend):
         "GRUB_ENABLE_BLSCFG=true",
     )
 
-    def config_files(self, config: InstallConfig, layout: MediaLayout) -> dict[str, str]:
-        files = super().config_files(config, layout)
+    def config_files(self, config: InstallConfig, layout: MediaLayout, image=None) -> dict[str, str]:
+        files = super().config_files(config, layout, image)
         files["etc/default/grub"] = self.grub_defaults(config, layout)
         return files
 

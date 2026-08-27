@@ -54,20 +54,41 @@ class DesktopEnvironment:
         return True
 
 
-def for_config(config: InstallConfig) -> DesktopEnvironment:
+def for_config(config: InstallConfig, image=None) -> DesktopEnvironment:
     """Среда, которой строится этот киоск.
 
-    Пока выбор идёт по одному полю конфигурации. Когда программа научится
-    читать версию оболочки из образа, здесь появится второй параметр, и
-    Plasma 5 с Plasma 6 разойдутся по своим классам -- ради этого функция и
-    отдельная, а не `if` по месту использования.
+    Выбирается парой «что просит конфигурация» и «что несёт образ». Поколение
+    берётся из образа, а не выводится из выпуска дистрибутива: РЕД ОС 8 несёт
+    Plasma 5.27, Debian 13 -- Plasma 6.3, и правило «такой-то выпуск значит
+    такое-то поколение» пришлось бы обновлять к каждому релизу. Проверено
+    чтением обоих образов.
+
+    Без образа берётся поколение по умолчанию. Это не «наугад»: без образа
+    программа ничего и не собирает, а такой вызов бывает у тестов и у
+    предпросмотра конфигурации, где важен состав ограничений, а не точная
+    версия.
     """
     from .kde import Kde5Environment
     from .mate import MateEnvironment
 
-    if desktop_of(config) == DESKTOP_KDE:
-        return Kde5Environment()
-    return MateEnvironment()
+    if desktop_of(config) != DESKTOP_KDE:
+        return MateEnvironment()
+
+    major = _desktop_major(image, "kde")
+    if major >= 6:
+        from .kde6 import Kde6Environment
+
+        return Kde6Environment()
+    return Kde5Environment()
+
+
+def _desktop_major(image, desktop: str) -> int:
+    """Поколение оболочки, которое несёт образ, или 0, если оно неизвестно."""
+    if image is None:
+        return 0
+    from ...image_source import desktop_major
+
+    return desktop_major(getattr(image, "desktop_versions", {}).get(desktop, ""))
 
 
 __all__ = ["DesktopEnvironment", "for_config", "DESKTOP_KDE", "DESKTOP_MATE"]

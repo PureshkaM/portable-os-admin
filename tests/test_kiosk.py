@@ -1177,3 +1177,41 @@ def test_the_public_names_survived_the_split():
                  "plasma_layout_script", "kscreenlockerrc", "powermanagement_profiles",
                  "HARDENED_OPTS", "EXCHANGE_DIR", "DESKTOP_KDE", "SESSION_NAME"):
         assert hasattr(kiosk, name), name
+
+
+def test_the_generation_comes_from_the_image_not_from_the_release():
+    """Regression, предупреждённый заранее: Debian 13 несёт Plasma 6.
+
+    Проверено чтением настоящих образов 27.08.2026: РЕД ОС 8 — Plasma 5.27.11,
+    Debian 13 — Plasma 6.3.6. Ограничения у поколений разные, и выбор не того
+    означает молча неприменённые ограничения, а не заметную ошибку.
+    """
+    from types import SimpleNamespace
+
+    from portable_os_admin.install.kiosk.environments import base
+
+    config = make_kiosk_config(desktop_environment="kde", allowed_apps=["mate-calc"])
+
+    five = base.for_config(config, SimpleNamespace(desktop_versions={"kde": "5.27.11"}))
+    six = base.for_config(config, SimpleNamespace(desktop_versions={"kde": "4:6.3.6-1"}))
+    assert type(five).__name__ == "Kde5Environment"
+    assert type(six).__name__ == "Kde6Environment"
+
+    # Расходятся не именами классов, а тем, что делают на целевой системе.
+    assert "kservices5" in five.apply_fragment(config)
+    assert "kbuildsycoca5" in five.apply_fragment(config)
+    assert "kservices6" in six.apply_fragment(config)
+    assert "kbuildsycoca6" in six.apply_fragment(config)
+    assert "qt6" in six.apply_fragment(config)
+    assert "qt5" not in six.apply_fragment(config)
+
+
+def test_mate_is_chosen_regardless_of_what_the_image_carries():
+    """Версия KDE в образе не делает киоск на MATE киоском на KDE."""
+    from types import SimpleNamespace
+
+    from portable_os_admin.install.kiosk.environments import base
+
+    config = make_kiosk_config(allowed_apps=["mate-calc"])
+    env = base.for_config(config, SimpleNamespace(desktop_versions={"kde": "6.3.6"}))
+    assert type(env).__name__ == "MateEnvironment"

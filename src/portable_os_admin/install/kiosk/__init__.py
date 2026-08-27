@@ -98,7 +98,7 @@ from .script import apply_script
 # ----------------------------------------------------------------------
 # What the installer asks for
 # ----------------------------------------------------------------------
-def config_files(config: InstallConfig) -> dict[str, tuple[str, int | None]]:
+def config_files(config: InstallConfig, image=None) -> dict[str, tuple[str, int | None]]:
     """Relative path -> (content, mode) for everything written into the target.
 
     Deliberately excludes the display-manager configuration: which one is
@@ -116,13 +116,13 @@ def config_files(config: InstallConfig) -> dict[str, tuple[str, int | None]]:
         XORG_CONF_PATH: (xorg_conf(), None),
         LOGIND_CONF_PATH: (logind_conf(), None),
         POLKIT_RULES_PATH: (polkit_rules(config), None),
-        APPLY_SCRIPT_PATH: (apply_script(config), 0o755),
+        APPLY_SCRIPT_PATH: (apply_script(config, image), 0o755),
         LAUNCHER_PATH: (launcher_script(), 0o755),
     }
     session_path, session_content = session_entry(config)
     files[session_path] = (session_content, 0o644)
 
-    files.update(environments.for_config(config).files(config))
+    files.update(environments.for_config(config, image).files(config))
 
     if config.kiosk.autostart_app:
         files[AUTOSTART_PATH] = (autostart_entry(config), 0o644)

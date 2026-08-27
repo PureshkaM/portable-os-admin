@@ -602,7 +602,7 @@ class InstallBackend(ABC):
     # ------------------------------------------------------------------
     # Files written directly into the mounted target tree
     # ------------------------------------------------------------------
-    def config_files(self, config: InstallConfig, layout: MediaLayout) -> dict[str, str]:
+    def config_files(self, config: InstallConfig, layout: MediaLayout, image=None) -> dict[str, str]:
         """Relative-path -> content for files written directly under
         mount_root (no chroot needed since it is just a mounted directory tree
         from the host's point of view). Shared across backends because
@@ -813,7 +813,7 @@ class InstallBackend(ABC):
         )
 
     def scripted_files(
-        self, config: InstallConfig, layout: MediaLayout | None = None
+        self, config: InstallConfig, layout: MediaLayout | None = None, image=None
     ) -> dict[str, tuple[str, int | None]]:
         """Relative path -> (content, mode) for files that need an explicit mode.
 
@@ -829,7 +829,7 @@ class InstallBackend(ABC):
         """
         files: dict[str, tuple[str, int | None]] = {}
         files.update(self.generic_initramfs_files())
-        files.update(kiosk_mode.config_files(config))
+        files.update(kiosk_mode.config_files(config, image))
         files.update(autoupdate.config_files(config, self))
         return files
 

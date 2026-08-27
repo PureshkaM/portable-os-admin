@@ -169,6 +169,14 @@ class DistributionMetadata:
     profile: str = "console"
     desktop_environment: str = ""
     session_type: str = ""
+    #: Версии оболочек образа, из которого собран этот корень: {"kde": "6.3.6"}.
+    #:
+    #: Едет вместе с дистрибутивом, потому что при развёртывании образа уже нет,
+    #: а ограничения киоска у Plasma 5 и 6 разные. Без этого поля развёртывание
+    #: писало бы конфигурацию пятого поколения в корень, собранный на шестом, —
+    #: и не выдало бы ни ошибки, ни предупреждения: файлы легли бы туда, где их
+    #: никто не читает.
+    desktop_versions: dict = field(default_factory=dict)
     #: The configuration the root was built from, kept whole so the deployment
     #: writes fstab, crypttab and the account exactly as the build intended.
     config: dict = field(default_factory=dict)
@@ -211,6 +219,7 @@ class DistributionMetadata:
         rootfs_bytes: int,
         emulated: bool,
         archive: str = ARCHIVE_NAME,
+        desktop_versions: dict | None = None,
     ) -> "DistributionMetadata":
         return cls(
             name=config.name,
@@ -220,6 +229,7 @@ class DistributionMetadata:
             profile=config.profile,
             desktop_environment=config.kiosk.desktop_environment if config.kiosk.enabled else "",
             session_type=config.kiosk.session_type if config.kiosk.enabled else "",
+            desktop_versions=dict(desktop_versions or {}),
             config=config.to_dict(),
             archive=archive,
             rootfs_bytes=rootfs_bytes,

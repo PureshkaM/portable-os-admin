@@ -25,6 +25,55 @@ POWERMANAGEMENT_PATH = "etc/xdg/powermanagementprofilesrc"
 # ----------------------------------------------------------------------
 # KDE: the Kiosk framework
 # ----------------------------------------------------------------------
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class KdePaths:
+    """Где поколение KDE держит то, что киоск обязан вычистить.
+
+    Ровно те места, которые разошлись между Plasma 5 и 6. Всё остальное --
+    kdeglobals, kscreenlockerrc, профили powerdevil, каталог плазмоидов --
+    у них общее, поэтому здесь не перечислено: список отличий должен быть
+    списком отличий, иначе он перестаёт отвечать на вопрос «что менять для
+    следующего поколения».
+    """
+
+    #: Куда смотреть за .desktop служб и модулей.
+    services_dir: str
+    #: Каталоги плагинов KCM: список для shell, через пробел.
+    kcm_plugin_dirs: str
+    #: Чем пересобирать кэш меню.
+    sycoca_tools: str
+
+    @property
+    def services_glob(self) -> str:
+        return f"{self.services_dir}/*.desktop" if self.services_dir else ""
+
+
+#: Plasma 5: модули лежат и в kservices5, и плагинами под qt5.
+KDE5_PATHS = KdePaths(
+    services_dir="/usr/share/kservices5",
+    kcm_plugin_dirs=(
+        "/usr/lib64/qt5/plugins/plasma/kcms /usr/lib64/qt5/plugins/kcms "
+        "/usr/lib/qt5/plugins/plasma/kcms /usr/lib/qt5/plugins/kcms "
+        "/usr/lib/*/qt5/plugins/plasma/kcms /usr/lib/*/qt5/plugins/kcms"
+    ),
+    sycoca_tools="kbuildsycoca5",
+)
+
+#: Plasma 6: kservices5 больше нет, всё — плагины под qt6.
+KDE6_PATHS = KdePaths(
+    services_dir="/usr/share/kservices6",
+    kcm_plugin_dirs=(
+        "/usr/lib64/qt6/plugins/plasma/kcms /usr/lib64/qt6/plugins/kcms "
+        "/usr/lib/qt6/plugins/plasma/kcms /usr/lib/qt6/plugins/kcms "
+        "/usr/lib/*/qt6/plugins/plasma/kcms /usr/lib/*/qt6/plugins/kcms"
+    ),
+    sycoca_tools="kbuildsycoca6",
+)
+
+
 #: Что стоит за каждым разрешением из `allowed_settings`: модули KDE, которые
 #: его обслуживают. Имя слева -- назначение, а не модуль: программа, которая
 #: настраивает сеть, называется по-разному в разных средах.
@@ -59,7 +108,7 @@ SETTINGS_ROOT_CATEGORY = "settings-root-category"
 SETTINGS_LANDING_MODULE = "kcm_landingpage"
 
 
-def settings_modules_script(config: InstallConfig) -> str:
+def settings_modules_script(config: InstallConfig, paths: "KdePaths | None" = None) -> str:
     """Shell that writes the module refusals, computed on the target itself.
 
     KDE has no whitelist for control modules -- only a refusal per module name
@@ -72,6 +121,7 @@ def settings_modules_script(config: InstallConfig) -> str:
     Nothing being allowed is a valid answer and the common one: then every
     module is refused and the application is not offered anywhere.
     """
+    paths = paths or KDE5_PATHS
     allowed = set()
     categories = set()
     for purpose in config.kiosk.allowed_settings:
@@ -114,7 +164,7 @@ is_kept_category() {{
 # из 62. Замер на носителе: одна маска ловит 55, другая 8, и ни одна не
 # ловит всё.
 modules=""
-for f in /usr/share/applications/*.desktop /usr/share/kservices5/*.desktop; do
+for f in /usr/share/applications/*.desktop {paths.services_glob}; do
     [ -e "$f" ] || continue
     n=${{f##*/}}
     n=${{n%.desktop}}
@@ -134,7 +184,7 @@ done
 # равно пишутся -- там, где они работают, это второй рубеж, -- но полагаться
 # на них нельзя.
 removed=0
-for f in /usr/share/applications/*.desktop /usr/share/kservices5/*.desktop; do
+for f in /usr/share/applications/*.desktop {paths.services_glob}; do
     [ -e "$f" ] || continue
     n=${{f##*/}}
     n=${{n%.desktop}}
@@ -155,9 +205,7 @@ echo "poa-kiosk: записей модулей настроек удалено: 
 # удаления 59 записей «Пользователи», «Уведомления» и «Учётные записи в
 # Интернете» остались на месте, потому что читаются отсюда.
 plugins_removed=0
-for d in /usr/lib64/qt5/plugins/plasma/kcms /usr/lib64/qt5/plugins/kcms \
-         /usr/lib/qt5/plugins/plasma/kcms /usr/lib/qt5/plugins/kcms \
-         /usr/lib/*/qt5/plugins/plasma/kcms /usr/lib/*/qt5/plugins/kcms; do
+for d in {paths.kcm_plugin_dirs}; do
     [ -d "$d" ] || continue
     for so in $(find "$d" -name '*.so' 2>/dev/null); do
         n=${{so##*/}}
@@ -205,7 +253,7 @@ echo "poa-kiosk: разделов настроек убрано: $dropped, ос�
 REMOVED_PLASMOIDS = ("org.kde.plasma.devicenotifier",)
 
 
-def plasma_layout_script(config: InstallConfig) -> str:
+def plasma_layout_script(config: InstallConfig, paths: "KdePaths | None" = None) -> str:
     """Shell that turns the desktop into the one this kiosk promises.
 
     Three things, all of which have to happen on the target because they touch
@@ -220,6 +268,7 @@ def plasma_layout_script(config: InstallConfig) -> str:
     if desktop_of(config) != DESKTOP_KDE:
         return ""
 
+    paths = paths or KDE5_PATHS
     apps = sorted(set(config.kiosk.allowed_apps))
     if config.kiosk.allowed_settings:
         # Разрешив настройки, администратор должен дать чем до них дойти.
@@ -251,7 +300,7 @@ echo "poa-kiosk: панель и избранное: $APPLETSRC_LAUNCHERS"
 # Плазмоиды, которых в киоске быть не должно.
 for plasmoid in {" ".join(REMOVED_PLASMOIDS)}; do
     rm -rf "/usr/share/plasma/plasmoids/$plasmoid"
-    rm -f "/usr/share/kservices5/plasma-applet-$plasmoid.desktop"
+    rm -f "{paths.services_dir}/plasma-applet-$plasmoid.desktop"
     echo "poa-kiosk: плазмоид удалён: $plasmoid"
 done
 """
@@ -493,15 +542,18 @@ class Kde5Environment(DesktopEnvironment):
             POWERMANAGEMENT_PATH: (powermanagement_profiles(config), None),
         }
 
+    #: Пути этого поколения. Единственное, чем отличается Plasma 6.
+    paths = KDE5_PATHS
+
     def apply_fragment(self, config: InstallConfig) -> str:
         return (
-            settings_modules_script(config)
-            + plasma_layout_script(config)
-            + """
+            settings_modules_script(config, self.paths)
+            + plasma_layout_script(config, self.paths)
+            + f"""
 # KDE читает ограничения из /etc/xdg/kdeglobals при запуске приложения,
 # компилировать нечего. Пересобирается лишь кэш меню, чтобы скрытые записи
 # исчезли из него сразу, а не после первого входа.
-for tool in kbuildsycoca6 kbuildsycoca5; do
+for tool in {self.paths.sycoca_tools}; do
     if command -v "$tool" >/dev/null 2>&1; then
         "$tool" --noincremental >/dev/null 2>&1 || true
         break

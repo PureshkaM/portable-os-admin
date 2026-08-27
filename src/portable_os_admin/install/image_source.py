@@ -22,7 +22,7 @@ import os
 import re
 import subprocess
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from ..errors import InstallError
 from .tooling import resolve_argv
@@ -62,6 +62,15 @@ class ImageInfo:
     complete: bool = True
     #: Why it is not complete, in a form that can be shown to a person.
     incomplete_reason: str = ""
+    #: Версии графических оболочек, найденные в индексе образа:
+    #: {"kde": "5.27.11"}. Пусто там, где оболочки в образе нет.
+    #:
+    #: Читается, а не выводится из выпуска дистрибутива: Debian 13 несёт
+    #: Plasma 6, Debian 12 -- Plasma 5, и правило «такой-то выпуск значит
+    #: такое-то поколение» пришлось бы обновлять к каждому релизу. Поколение
+    #: решает, какой набор ограничений киоска верен, поэтому ошибка здесь
+    #: означает молча неприменённые ограничения.
+    desktop_versions: dict[str, str] = field(default_factory=dict)
 
     def describe(self) -> str:
         arch = ", ".join(self.architectures) if self.architectures else "?"
@@ -199,6 +208,7 @@ def _inspect_debian(path: str, mountpoint: str) -> ImageInfo | None:
             label=_disk_info(mountpoint) or f"Debian {fields.get('Version', '')}".strip(),
             complete=complete,
             incomplete_reason=reason,
+            desktop_versions=_desktop_versions_from_apt(index) if index else {},
         )
     return None
 
@@ -281,6 +291,95 @@ def _index_package_names(index: str) -> set[str]:
     return names
 
 
+#: Пакет, по версии которого определяется поколение оболочки. Один на среду и
+#: намеренно не «любой подходящий»: версия среды -- это версия её ядра, а не
+#: случайного пакета, который в неё входит.
+DESKTOP_VERSION_PACKAGES = {
+    "kde": "plasma-desktop",
+    "mate": "mate-desktop",
+}
+
+
+def _desktop_versions_from_apt(index: str) -> dict[str, str]:
+    """Версии оболочек из индекса apt.
+
+    Читаются вместе с именами, одним проходом: индекс — десятки мегабайт, и
+    открывать его дважды ради двух строк незачем.
+    """
+    wanted = {pkg: name for name, pkg in DESKTOP_VERSION_PACKAGES.items()}
+    openers = {".gz": _open_gz, ".xz": _open_xz}
+    opener = openers.get(os.path.splitext(index)[1], open)
+    found: dict[str, str] = {}
+    current = ""
+    try:
+        with opener(index) as handle:  # type: ignore[operator]
+            for raw in handle:
+                line = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else raw
+                if line.startswith("Package: "):
+                    current = line[9:].strip()
+                elif line.startswith("Version: ") and current in wanted:
+                    found.setdefault(wanted[current], line[9:].strip())
+    except (OSError, ValueError):
+        return {}
+    return found
+
+
+def _desktop_versions_from_rpm(mountpoint: str) -> dict[str, str]:
+    """Версии оболочек из primary.xml репозитория образа.
+
+    Разбирается регулярным выражением, а не XML-парсером, по той же причине,
+    по какой так читается comps: файл велик, нужны из него две строки, и
+    полный разбор стоил бы секунд на каждом открытии образа.
+    """
+    repodata = os.path.join(mountpoint, "repodata")
+    if not os.path.isdir(repodata):
+        return {}
+    primaries = [
+        os.path.join(repodata, name)
+        for name in sorted(os.listdir(repodata))
+        if "primary" in name and name.endswith((".xml", ".xml.gz"))
+    ]
+    found: dict[str, str] = {}
+    for candidate in primaries:
+        try:
+            opener = _open_gz if candidate.endswith(".gz") else open
+            with opener(candidate) as handle:  # type: ignore[operator]
+                raw = handle.read()
+            text = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else raw
+        except (OSError, ValueError):
+            continue
+        for desktop, package in DESKTOP_VERSION_PACKAGES.items():
+            if desktop in found:
+                continue
+            match = re.search(
+                r'<name>' + re.escape(package) + r'</name>.*?<version[^>]*\bver="([^"]+)"',
+                text,
+                re.S,
+            )
+            if match:
+                found[desktop] = match.group(1)
+        if len(found) == len(DESKTOP_VERSION_PACKAGES):
+            break
+    return found
+
+
+def desktop_major(version: str) -> int:
+    """Поколение оболочки: 5 из "5.27.11", 1 из "4:5.27.11-1" и 0 из мусора.
+
+    Ведущая эпоха Debian (`4:`) отбрасывается -- она про порядок обновлений, а
+    не про версию программы, и приняв её за поколение, программа выбрала бы
+    несуществующую ветку.
+    """
+    text = (version or "").split(":")[-1]
+    digits = ""
+    for char in text:
+        if char.isdigit():
+            digits += char
+        else:
+            break
+    return int(digits) if digits else 0
+
+
 def _open_gz(path: str):
     import gzip
 
@@ -323,6 +422,7 @@ def _inspect_redhat(path: str, mountpoint: str) -> ImageInfo | None:
         release=release,
         architectures=(arch,) if arch else (),
         core_packages=_redhat_core_packages(mountpoint),
+        desktop_versions=_desktop_versions_from_rpm(mountpoint),
         label=name or _disk_info(mountpoint) or f"RedOS {release}".strip(),
         complete=complete,
         incomplete_reason=(

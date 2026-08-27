@@ -95,6 +95,18 @@ class DistributionResult:
     warnings: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True)
+class _DeployedImage:
+    """То немногое от образа, что нужно знать при развёртывании.
+
+    Полного ImageInfo здесь взять неоткуда — образ участвовал в сборке и мог
+    остаться на другой машине. Нужны же от него только версии оболочек,
+    поэтому они и едут в метаданных дистрибутива.
+    """
+
+    desktop_versions: dict
+
+
 class OSInstaller:
     def __init__(
         self,
@@ -108,6 +120,10 @@ class OSInstaller:
         self.luks_manager = luks_manager or LuksManager()
         self.runner = runner or CommandRunner()
         self._progress = _Progress(None)
+        #: Образ, из которого идёт этот прогон, или None. Нужен, чтобы выбрать
+        #: поколение графической оболочки: ограничения киоска у Plasma 5 и 6
+        #: разные, а по выпуску дистрибутива поколение не выводится.
+        self._image = None
         #: True once anything has been written to the medium. Read by the
         #: interface when a run fails, so it can say whether the stick's former
         #: contents are gone -- several failures (a mismatched image, a device
@@ -312,6 +328,7 @@ class OSInstaller:
 
         backend = get_backend(config.target_os)
         self._source_components = ("main",)
+        self._image = None
         self._source_core_packages = ()
         warnings = self._check_arch(backend, config)
         if not dry_run:
@@ -408,7 +425,7 @@ class OSInstaller:
         # /usr/local/sbin/poa-kiosk-apply, so a build without them dies at the
         # account-and-services step with "no such file", after the base system
         # and the whole desktop have already been installed.
-        for relative, (content, mode) in backend.scripted_files(config).items():
+        for relative, (content, mode) in backend.scripted_files(config, image=self._image).items():
             target = f"{root}/{relative}"
             run(["mkdir", "-p", target.rsplit("/", 1)[0]])
             self._write_file(target, content, plan, dry_run, confirm, mode=mode)
@@ -460,6 +477,7 @@ class OSInstaller:
             rootfs_bytes=rootfs_bytes,
             emulated=emulated,
             archive=archive_name,
+            desktop_versions=getattr(self._image, "desktop_versions", {}) or {},
         )
         metadata.has_bootloader = has_bootloader
 
@@ -498,6 +516,9 @@ class OSInstaller:
         metadata = distribution.read_metadata(directory)
         config = InstallConfig.from_dict(metadata.config)
         backend = get_backend(config.target_os)
+        # Поколение оболочки приехало вместе с дистрибутивом: образа здесь уже
+        # нет, а ограничения киоска у Plasma 5 и 6 разные.
+        self._image = _DeployedImage(metadata.desktop_versions or {})
         warnings = self._check_arch(backend, config)
         if not dry_run:
             unpacking = ["mount", "umount", "cp"] if distribution.is_squashfs(metadata.archive) else ["tar"]
@@ -663,7 +684,7 @@ class OSInstaller:
         run = lambda argv, **kw: self._run(argv, plan, dry_run, confirm_device, **kw)  # noqa: E731
 
         self._probe_uuids(layout, dry_run)
-        for relative, content in backend.config_files(config, layout).items():
+        for relative, content in backend.config_files(config, layout, image=self._image).items():
             target = f"{layout.mount_root}/{relative}"
             run(["mkdir", "-p", target.rsplit("/", 1)[0]])
             self._write_file(target, content, plan, dry_run, confirm_device)
@@ -975,6 +996,10 @@ class OSInstaller:
         # Kept for the install-time sources written into the chroot further
         # down, which need the components the image actually publishes.
         self._source_components = info.components
+        # Тем же образом определяется поколение графической оболочки: ограничения
+        # киоска у Plasma 5 и 6 разные, и выбор не того означает молча
+        # неприменённые ограничения, а не заметную ошибку.
+        self._image = info
         # The image's own idea of what its base system is, preferred over any
         # list written into this program -- see ImageInfo.core_packages.
         self._source_core_packages = info.core_packages
@@ -1081,7 +1106,7 @@ class OSInstaller:
         self._progress.step("Настройка устанавливаемой системы")
         self._probe_uuids(layout, dry_run)
 
-        for relative, content in backend.config_files(config, layout).items():
+        for relative, content in backend.config_files(config, layout, image=self._image).items():
             target = f"{layout.mount_root}/{relative}"
             run(["mkdir", "-p", target.rsplit("/", 1)[0]])
             self._write_file(target, content, plan, dry_run, confirm_device)
@@ -1089,7 +1114,7 @@ class OSInstaller:
         # Scripts and units, which carry a mode of their own. Written 0644 they
         # would be present, correct and inert -- the kiosk whitelist would
         # never be applied and the update service would never start.
-        for relative, (content, mode) in backend.scripted_files(config, layout).items():
+        for relative, (content, mode) in backend.scripted_files(config, layout, image=self._image).items():
             target = f"{layout.mount_root}/{relative}"
             run(["mkdir", "-p", target.rsplit("/", 1)[0]])
             self._write_file(target, content, plan, dry_run, confirm_device, mode=mode)
