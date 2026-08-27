@@ -113,6 +113,218 @@ def wants_wayland(config: InstallConfig) -> bool:
 # ----------------------------------------------------------------------
 # KDE: the Kiosk framework
 # ----------------------------------------------------------------------
+#: Что стоит за каждым разрешением из `allowed_settings`: модули KDE, которые
+#: его обслуживают. Имя слева -- назначение, а не модуль: программа, которая
+#: настраивает сеть, называется по-разному в разных средах.
+SETTINGS_MODULES = {
+    "network": ("kcm_networkmanagement",),
+    "sound": ("kcm_pulseaudio",),
+    "datetime": ("kcm_clock",),
+}
+
+#: Разделы «Параметров системы», нужные каждому разрешению.
+#:
+#: Их приходится называть отдельно от модулей: раздел -- это собственный файл
+#: в /usr/share/systemsettings/categories, и он показывается сам по себе, даже
+#: когда внутри не осталось ни одного модуля. Так и нашлись «Внешние
+#: носители»: раздел пустой, все модули под ним закрыты, а пользователь его
+#: всё равно видит. Запретами модулей раздел не убрать -- убирается только
+#: удалением его файла.
+SETTINGS_CATEGORIES = {
+    "network": ("settings-network", "settings-network-connectivity",
+                "settings-network-networksettings"),
+    "sound": ("settings-hardware", "settings-hardware-multimedia"),
+    "datetime": ("settings-personalization", "settings-personalization-regionalsettings"),
+}
+
+#: Корневой раздел: без него дерево не строится вовсе.
+SETTINGS_ROOT_CATEGORY = "settings-root-category"
+
+#: Стартовая страница «Параметров системы». Запретить её нельзя: приложение
+#: открывает именно её при запуске и, не найдя, разыменовывает пустой
+#: указатель. Наблюдалось на носителе: окно не появлялось вовсе, systemsettings
+#: падал в SettingsBase::changePlugin ещё до первой отрисовки.
+SETTINGS_LANDING_MODULE = "kcm_landingpage"
+
+
+def settings_modules_script(config: InstallConfig) -> str:
+    """Shell that writes the module refusals, computed on the target itself.
+
+    KDE has no whitelist for control modules -- only a refusal per module name
+    (verified against the Kiosk documentation). A list written here would
+    therefore have to name every module that must not open, and that set is a
+    property of the installed image, not of this program: RED OS 8 ships 62 of
+    them, another image ships a different 62. So the list is produced where the
+    modules actually are.
+
+    Nothing being allowed is a valid answer and the common one: then every
+    module is refused and the application is not offered anywhere.
+    """
+    allowed = set()
+    categories = set()
+    for purpose in config.kiosk.allowed_settings:
+        allowed.update(SETTINGS_MODULES.get(purpose, ()))
+        categories.update(SETTINGS_CATEGORIES.get(purpose, ()))
+    if allowed:
+        allowed.add(SETTINGS_LANDING_MODULE)
+        categories.add(SETTINGS_ROOT_CATEGORY)
+    keep = " ".join(sorted(allowed))
+    keep_categories = " ".join(sorted(categories))
+    return f"""
+# Модули «Параметров системы»: разрешено ровно названное администратором.
+#
+# Список запретов считается здесь, а не в программе: набор модулей зависит от
+# образа. Перечисляются установленные, и каждый, кто не разрешён, получает
+# отказ. Секция [$i] делает записи неизменяемыми.
+KEEP_MODULES="{keep}"
+KEEP_CATEGORIES="{keep_categories}"
+
+is_kept() {{
+    for m in $KEEP_MODULES; do
+        [ "$m" = "$1" ] && return 0
+    done
+    return 1
+}}
+
+is_kept_category() {{
+    for c in $KEEP_CATEGORIES; do
+        [ "$c" = "$1" ] && return 0
+    done
+    return 1
+}}
+
+# Два признака, потому что одного не хватает ни одному.
+#
+# По имени `kcm*` не находятся модули, названные иначе: корзина -- kcmtrash,
+# прокси -- proxy, общие ресурсы -- smb. По строке `KCModule` не находятся
+# те, чьи метаданные в Plasma 5 переехали внутрь плагина (.so), а .desktop
+# остался лишь запускалкой для kcmshell -- таких в РЕД ОС 8 большинство: 55
+# из 62. Замер на носителе: одна маска ловит 55, другая 8, и ни одна не
+# ловит всё.
+modules=""
+for f in /usr/share/applications/*.desktop /usr/share/kservices5/*.desktop; do
+    [ -e "$f" ] || continue
+    n=${{f##*/}}
+    n=${{n%.desktop}}
+    case "$n" in
+        kcm*) ;;
+        *) grep -q "KCModule" "$f" 2>/dev/null || continue ;;
+    esac
+    modules="$modules $n"
+done
+
+# Записи неразрешённых модулей удаляются, а не только запрещаются.
+#
+# Запрет через [KDE Control Module Restrictions] эта версия не применяет:
+# проверено на носителе -- 59 модулей были перечислены с `=false`, и
+# «Пользователи», «Уведомления», «Обратная связь» открывались как ни в чём
+# не бывало. То же поведение описано в KDE bug 509984. Запреты ниже всё
+# равно пишутся -- там, где они работают, это второй рубеж, -- но полагаться
+# на них нельзя.
+removed=0
+for f in /usr/share/applications/*.desktop /usr/share/kservices5/*.desktop; do
+    [ -e "$f" ] || continue
+    n=${{f##*/}}
+    n=${{n%.desktop}}
+    case "$n" in
+        kcm*) ;;
+        *) grep -q "KCModule" "$f" 2>/dev/null || continue ;;
+    esac
+    is_kept "$n" && continue
+    rm -f "$f"
+    removed=$((removed + 1))
+done
+echo "poa-kiosk: записей модулей настроек удалено: $removed"
+
+restrictions=/etc/xdg/kdeglobals
+denied=0
+{{
+    echo ""
+    echo "[KDE Control Module Restrictions][\\$i]"
+    for m in $modules; do
+        is_kept "$m" && continue
+        echo "$m.desktop=false"
+    done
+}} >> "$restrictions"
+for m in $modules; do
+    is_kept "$m" || denied=$((denied + 1))
+done
+echo "poa-kiosk: модулей настроек закрыто: $denied, оставлено: ${{KEEP_MODULES:-нет}}"
+
+# Разделы. Запрет модулей раздел не убирает: он показывается и пустым.
+dropped=0
+for f in /usr/share/systemsettings/categories/*.desktop; do
+    [ -e "$f" ] || continue
+    n=${{f##*/}}
+    is_kept_category "${{n%.desktop}}" && continue
+    rm -f "$f"
+    dropped=$((dropped + 1))
+done
+echo "poa-kiosk: разделов настроек убрано: $dropped, оставлено: ${{KEEP_CATEGORIES:-нет}}"
+"""
+
+
+#: Плазмоиды, которые в киоске не должны существовать. Не «скрыть», а снести:
+#: системный лоток Plasma собирает свой состав из установленных плазмоидов, и
+#: вычищенный из конфигурации апплет возвращается сам при следующем входе.
+#: Проверено на носителе: «Диски и устройства» вернулись после того, как их
+#: убрали из extraItems/knownItems, и показывали служебные разделы носителя
+#: вместе с кнопкой «Безопасно извлечь» напротив системного тома.
+REMOVED_PLASMOIDS = ("org.kde.plasma.devicenotifier",)
+
+
+def plasma_layout_script(config: InstallConfig) -> str:
+    """Shell that turns the desktop into the one this kiosk promises.
+
+    Three things, all of which have to happen on the target because they touch
+    the account's own Plasma configuration:
+
+    * the panel keeps launchers for exactly the allowed applications;
+    * the widgets are locked (`immutability=2`), so the user cannot add any;
+    * the application launcher's favourites are the allowed applications, and
+      not the distribution's default set -- which on RED OS put System Settings
+      one click away from a user who is not supposed to reach it.
+    """
+    if desktop_of(config) != DESKTOP_KDE:
+        return ""
+
+    apps = sorted(set(config.kiosk.allowed_apps))
+    if config.kiosk.allowed_settings:
+        # Разрешив настройки, администратор должен дать чем до них дойти.
+        apps.append("systemsettings")
+    launchers = ",".join(f"applications:{a}.desktop" for a in apps)
+    favourites = ",".join(f"{a}.desktop" for a in apps)
+    return f"""
+# Панель, избранное и запертые виджеты.
+APPLETSRC_LAUNCHERS="{launchers}"
+FAVOURITES="{favourites}"
+
+for home in /etc/skel /home/*; do
+    [ -d "$home" ] || continue
+    f="$home/.config/plasma-org.kde.plasma.desktop-appletsrc"
+    [ -f "$f" ] || continue
+    sed -i \
+        -e "s|^launchers=.*|launchers=$APPLETSRC_LAUNCHERS|" \
+        -e "s|^immutability=1$|immutability=2|" \
+        "$f"
+    stats="$home/.config/kactivitymanagerd-statsrc"
+    [ -f "$stats" ] && sed -i "s|^ordering=.*|ordering=$FAVOURITES|" "$stats"
+    # База избранного KAstats хранит прежний набор помимо ordering.
+    rm -rf "$home/.local/share/kactivitymanagerd/resources"
+    owner=${{home##*/}}
+    [ "$home" != "/etc/skel" ] && chown -R "$owner:$owner" "$home/.config" 2>/dev/null
+done
+echo "poa-kiosk: панель и избранное: $APPLETSRC_LAUNCHERS"
+
+# Плазмоиды, которых в киоске быть не должно.
+for plasmoid in {" ".join(REMOVED_PLASMOIDS)}; do
+    rm -rf "/usr/share/plasma/plasmoids/$plasmoid"
+    rm -f "/usr/share/kservices5/plasma-applet-$plasmoid.desktop"
+    echo "poa-kiosk: плазмоид удалён: $plasmoid"
+done
+"""
+
+
 def _run_desktop_files_lines(kiosk) -> list[str]:
     """Whether to forbid executing .desktop files, and why.
 
@@ -188,7 +400,21 @@ def kdeglobals(config: InstallConfig) -> str:
         "action/kwin_rules=false",
         "# Справочная система: в киоске она ведёт наружу, к произвольным URL.",
         "action/help_contents=false",
-        "action/help_report_bug=false",
+        # action/help_report_bug здесь НЕТ, и это не забывчивость.
+        #
+        # KStandardAction спрашивает KAuthorized и на запрет возвращает
+        # nullptr, а не отключённое действие. Приложение, которое результат не
+        # проверяет, разыменовывает пустой указатель. «Параметры системы» РЕД
+        # ОС падают именно так: segfault в SettingsBase::changePlugin ещё до
+        # первой отрисовки, то есть окно не появляется вовсе. Найдено
+        # перебором на носителе -- убирали ключи группы по одному, и живым
+        # приложение становилось ровно без этого.
+        #
+        # Общее правило, которое из этого следует: запрет стандартного
+        # действия KDE может не ограничить приложение, а уронить его. Каждый
+        # такой ключ проверяется живым запуском, а не добавляется «на всякий
+        # случай» -- польза от спрятанного пункта «Сообщить об ошибке» не
+        # стоит неработающего приложения.
         "action/switch_application_language=false",
         "# Смена пользователя: в системе он один, и пароля у него нет.",
         "action/switch_user=false",
@@ -202,14 +428,10 @@ def kdeglobals(config: InstallConfig) -> str:
         "action/lock_screen=false",
         f"logout={'true' if kiosk.allow_shutdown else 'false'}",
         "",
-        "[KDE Control Module Restrictions][$i]",
-        "# Даже если центр настроек как-то запустится, модули в нём закрыты.",
-        "kde-userconfig.desktop=false",
-        "kcm_users.desktop=false",
-        "kcm_autostart.desktop=false",
-        "kcm_kded.desktop=false",
-        "kcm_splashscreen.desktop=false",
-        "kcm_desktoptheme.desktop=false",
+        "# Модули «Параметров системы» закрываются не здесь: их набор зависит",
+        "# от образа, поэтому список запретов считается на целевой системе —",
+        "# см. settings_modules_script(). Здесь остался бы список из шести",
+        "# имён, выбранных наугад, при том что модулей в РЕД ОС 8 — 62.",
         "",
     ]
 
@@ -793,6 +1015,8 @@ if [ "$DESKTOP" = "mate" ]; then
         echo "poa-kiosk: dconf не установлен, настройки рабочей среды не применены" >&2
     fi
 else
+{settings_modules_script(config)}
+{plasma_layout_script(config)}
     # KDE читает ограничения из /etc/xdg/kdeglobals при запуске приложения,
     # компилировать нечего. Пересобирается лишь кэш меню, чтобы скрытые
     # записи исчезли из него сразу, а не после первого входа.

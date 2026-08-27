@@ -990,6 +990,96 @@ def test_desktop_files_may_be_executed_when_removable_media_are_refused():
     assert "run_desktop_files=false" not in usable
 
 
+def test_the_bug_report_action_is_not_restricted():
+    """Regression: «Параметры системы» падали, не показав окна.
+
+    KStandardAction спрашивает KAuthorized и на запрет возвращает nullptr, а
+    не отключённое действие; приложение, которое это не проверяет, падает.
+    Найдено перебором на носителе: ключи группы убирали по одному, и живым
+    systemsettings становился ровно без action/help_report_bug.
+    """
+    text = kiosk.kdeglobals(make_kde_config())
+
+    assert "help_report_bug" not in text
+    # Остальные ограничения группы остаются: проверено тем же перебором --
+    # без каждого из них падение сохранялось.
+    assert "shell_access=false" in text
+    assert "action/help_contents=false" in text
+
+
+def test_settings_modules_are_computed_on_the_target_not_listed_here():
+    """KDE не умеет whitelist модулей -- только отказ поимённо, а набор
+    модулей зависит от образа (в РЕД ОС 8 их 62). Значит список отказов
+    строится там, где модули лежат."""
+    script = kiosk.settings_modules_script(
+        make_kiosk_config(desktop_environment="kde",
+                          allowed_settings=["network", "datetime"])
+    )
+
+    assert "kcm_networkmanagement" in script
+    assert "kcm_clock" in script
+    assert "kcm_pulseaudio" not in script, "звук не разрешали"
+    # Стартовая страница обязана остаться: без неё приложение падает в
+    # SettingsBase::changePlugin, не дойдя до первой отрисовки.
+    assert kiosk.SETTINGS_LANDING_MODULE in script
+    # Перечисление идёт по установленным файлам, а не по списку из кода, и по
+    # признаку модуля, а не по имени: «Внешние носители» зовутся
+    # device_automounter_kcm и маску kcm* не проходят.
+    assert 'grep -q "KCModule"' in script
+    assert "/usr/share/applications/*.desktop" in script
+    assert "[KDE Control Module Restrictions]" in script
+
+
+def test_nothing_is_allowed_by_default_and_the_landing_page_stays_shut():
+    script = kiosk.settings_modules_script(make_kiosk_config(desktop_environment="kde"))
+
+    assert 'KEEP_MODULES=""' in script
+    assert kiosk.SETTINGS_LANDING_MODULE not in script
+
+
+def test_the_panel_carries_the_allowed_applications_and_locks_itself():
+    """Regression: панель приезжала с ярлыком «Параметры системы», а
+    «Избранное» меню -- с их же плиткой. Ни того, ни другого администратор не
+    разрешал."""
+    script = kiosk.plasma_layout_script(
+        make_kiosk_config(desktop_environment="kde", allowed_apps=["mate-calc", "atril"])
+    )
+
+    assert ('APPLETSRC_LAUNCHERS="applications:atril.desktop,'
+            'applications:mate-calc.desktop"') in script
+    assert "systemsettings" not in script, "настройки не разрешены -- нечего выносить"
+    assert "ordering=" in script, "иначе в избранном останется набор дистрибутива"
+    # immutability=2 -- SystemImmutable: пользователь не разблокирует виджеты.
+    assert "immutability=2" in script
+    assert "/etc/skel" in script
+
+
+def test_settings_reach_the_panel_only_when_something_is_allowed():
+    with_settings = kiosk.plasma_layout_script(
+        make_kiosk_config(desktop_environment="kde", allowed_apps=["mate-calc"],
+                          allowed_settings=["network"])
+    )
+    assert "applications:systemsettings.desktop" in with_settings
+
+
+def test_the_device_notifier_is_removed_rather_than_hidden():
+    """Regression, найдено пользователем в живом сеансе: апплет «Диски и
+    устройства» вернулся после вычистки из конфигурации и показывал служебные
+    разделы носителя с кнопкой «Безопасно извлечь» напротив системного тома.
+    Системный лоток собирает состав из установленных плазмоидов, поэтому
+    убирать надо сам плазмоид."""
+    script = kiosk.plasma_layout_script(
+        make_kiosk_config(desktop_environment="kde", allowed_apps=["mate-calc"])
+    )
+
+    assert "org.kde.plasma.devicenotifier" in script
+    assert "rm -rf \"/usr/share/plasma/plasmoids/$plasmoid\"" in script
+
+
+def test_the_plasma_layout_is_kde_only():
+    assert kiosk.plasma_layout_script(make_kiosk_config(allowed_apps=["mate-calc"])) == ""
+
+
 def test_no_desktop_shortcuts_are_promised_where_they_cannot_launch():
     """Ярлык, который не запускается, хуже отсутствующего."""
     blocked = kiosk.apply_script(

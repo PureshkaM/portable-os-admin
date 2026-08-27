@@ -282,6 +282,7 @@ class OSInstaller:
         destination: str,
         *,
         image_path: str = "",
+        extra_packages: "list[str] | None" = None,
         dry_run: bool = True,
         on_step: "Callable[[int, int, str], None] | None" = None,
     ) -> "DistributionResult":
@@ -298,7 +299,11 @@ class OSInstaller:
         keys, no passphrase and no recovery data -- see distribution.py.
         """
         self.session.require_open()
-        self._progress = _Progress(on_step, expected=_Progress.BUILD_STAGES)
+        self._extra_packages = self._check_extra_packages(extra_packages or [], config)
+        self._progress = _Progress(
+            on_step,
+            expected=_Progress.BUILD_STAGES + (1 if self._extra_packages else 0),
+        )
 
         if config.validation_status != "valid":
             raise ConfigValidationError(
@@ -756,6 +761,8 @@ class OSInstaller:
             self._progress.step("Установка прошивок устройств")
             run(firmware_cmd, timeout=BOOTSTRAP_TIMEOUT)
 
+        self._install_extra_packages(root, backend, run, plan, dry_run, confirm_device)
+
         self._progress.step("Создание учётной записи и служб")
         for argv in backend.chroot_setup_commands(root, config):
             run(argv, timeout=BOOTSTRAP_TIMEOUT)
@@ -769,6 +776,67 @@ class OSInstaller:
             self._progress.step("Расстановка меток безопасности")
             for argv in relabel:
                 run(argv, timeout=BOOTSTRAP_TIMEOUT)
+
+    #: Расширение файла пакета для каждого семейства. Проверяется до начала
+    #: работы: узнать через сорок минут, что .deb положили в сборку РЕД ОС, --
+    #: ровно тот способ терять время, от которого эта программа и уходит.
+    PACKAGE_SUFFIX = {"debian": ".deb", "astra": ".deb", "redos": ".rpm"}
+
+    def _check_extra_packages(self, paths: list[str], config: InstallConfig) -> list[str]:
+        """Checks the supplied package files before anything long begins."""
+        if not paths:
+            return []
+
+        suffix = self.PACKAGE_SUFFIX.get(config.target_os)
+        problems = []
+        for path in paths:
+            if not os.path.isfile(path):
+                problems.append(f"файла нет: {path}")
+            elif suffix and not path.lower().endswith(suffix):
+                problems.append(
+                    f"{os.path.basename(path)}: для {config.target_os} нужен {suffix}"
+                )
+        if problems:
+            raise InstallError("; ".join(problems))
+        return list(paths)
+
+    def _install_extra_packages(self, root, backend, run, plan, dry_run, confirm_device) -> None:
+        """Installs the package files the administrator supplied themselves.
+
+        The closed-network case this tool exists for is also the case where the
+        needed program is not in any repository: a VPN client, a remote-desktop
+        client, an in-house application. Without this the administrator builds
+        the medium and then installs by hand on each one.
+
+        Done here, at build time, so dependencies resolve against the image
+        once and every medium made from this distribution carries the same set.
+
+        The files are copied *inside* the tree before installing. A path that
+        exists only outside means nothing to a package manager working in the
+        target -- this project has already been caught by that once, with an
+        image whose file:// URL was valid outside the chroot and absent inside.
+        """
+        if not self._extra_packages:
+            return
+
+        self._progress.step("Установка пакетов администратора")
+        target_dir = f"{root}/{backend.EXTRA_PACKAGE_DIR}"
+        run(["mkdir", "-p", target_dir])
+        names = []
+        for path in self._extra_packages:
+            name = os.path.basename(path)
+            run(["cp", path, f"{target_dir}/{name}"])
+            names.append(name)
+
+        argv = backend.local_package_install_command(root, names)
+        if argv is None:
+            raise InstallError(
+                f"семейство {backend.name} не умеет ставить принесённые пакеты"
+            )
+        run(argv, timeout=BOOTSTRAP_TIMEOUT)
+        # Файлы не должны уехать на носитель: они уже установлены, а место на
+        # переносном носителе -- не то, чем можно разбрасываться.
+        run(["rm", "-rf", target_dir])
 
     def _mount_pseudo_filesystems(self, root, state, plan, dry_run, confirm_device) -> None:
         """/proc, /sys, /dev inside the target.

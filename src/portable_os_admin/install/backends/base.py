@@ -308,6 +308,36 @@ class InstallBackend(ABC):
         """
         return None
 
+    #: Куда внутри собираемой системы кладутся принесённые пакеты. Внутрь, а не
+    #: рядом: путь должен означать одно и то же по обе стороны chroot -- на этом
+    #: уже обжигались с образом, чей file://-адрес снаружи существовал, а
+    #: внутри нет.
+    EXTRA_PACKAGE_DIR = "var/tmp/poa-extra-packages"
+
+    def local_package_install_command(self, mount_root: str,
+                                      filenames: list[str]) -> list[str] | None:
+        """argv installing administrator-supplied package files into the target.
+
+        Exists because a closed network is the normal case for this tool, and
+        what an organisation needs there -- a VPN client, a remote-desktop
+        client, an accounting terminal -- is exactly what no distribution
+        repository carries. Without this the administrator's only option is to
+        finish the medium and then install by hand on every one of them.
+
+        Installed at *distribution build* time rather than at deployment:
+        dependencies are resolved against the image, once, and every medium
+        made from that distribution then holds the same set. Doing it per
+        medium would resolve dependencies against whatever is available at that
+        moment and make two media from one distribution differ.
+
+        Resolving dependencies is the whole point, so this must be the package
+        manager's install command and not `dpkg -i`/`rpm -i`: those place the
+        file and leave the dependency unmet, which on Debian wedges apt for
+        everything that follows (this project has already lost a 105-minute run
+        to exactly that).
+        """
+        return None
+
     def firmware_install_command(self, mount_root: str, image_mountpoint: str) -> list[str] | None:
         """Installs device firmware carried by the image but absent from its index.
 

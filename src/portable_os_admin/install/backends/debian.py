@@ -371,6 +371,28 @@ class DebianInstallBackend(InstallBackend):
         )
         return self.chroot(mount_root, "sh", "-c", script)
 
+    def local_package_install_command(self, mount_root: str,
+                                      filenames: list[str]) -> list[str] | None:
+        """`apt-get install ./file.deb` -- deliberately apt and not dpkg.
+
+        apt reads the .deb's dependencies and pulls them from the sources
+        configured in the target (the installation image), which is what makes
+        a carried-in package usable at all. The leading `./` is required: apt
+        treats a bare name as a package name from the archive.
+        """
+        if not filenames:
+            return None
+        paths = " ".join(
+            shlex.quote(f"/{self.EXTRA_PACKAGE_DIR}/{name}") for name in filenames
+        )
+        script = (
+            "set -e; "
+            "export DEBIAN_FRONTEND=noninteractive; "
+            'if [ -x /usr/bin/eatmydata ]; then run="eatmydata"; else run=""; fi; '
+            f"exec $run apt-get install -y --no-install-recommends {paths}"
+        )
+        return self.chroot(mount_root, "sh", "-c", script)
+
     def package_refresh_command(self, mount_root: str) -> list[str]:
         return self.chroot(mount_root, "apt-get", "update")
 

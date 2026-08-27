@@ -400,6 +400,22 @@ class RedOSInstallBackend(InstallBackend):
             return None
         return ["dnf", "--installroot", mount_root, "-y", *self._repo_arguments(), "install", *packages]
 
+    def local_package_install_command(self, mount_root: str,
+                                      filenames: list[str]) -> list[str] | None:
+        """`dnf install /path/to/file.rpm` -- dnf, а не rpm -i.
+
+        dnf читает зависимости принесённого пакета и доставляет их из образа;
+        `rpm -i` на первой же недостающей зависимости откажет, а с --nodeps
+        поставит нерабочее. Путь указывается внутри целевой системы: dnf
+        запускается снаружи с --installroot, поэтому файл должен лежать под
+        ним и быть виден по тому же имени.
+        """
+        if not filenames:
+            return None
+        paths = [f"{mount_root}/{self.EXTRA_PACKAGE_DIR}/{name}" for name in filenames]
+        return ["dnf", "--installroot", mount_root, "-y", *self._repo_arguments(),
+                "install", *paths]
+
     #: Пакеты, которые убираются из состава, даже если их назвал сам образ.
     #:
     #: dracut-config-rescue кладёт на носитель второй initramfs — замер на

@@ -75,6 +75,7 @@ FIELD_LABELS = {
     "kiosk.desktop_environment": "Рабочая среда",
     "kiosk.session_type": "Графический протокол",
     "kiosk.allowed_apps": "Разрешённые приложения",
+    "kiosk.allowed_settings": "Что можно настраивать",
     "kiosk.autostart_app": "Приложение автозапуска",
     "kiosk.screen_blank_minutes": "Гашение экрана, мин",
     "kiosk.allow_shutdown": "Выключение машины пользователем",
@@ -233,6 +234,21 @@ class KioskConfig:
     #: Desktop-entry names the user may launch. Everything else is hidden from
     #: the menu and the desktop.
     allowed_apps: list[str] = field(default_factory=list)
+    #: Settings the user may change: "network", "sound", "datetime".
+    #:
+    #: A kiosk still has to be usable by whoever sits in front of it -- joining
+    #: a wireless network, unmuting the speakers and correcting the clock are
+    #: not administration, they are the difference between a working terminal
+    #: and a call to the help desk. Everything else in System Settings stays
+    #: shut, disks and devices first among them.
+    #:
+    #: Named by purpose rather than by module, because the module that serves a
+    #: purpose differs between desktops: KDE's network module is
+    #: `kcm_networkmanagement`, MATE's is a different program entirely. The
+    #: installed set is read off the target rather than listed here, so an
+    #: image carrying a different selection of modules still gets a complete
+    #: list of refusals (see kiosk.settings_modules_script).
+    allowed_settings: list[str] = field(default_factory=list)
     #: Desktop entry started automatically when the session opens. Empty means
     #: the user gets the (restricted) desktop itself.
     autostart_app: str = ""
