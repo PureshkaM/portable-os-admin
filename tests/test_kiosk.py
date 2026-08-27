@@ -1131,3 +1131,49 @@ def test_the_program_list_is_not_switched_off_wholesale():
     assert "enable-program-list=false" not in keyfile
     # The panel is still locked against being rearranged.
     assert "locked-down=true" in keyfile
+
+
+# ----------------------------------------------------------------------
+# Разделение по средам
+# ----------------------------------------------------------------------
+def test_each_environment_gets_only_its_own_fragment():
+    """Ради этого модули и разнесены.
+
+    До разделения скрипт нёс обе ветки и выбирал по `$DESKTOP` уже на целевой
+    системе. Из шести дефектов, найденных живыми прогонами, четыре были одного
+    вида: правило написано для одной среды и молча применено к другой. Теперь
+    ветка выбирается при генерации, и чужого куска в скрипте просто нет.
+    """
+    mate = kiosk.apply_script(make_kiosk_config(allowed_apps=["mate-calc"]))
+    assert "dconf update" in mate
+    assert "kbuildsycoca" not in mate
+    assert "$DESKTOP" != "", "переменная осталась для прочих проверок"
+
+    kde = kiosk.apply_script(
+        make_kiosk_config(allowed_apps=["mate-calc"], desktop_environment="kde")
+    )
+    assert "kbuildsycoca" in kde
+    assert "dconf update" not in kde
+
+
+def test_the_environment_answers_whether_shortcuts_work():
+    """Причина у каждой среды своя, поэтому и ответ даёт она сама."""
+    from portable_os_admin.install.kiosk.environments import base
+
+    kde = base.for_config(make_kiosk_config(desktop_environment="kde",
+                                            allow_removable_media=True))
+    assert not kde.desktop_shortcuts_work(
+        make_kiosk_config(desktop_environment="kde", allow_removable_media=True)
+    )
+    mate = base.for_config(make_kiosk_config(allow_removable_media=True))
+    assert mate.desktop_shortcuts_work(make_kiosk_config(allow_removable_media=True))
+
+
+def test_the_public_names_survived_the_split():
+    """Пакет заменил модуль, и всё, чем пользуются снаружи, осталось на месте."""
+    for name in ("config_files", "chroot_commands", "apply_script", "kdeglobals",
+                 "dconf_keyfile", "polkit_rules", "logind_conf", "session_entry",
+                 "hardening_fstab_rows", "settings_modules_script",
+                 "plasma_layout_script", "kscreenlockerrc", "powermanagement_profiles",
+                 "HARDENED_OPTS", "EXCHANGE_DIR", "DESKTOP_KDE", "SESSION_NAME"):
+        assert hasattr(kiosk, name), name
