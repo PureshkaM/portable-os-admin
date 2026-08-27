@@ -1030,6 +1030,26 @@ def test_settings_modules_are_computed_on_the_target_not_listed_here():
     assert "[KDE Control Module Restrictions]" in script
 
 
+def test_the_modules_themselves_are_removed_not_just_their_entries():
+    """Regression: удаления .desktop оказалось мало.
+
+    «Параметры системы» Plasma 5 берут список из плагинов, чьи метаданные
+    лежат внутри .so. Замер на носителе: после удаления 59 записей
+    «Пользователи», «Уведомления» и «Учётные записи в Интернете» остались на
+    месте; после удаления 62 плагинов в списке осталось два раздела вместо
+    восьми.
+    """
+    script = kiosk.settings_modules_script(
+        make_kiosk_config(desktop_environment="kde", allowed_settings=["network"])
+    )
+
+    assert "plugins/plasma/kcms" in script
+    assert "plugins_removed" in script
+    # Разрешённый модуль переживает чистку -- иначе «Параметры» откроются
+    # пустыми, а администратор думает, что сеть настраивать можно.
+    assert 'is_kept "${n%.so}" && continue' in script
+
+
 def test_nothing_is_allowed_by_default_and_the_landing_page_stays_shut():
     script = kiosk.settings_modules_script(make_kiosk_config(desktop_environment="kde"))
 

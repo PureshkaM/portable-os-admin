@@ -570,3 +570,21 @@ def test_service_volumes_get_more_than_the_default_wait():
         for line in files["etc/crypttab"].splitlines():
             if "-logs" in line or "-exch" in line:
                 assert option in line, f"{family}: том службы в crypttab ждёт по умолчанию: {line}"
+
+
+def test_graphical_boot_parameter_matches_the_family():
+    """Regression: `splash` писался обоим семействам, а RHEL слушает `rhgb`.
+
+    Ценой была не заставка: без графического plymouth запрос пароля LUKS
+    остаётся текстовым и **без эха**, то есть человек за носителем не видит,
+    набралось ли хоть что-нибудь.
+    """
+    for target_os, expected in (("debian", "splash"), ("astra", "splash"), ("redos", "rhgb")):
+        config = InstallConfig.create_default("stick", target_os)
+        config.boot.quiet = True
+        cmdline = get_backend(target_os).kernel_cmdline(config)
+        assert f"quiet {expected}" in cmdline, target_os
+
+    config = InstallConfig.create_default("stick", "redos")
+    config.boot.quiet = False
+    assert "rhgb" not in get_backend("redos").kernel_cmdline(config)

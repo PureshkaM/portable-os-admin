@@ -236,6 +236,26 @@ for f in /usr/share/applications/*.desktop /usr/share/kservices5/*.desktop; do
 done
 echo "poa-kiosk: записей модулей настроек удалено: $removed"
 
+# Сами модули -- плагины, а не записи.
+#
+# Удаления .desktop мало: «Параметры системы» Plasma 5 берут список из
+# плагинов, чьи метаданные лежат внутри .so. Проверено на носителе -- после
+# удаления 59 записей «Пользователи», «Уведомления» и «Учётные записи в
+# Интернете» остались на месте, потому что читаются отсюда.
+plugins_removed=0
+for d in /usr/lib64/qt5/plugins/plasma/kcms /usr/lib64/qt5/plugins/kcms \
+         /usr/lib/qt5/plugins/plasma/kcms /usr/lib/qt5/plugins/kcms \
+         /usr/lib/*/qt5/plugins/plasma/kcms /usr/lib/*/qt5/plugins/kcms; do
+    [ -d "$d" ] || continue
+    for so in $(find "$d" -name '*.so' 2>/dev/null); do
+        n=${{so##*/}}
+        is_kept "${{n%.so}}" && continue
+        rm -f "$so"
+        plugins_removed=$((plugins_removed + 1))
+    done
+done
+echo "poa-kiosk: плагинов модулей настроек удалено: $plugins_removed"
+
 restrictions=/etc/xdg/kdeglobals
 denied=0
 {{

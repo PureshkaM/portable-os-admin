@@ -448,8 +448,19 @@ class InstallBackend(ABC):
         if config.boot.kernel_parameters.strip():
             parts.append(config.boot.kernel_parameters.strip())
         if config.boot.quiet:
-            parts.append("quiet splash")
+            parts.append(f"quiet {self.GRAPHICAL_BOOT_PARAMETER}")
         return " ".join(parts)
+
+    #: Параметр, включающий графическую заставку загрузки. Он же решает, как
+    #: выглядит запрос пароля LUKS: с ним plymouth рисует поле и показывает
+    #: точки по мере ввода, без него запрос остаётся текстовым и **вовсе без
+    #: эха** -- человек за носителем не видит, набралось ли хоть что-то.
+    #:
+    #: Имя параметра у семейств разное, и это не мелочь: `splash` -- Debian,
+    #: RHEL-семейство слушает `rhgb`. Здесь стояло `quiet splash` для обоих,
+    #: поэтому на РЕД ОС графическая загрузка не включалась никогда, а вместе
+    #: с ней не включался и видимый ввод пароля.
+    GRAPHICAL_BOOT_PARAMETER = "splash"
 
     #: Строки `/etc/default/grub`, специфичные для семейства.
     GRUB_EXTRA_DEFAULTS: tuple[str, ...] = ()

@@ -51,6 +51,8 @@ class RedOSInstallBackend(InstallBackend):
     EXTRA_TOOLS = ("dnf",)
     firewall_service = "firewalld"
     bootloader_comes_from_packages = True
+    #: RHEL-семейство слушает `rhgb`, а не `splash`.
+    GRAPHICAL_BOOT_PARAMETER = "rhgb"
 
     ARCH_NAMES = {
         "x86_64": "x86_64",
