@@ -38,6 +38,7 @@ from . import distribution
 from .devices import BlockDevice, check_install_eligible
 from .disk import DiskManager, MediaLayout, build_media_layout, plan_partitions
 from .image_source import MountedImage, inspect_mounted
+from . import machine_binding
 from .luks import LuksManager
 from .emulation import probe as probe_emulation
 from .tooling import check_tools_available, resolve_argv
@@ -124,6 +125,11 @@ class OSInstaller:
         #: поколение графической оболочки: ограничения киоска у Plasma 5 и 6
         #: разные, а по выпуску дистрибутива поколение не выводится.
         self._image = None
+        #: Выданные коды восстановления этого прогона: (слот, код, соль).
+        #: Заполняется при создании keyslot'ов и читается там, где собираются
+        #: записи для контейнера администратора, -- иначе список пришлось бы
+        #: протаскивать через три возврата подряд.
+        self._recovery_issued: list = []
         #: True once anything has been written to the medium. Read by the
         #: interface when a run fails, so it can say whether the stick's former
         #: contents are gone -- several failures (a mismatched image, a device
@@ -270,21 +276,25 @@ class OSInstaller:
             logs_luks_uuid=layout.logs_luks_uuid,
             exchange_luks_uuid=layout.exchange_luks_uuid,
         )
-        recovery_record = RecoveryRecord(
-            media_id=media_id,
-            slot=RECOVERY_KEYSLOT,
-            code=recovery_code,
-            salt_b64=base64.b64encode(recovery_salt).decode("ascii"),
-        )
+        recovery_records = [
+            RecoveryRecord(
+                media_id=media_id,
+                slot=slot,
+                code=code,
+                salt_b64=base64.b64encode(salt).decode("ascii"),
+            )
+            for slot, code, salt in self._recovery_issued
+        ]
 
         # "Установка.Контейнер.Сохранение" -- caller still owns flushing the
         # container to disk via ContainerManager.save().
         self.session.container.add_media_record(media_record)
-        self.session.container.add_recovery_record(recovery_record)
+        for record in recovery_records:
+            self.session.container.add_recovery_record(record)
 
         return InstallResult(
             media_record=media_record,
-            recovery_record=recovery_record,
+            recovery_record=recovery_records[0],
             plan=plan,
             warnings=warnings,
         )
@@ -574,18 +584,22 @@ class OSInstaller:
             logs_luks_uuid=layout.logs_luks_uuid,
             exchange_luks_uuid=layout.exchange_luks_uuid,
         )
-        recovery_record = RecoveryRecord(
-            media_id=media_id,
-            slot=RECOVERY_KEYSLOT,
-            code=recovery_code,
-            salt_b64=base64.b64encode(recovery_salt).decode("ascii"),
-        )
+        recovery_records = [
+            RecoveryRecord(
+                media_id=media_id,
+                slot=slot,
+                code=code,
+                salt_b64=base64.b64encode(salt).decode("ascii"),
+            )
+            for slot, code, salt in self._recovery_issued
+        ]
         self.session.container.add_media_record(media_record)
-        self.session.container.add_recovery_record(recovery_record)
+        for record in recovery_records:
+            self.session.container.add_recovery_record(record)
 
         return InstallResult(
             media_record=media_record,
-            recovery_record=recovery_record,
+            recovery_record=recovery_records[0],
             plan=plan,
             warnings=warnings,
         )
@@ -1302,19 +1316,39 @@ class OSInstaller:
             plan=plan,
         )
 
-        self._progress.step("Создание ключа восстановления")
-        recovery_code = crypto.generate_recovery_code()
-        recovery_salt = crypto.new_salt()
-        recovery_passphrase = crypto.derive_recovery_passphrase(recovery_code, recovery_salt)
-        self.luks_manager.add_keyslot(
-            layout.system_partition,
-            user_passphrase,
-            recovery_passphrase,
-            slot=RECOVERY_KEYSLOT,
-            dry_run=dry_run,
-            confirm_device=confirm_device,
-            plan=plan,
-        )
+        # Коды восстановления: по одному на каждый оставшийся keyslot.
+        #
+        # Не один и не пять: код расходуется безвозвратно и тратится теперь на
+        # два разных события -- забытый пароль и очистку списка машин. Чем
+        # меньше машин разрешил администратор, тем больше кодов помещается, и
+        # наоборот; заголовок LUKS2 отдаётся под это целиком.
+        #
+        # Цена честная и заметная: каждый keyslot -- отдельный расчёт argon2id,
+        # замерено 8,4 секунды на слот, то есть около трёх с половиной минут на
+        # носитель. Это плата за то, что пользователь не поедет в офис.
+        slots = machine_binding.recovery_keyslots(config)
+        self._progress.step(f"Создание ключей восстановления ({len(slots)})")
+        recovery_codes = []
+        recovery_salts = []
+        for slot in slots:
+            code = crypto.generate_recovery_code()
+            salt = crypto.new_salt()
+            self.luks_manager.add_keyslot(
+                layout.system_partition,
+                user_passphrase,
+                crypto.derive_recovery_passphrase(code, salt),
+                slot=slot,
+                dry_run=dry_run,
+                confirm_device=confirm_device,
+                plan=plan,
+            )
+            recovery_codes.append(code)
+            recovery_salts.append(salt)
+        self._recovery_issued = list(zip(slots, recovery_codes, recovery_salts))
+        # Первый код -- тот, что уезжает в результат установки и в initramfs:
+        # именно им пользуется модуль восстановления, пока не израсходован.
+        recovery_code = recovery_codes[0]
+        recovery_salt = recovery_salts[0]
 
         self._progress.step("Открытие зашифрованного тома")
         self.luks_manager.open(

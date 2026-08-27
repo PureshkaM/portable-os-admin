@@ -31,6 +31,7 @@ FIELD_LABELS = {
     "disk.boot_partition_mb": "Размер /boot, МБ",
     "disk.log_partition_mb": "Размер раздела журналов, МБ",
     "disk.exchange_partition_mb": "Размер раздела обмена, МБ",
+    "machine_binding.slots": "Разных машин на носитель",
     "luks.cipher": "Шифр LUKS",
     "luks.key_size_bits": "Длина ключа LUKS, бит",
     "luks.kdf": "Функция формирования ключа",
@@ -459,6 +460,34 @@ class LocalisationConfig:
 
 
 @dataclass
+class MachineBindingConfig:
+    """Ограничение на число машин, где носитель соглашается работать.
+
+    Смысл -- уменьшить вероятность того, что найденный или украденный носитель
+    заработает на машине злоумышленника. LUKS закрывает случай «фразы нет»;
+    это закрывает случай «фраза есть, а носитель уже обошёл свой лимит».
+
+    Отпечаток машины считается по DMI материнской платы и модели процессора.
+    Сетевые адреса намеренно не входят: док-станция или USB-сетевая карта
+    меняли бы отпечаток, и одна и та же машина занимала бы слот за слотом,
+    пока не упёрлась бы в предел -- то есть механизм срабатывал бы на своих
+    вместо чужих.
+
+    Список занятых слотов лежит внутри зашифрованного корня. Иначе его стёрли
+    бы, не зная фразы, и ограничение обнулилось бы само; там же он шифруется
+    тем же ключом, что и система, а пользователь вводит пароль один раз.
+    """
+
+    #: Сколько разных машин носитель запомнит. 0 -- ограничения нет.
+    #:
+    #: Пять, а не три: три слота на практике заканчиваются быстрее, чем
+    #: меняются рабочие места (ноутбук, стационарная машина дома, машина в
+    #: командировке, подменная), и каждое исчерпание -- это обращение к
+    #: администратору.
+    slots: int = 5
+
+
+@dataclass
 class LuksConfig:
     cipher: str = "aes-xts-plain64"
     key_size_bits: int = 512
@@ -512,6 +541,7 @@ class InstallConfig:
     profile: str = "console"
     disk: DiskLayoutConfig = field(default_factory=DiskLayoutConfig)
     luks: LuksConfig = field(default_factory=LuksConfig)
+    machine_binding: MachineBindingConfig = field(default_factory=MachineBindingConfig)
     account: UserAccountConfig = field(default_factory=UserAccountConfig)
     localisation: LocalisationConfig = field(default_factory=LocalisationConfig)
     boot: BootConfig = field(default_factory=BootConfig)
@@ -550,6 +580,7 @@ class InstallConfig:
         data = dict(data)
         disk = DiskLayoutConfig(**data.pop("disk", {}))
         luks = LuksConfig(**data.pop("luks", {}))
+        machine_binding = MachineBindingConfig(**data.pop("machine_binding", {}))
         account = UserAccountConfig(**data.pop("account", {}))
         remote_access = RemoteAccessConfig(**data.pop("remote_access", {}))
         # Configurations written before the kiosk profile existed simply have
@@ -567,6 +598,7 @@ class InstallConfig:
         return cls(
             disk=disk,
             luks=luks,
+            machine_binding=machine_binding,
             account=account,
             remote_access=remote_access,
             kiosk=kiosk,

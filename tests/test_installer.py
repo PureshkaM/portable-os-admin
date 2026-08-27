@@ -6,6 +6,7 @@ from portable_os_admin.container import ContainerManager
 from portable_os_admin.errors import ConfigValidationError, DeviceNotEligibleError
 from portable_os_admin.install import BlockDevice, OSInstaller
 from portable_os_admin.install.backends import get_backend
+from portable_os_admin.install import machine_binding
 from portable_os_admin.install.installer import _Progress
 from portable_os_admin.session import AdminSession
 
@@ -54,7 +55,9 @@ def test_successful_dry_run_produces_media_and_recovery_records(session, big_rem
     result = installer.run(big_removable_device, config, b"user-passphrase-123", dry_run=True)
 
     assert result.media_record.target_os == "debian"
-    assert result.recovery_record.slot == 7
+    # Первый из выданных кодов. Слот зависит от того, сколько машин разрешено:
+    # они занимают начало заголовка, восстановления -- весь остаток.
+    assert result.recovery_record.slot == machine_binding.recovery_keyslots(config)[0]
     assert result.recovery_record.status == "available"
     assert all(r.executed is False for r in result.plan.results)
 
@@ -234,8 +237,11 @@ def test_each_service_volume_also_holds_the_administrator_key(session, make_conf
     them with a key that exists only in the administrator container."""
     argvs, _ = _plan_argvs(session, make_config)
     added = [a for a in argvs if a[0] == "cryptsetup" and "luksAddKey" in a]
-    # one recovery slot on the system volume, one admin slot on each service volume
-    assert len(added) == 3
+    # По одному administrator-ключу на каждый служебный том плюс коды
+    # восстановления на системном: их столько, сколько keyslot остаётся после
+    # слотов машин, потому что каждый расходуется безвозвратно.
+    recovery = len(machine_binding.recovery_keyslots(make_config()))
+    assert len(added) == recovery + 2
 
 
 def test_the_boot_key_file_lands_on_the_encrypted_root(session, make_config):
