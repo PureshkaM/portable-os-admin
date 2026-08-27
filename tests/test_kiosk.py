@@ -1215,3 +1215,75 @@ def test_mate_is_chosen_regardless_of_what_the_image_carries():
     config = make_kiosk_config(allowed_apps=["mate-calc"])
     env = base.for_config(config, SimpleNamespace(desktop_versions={"kde": "6.3.6"}))
     assert type(env).__name__ == "MateEnvironment"
+
+
+# ----------------------------------------------------------------------
+# Программная поверхность и обособленность
+# ----------------------------------------------------------------------
+def test_services_the_kiosk_never_asked_for_are_masked():
+    """На собранном носителе РЕД ОС в журнале работали sshd и avahi.
+
+    Ни один не был заказан — оба пришли с дистрибутивом. Носитель попадает в
+    чужую сеть, где каждая слушающая служба это и поверхность атаки, и
+    объявление о себе. Маскируются, а не выключаются: выключенную поднимет
+    обратно первое же обновление пакета.
+    """
+    flat = [
+        " ".join(argv)
+        for argv in get_backend("redos").chroot_setup_commands("/mnt/t", make_kiosk_config())
+    ]
+
+    for unit in ("sshd.service", "avahi-daemon.service", "smbd.service"):
+        assert any(f"mask {unit}" in c for c in flat), unit
+    # Отсутствие службы в образе — норма, а не повод уронить сборку.
+    assert all("|| true" in c for c in flat if "avahi" in c)
+
+
+def test_the_host_swap_is_never_taken_and_hibernation_is_off():
+    """Обособленность: из машины берутся процессор и память, и ничего больше.
+
+    Чужой своп означал бы страницы памяти пользователя, записанные открытым
+    текстом на чужой диск; noresume — что systemd не поднимет чужую систему из
+    найденного на диске образа гибернации.
+    """
+    cmdline = get_backend("debian").kernel_cmdline(InstallConfig.create_default("s", "debian"))
+
+    assert "noresume" in cmdline
+    assert "nohibernate" in cmdline
+    flat = [
+        " ".join(argv)
+        for argv in get_backend("debian").chroot_setup_commands("/mnt/t", make_kiosk_config())
+    ]
+    assert any("mask swap.target" in c for c in flat)
+
+
+def test_dma_is_closed_without_making_the_medium_unbootable():
+    """IOMMU включается там, где он есть, но не требуется безусловно.
+
+    `iommu=force` на части машин мешает загрузке, а носитель обязан грузиться
+    на железе, которого никто не видел: защита, из-за которой система не
+    стартует, защищает только от пользователя.
+    """
+    cmdline = get_backend("redos").kernel_cmdline(InstallConfig.create_default("s", "redos"))
+
+    assert "intel_iommu=on" in cmdline and "amd_iommu=on" in cmdline
+    assert "efi=disable_early_pci_dma" in cmdline
+    assert "iommu=force" not in cmdline
+
+
+def test_a_carried_in_drive_is_refused_at_the_device_level(layout):
+    """Выключенного автомонтирования мало: оно закрывает удобный путь, а не
+    возможность. Накопитель не авторизуется, поэтому устройства для него не
+    появляется вовсе."""
+    from portable_os_admin.install.kiosk.common import UDEV_RULES_PATH
+
+    refused = get_backend("debian").scripted_files(make_kiosk_config(), layout)
+    assert UDEV_RULES_PATH in refused
+    assert 'ATTR{authorized}="0"' in refused[UDEV_RULES_PATH][0]
+
+    # Разрешив носители, администратор получает обычное поведение — и правила,
+    # которое ничего не делает, на носителе не остаётся.
+    allowed = get_backend("debian").scripted_files(
+        make_kiosk_config(allow_removable_media=True), layout
+    )
+    assert UDEV_RULES_PATH not in allowed

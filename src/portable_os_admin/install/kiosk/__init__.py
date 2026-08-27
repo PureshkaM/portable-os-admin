@@ -41,6 +41,8 @@ import shlex
 
 from ...config.schema import InstallConfig
 from .common import (
+    HARDENING_KERNEL_PARAMETERS,
+    UNWANTED_SERVICES,
     APPLY_SCRIPT_PATH,
     AUTOSTART_PATH,
     DESKTOP_KDE,
@@ -51,6 +53,7 @@ from .common import (
     LOGIND_CONF_PATH,
     OVERRIDE_DIR,
     POLKIT_RULES_PATH,
+    UDEV_RULES_PATH,
     SESSION_NAME,
     SESSION_WAYLAND,
     SESSION_X11,
@@ -63,6 +66,7 @@ from .common import (
     logind_conf,
     polkit_rules,
     session_entry,
+    udev_storage_rules,
     wants_wayland,
     xorg_conf,
 )
@@ -122,6 +126,10 @@ def config_files(config: InstallConfig, image=None) -> dict[str, tuple[str, int 
     session_path, session_content = session_entry(config)
     files[session_path] = (session_content, 0o644)
 
+    rules = udev_storage_rules(config)
+    if rules:
+        files[UDEV_RULES_PATH] = (rules, None)
+
     files.update(environments.for_config(config, image).files(config))
 
     if config.kiosk.autostart_app:
@@ -174,6 +182,15 @@ def chroot_commands(mount_root: str, config: InstallConfig, backend) -> list[lis
         commands.append(
             backend.chroot(mount_root, "env", "SYSTEMD_OFFLINE=1", "systemctl", "mask", unit)
         )
+
+    # Службы, пришедшие с дистрибутивом и киоску не нужные. Отказ здесь не
+    # должен ронять сборку: набор служб зависит от образа, и отсутствие
+    # какой-то из них -- норма, а не ошибка.
+    for unit in UNWANTED_SERVICES:
+        masking = backend.chroot(
+            mount_root, "env", "SYSTEMD_OFFLINE=1", "systemctl", "mask", unit
+        )
+        commands.append(["sh", "-c", f"{shlex.join(masking)} || true"])
 
     commands.append(backend.chroot(mount_root, "/bin/sh", f"/{APPLY_SCRIPT_PATH}"))
     return commands

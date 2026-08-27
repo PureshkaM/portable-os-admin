@@ -445,6 +445,9 @@ class InstallBackend(ABC):
         parts: list[str] = []
         if layout is not None:
             parts += self.unlock_kernel_parameters(layout)
+        # Обособленность и защита памяти -- раньше того, что задал администратор:
+        # так его собственные параметры видны в конце строки, где их и ищут.
+        parts += kiosk_mode.HARDENING_KERNEL_PARAMETERS
         if config.boot.kernel_parameters.strip():
             parts.append(config.boot.kernel_parameters.strip())
         if config.boot.quiet:
