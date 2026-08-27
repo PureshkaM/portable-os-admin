@@ -272,6 +272,41 @@ def test_text_consoles_are_masked_and_the_session_is_graphical():
     assert any("mask getty@.service" in c for c in flat)
 
 
+def test_the_getty_alias_is_masked_under_its_own_name():
+    """Regression, найдено по журналу носителя: logind на каждом событии места
+    писал "Failed to start autovt@tty1.service ... File exists".
+
+    Дистрибутив поставляет `autovt@.service` ссылкой на `getty@.service`.
+    Замаскировав только второй, мы оставляем logind возможность просить первый
+    по имени; systemd разрешает псевдоним на уже загруженный юнит и отвергает
+    запрос целиком. Маска под собственным именем даёт ему фрагмент, который
+    находится без разрешения ссылки.
+    """
+    flat = [
+        " ".join(argv)
+        for argv in get_backend("debian").chroot_setup_commands("/mnt/t", make_kiosk_config())
+    ]
+
+    assert any("mask autovt@.service" in c for c in flat)
+    # И включение getty@tty1 снимается до маскировки: ссылка в
+    # getty.target.wants переживает `mask` и держит юнит загруженным.
+    disable_at = next(i for i, c in enumerate(flat) if "disable getty@tty1.service" in c)
+    mask_at = next(i for i, c in enumerate(flat) if "mask getty@.service" in c)
+    assert disable_at < mask_at
+    # Юнит может быть и не включён -- отказ не должен ронять сборку.
+    assert "|| true" in flat[disable_at]
+
+
+def test_no_virtual_console_is_reserved_for_a_getty():
+    """ReserveVT называет консоль, которую logind резервирует под getty, а не
+    ту, на которой живёт сеанс. Просить её на системе без текстовой консоли
+    значит просить запускать autovt@, которого здесь быть не должно."""
+    conf = kiosk.logind_conf()
+
+    assert "NAutoVTs=0" in conf
+    assert "ReserveVT=0" in conf
+
+
 def test_whitelist_is_applied_after_the_packages_are_installed():
     """A launcher installed after the whitelist ran would stay visible."""
     config = make_kiosk_config()
@@ -464,10 +499,8 @@ def test_shell_access_and_command_running_are_refused():
 
     assert "shell_access=false" in text
     assert "run_command=false" in text
-    # No equivalent exists under MATE: refuses a .desktop that did not come
-    # from a system directory, so one carried in on the exchange volume is
-    # inert even though the volume is mounted.
-    assert "run_desktop_files=false" in text
+    # Третий, run_desktop_files, ставится не всегда -- см.
+    # test_desktop_files_may_be_executed_when_removable_media_are_refused.
 
 
 def test_file_dialogs_are_confined_to_home_and_the_exchange_volume():
@@ -486,12 +519,46 @@ def test_lock_screen_is_refused_under_kde_too():
     text = kiosk.kdeglobals(make_kde_config(screen_blank_minutes=10))
 
     assert "lock_screen=false" in text
-    assert "Lock=false" in kiosk.kscreensaverrc(make_kde_config(screen_blank_minutes=10))
 
 
-def test_blanking_delay_reaches_kde_in_seconds():
-    assert "Timeout=600" in kiosk.kscreensaverrc(make_kde_config(screen_blank_minutes=10))
-    assert "Enabled=false" in kiosk.kscreensaverrc(make_kde_config(screen_blank_minutes=0))
+def test_the_automatic_lock_is_switched_off_where_the_daemon_reads_it():
+    """Regression, найдено живым прогоном: носитель запирался сам собой.
+
+    `lock_screen=false` в kdeglobals — проверка KAuthorized, она останавливает
+    только запрос блокировки от пользователя. Блокировку по простою делает
+    демон, который ничего не спрашивает и читает kscreenlockerrc; без этого
+    файла он остаётся при своём умолчании (запереть через пять минут). Пароль
+    учётной записи заблокирован, поэтому запертый экран не открыть ничем,
+    кроме перезагрузки.
+    """
+    text = kiosk.kscreenlockerrc(make_kde_config(screen_blank_minutes=10))
+
+    assert "[Daemon][$i]" in text, "без [$i] это лишь умолчание, которое сессия перезапишет"
+    assert "Autolock=false" in text
+    assert "LockOnResume=false" in text
+
+
+def test_blanking_is_set_where_plasma_actually_does_it():
+    """Гашение экрана в Plasma делает powerdevil, а не блокировщик."""
+    ten = kiosk.powermanagement_profiles(make_kde_config(screen_blank_minutes=10))
+
+    assert "[AC][DPMSControl][$i]" in ten
+    assert "idleTime=600" in ten
+    # powerdevil умеет запереть экран перед гашением -- ровно то, чего здесь
+    # быть не должно.
+    assert "lockBeforeTurnOff=0" in ten
+
+    off = kiosk.powermanagement_profiles(make_kde_config(screen_blank_minutes=0))
+    assert "DPMSControl" not in off
+
+
+def test_the_kde4_screensaver_file_is_not_written_any_more():
+    """Plasma его не читает, поэтому всё написанное в него было мертво."""
+    files = kiosk.config_files(make_kde_config(screen_blank_minutes=10))
+
+    assert not any("kscreensaver" in path for path in files)
+    assert kiosk.KSCREENLOCKER_PATH in files
+    assert kiosk.POWERMANAGEMENT_PATH in files
 
 
 def test_logout_follows_the_shutdown_setting():
@@ -503,14 +570,16 @@ def test_autostart_resource_is_only_closed_when_nothing_needs_it():
     """Closing it while this project relies on autostart could disable both.
 
     The opening it covers -- a .desktop dropped into ~/.config/autostart -- is
-    refused by run_desktop_files either way.
+    what run_desktop_files closes where that restriction applies at all.
     """
     without = kiosk.kdeglobals(make_kde_config())
     assert "autostart=false" in without
 
     with_app = kiosk.kdeglobals(make_kde_config(autostart_app="mate-calc"))
     assert "[KDE Resource Restrictions][$i]" not in with_app
-    assert "run_desktop_files=false" in with_app
+    assert "run_desktop_files=false" in kiosk.kdeglobals(
+        make_kde_config(autostart_app="mate-calc", allow_removable_media=True)
+    )
 
 
 @pytest.mark.parametrize("target_os", ["debian", "redos"])
@@ -898,6 +967,47 @@ def test_allowed_applications_get_desktop_icons():
     # Caja refuses to launch a .desktop that is not executable.
     assert "chmod 0755" in script
     assert "chown" in script, "ярлыки останутся принадлежать root"
+
+
+def test_desktop_files_may_be_executed_when_removable_media_are_refused():
+    """Regression, найдено живым прогоном: киоск KDE не запускал ничего.
+
+    Замер на носителе: с `run_desktop_files=false` KIO отказывает **любой**
+    записи, включая `/usr/share/applications/mate-calc.desktop`. Проверено
+    четырьмя способами -- прямой запуск бинарника и `gio launch` работают,
+    `kioclient5 exec` возвращает 1 и по ярлыку, и по системной записи. То есть
+    ограничение убирает рабочий стол и файловый менеджер целиком, а не только
+    посторонние записи.
+
+    Поэтому оно ставится ровно тогда, когда есть чему противостоять: если
+    пользователю разрешены съёмные носители, чужой ярлык принести можно, и
+    запрет нужен. Если нет -- принести неоткуда, и запрет только вредит.
+    """
+    strict = kiosk.kdeglobals(make_kde_config(allow_removable_media=True))
+    assert "run_desktop_files=false" in strict
+
+    usable = kiosk.kdeglobals(make_kde_config(allow_removable_media=False))
+    assert "run_desktop_files=false" not in usable
+
+
+def test_no_desktop_shortcuts_are_promised_where_they_cannot_launch():
+    """Ярлык, который не запускается, хуже отсутствующего."""
+    blocked = kiosk.apply_script(
+        make_kiosk_config(allowed_apps=["mate-calc"], desktop_environment="kde",
+                          allow_removable_media=True)
+    )
+    assert 'DESKTOP_SHORTCUTS=""' in blocked
+
+    working = kiosk.apply_script(
+        make_kiosk_config(allowed_apps=["mate-calc"], desktop_environment="kde",
+                          allow_removable_media=False)
+    )
+    assert 'DESKTOP_SHORTCUTS="1"' in working
+    # MATE ограничения не знает, поэтому ярлыки у него есть всегда.
+    mate = kiosk.apply_script(
+        make_kiosk_config(allowed_apps=["mate-calc"], allow_removable_media=True)
+    )
+    assert 'DESKTOP_SHORTCUTS="1"' in mate
 
 
 def test_the_program_list_is_not_switched_off_wholesale():
