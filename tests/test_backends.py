@@ -379,6 +379,9 @@ def test_redos_tells_the_initramfs_to_unlock_the_volume():
     )
     layout.luks_uuid = "11111111-2222-3333-4444-555555555555"
 
+    # Без привязки к машине разблокировкой занимается systemd-cryptsetup, и
+    # узнаёт он о томе из параметров ядра.
+    config.machine_binding.slots = 0
     commands = "\n".join(
         " ".join(argv) for argv in get_backend("redos").bootloader_commands(layout, config)
     )
@@ -387,9 +390,20 @@ def test_redos_tells_the_initramfs_to_unlock_the_volume():
     # Имя тома задаётся явно: fstab и crypttab носителя ссылаются на него.
     assert f"rd.luks.name={layout.luks_uuid}=poa-abc" in commands
 
+    # С привязкой этих параметров быть не должно: с ними systemd-cryptsetup
+    # спросит пароль сразу, как появится устройство, — задолго до хука,
+    # который подставляет ключ машины, и подставлять его будет уже некуда.
+    config.machine_binding.slots = 5
+    bound = "\n".join(
+        " ".join(argv) for argv in get_backend("redos").bootloader_commands(layout, config)
+    )
+    assert "rd.luks.uuid" not in bound
+    assert "rd.luks.name" not in bound
+
     # И главное: параметры проставляются ПОСЛЕ grub2-mkconfig. Он
     # перезаписывает строку `options` в записях BLS значением
     # GRUB_CMDLINE_LINUX, и всё, что дописано раньше, теряется молча.
+    config.machine_binding.slots = 0
     order = [" ".join(argv) for argv in get_backend("redos").bootloader_commands(layout, config)]
     sed_at = next(i for i, c in enumerate(order) if "rd.luks.uuid" in c)
     mkconfig_at = next(i for i, c in enumerate(order) if "grub2-mkconfig" in c)
