@@ -1,6 +1,6 @@
 """Tkinter desktop GUI: the guided, wizard-driven interface.
 
-Added after live RedOS testing of the Textual TUI (see docs/ARCHITECTURE.md
+Added after live RedOS testing of the Textual TUI (see README, раздел «Архитектура»
 "Известные ограничения") surfaced that raw, single-page forms with
 after-the-fact validation errors were confusing to operate, and that a
 blocking network call could make the whole interface appear to hang. This

@@ -562,7 +562,7 @@ class InstallBackend(ABC):
         содержимое системного раздела" step. The OS-level login password is
         intentionally locked (`passwd -l`) rather than set here: the LUKS
         passphrase supplied at install time is this project's single
-        front-door secret (see docs/ARCHITECTURE.md). Because the account has
+        front-door secret (see README, раздел «Архитектура»). Because the account has
         no usable password, `config_files` also drops in a getty autologin
         override -- otherwise unlocking the disk would land the user at a
         login prompt they cannot possibly satisfy."""

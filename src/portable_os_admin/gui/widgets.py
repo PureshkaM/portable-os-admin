@@ -1,7 +1,7 @@
 """Small reusable building blocks shared by every GUI screen.
 
 Kept deliberately minimal (no third-party widget toolkit) so the GUI adds no
-new dependency beyond the stdlib `tkinter` -- see docs/ARCHITECTURE.md
+new dependency beyond the stdlib `tkinter` -- see README, раздел «Архитектура»
 "Упаковка" for why that matters: it means the existing deb/rpm packaging only
 needs a system `python3-tk` dependency, not another pip package pulled into
 the private venv at install time.

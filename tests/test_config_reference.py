@@ -2,7 +2,7 @@
 
 Документация, которую никто не проверяет, расходится с кодом за две недели, и
 дальше вредит: администратор читает про поле, которого нет, или не находит
-того, которое есть. Поэтому полнота `docs/CONFIG.md` — не вопрос
+того, которое есть. Поэтому полнота `README, раздел «Конфигурация»` — не вопрос
 добросовестности, а тест.
 """
 from __future__ import annotations
@@ -13,7 +13,18 @@ import re
 
 from portable_os_admin.config.schema import InstallConfig
 
-REFERENCE = pathlib.Path(__file__).resolve().parents[1] / "docs" / "CONFIG.md"
+#: Справочник живёт разделом README, а не отдельным файлом: всё о самом
+#: проекте собрано в одном месте, и меняется отдельно только план работ.
+#: Тест читает именно этот раздел, а не весь файл, — иначе поле считалось бы
+#: описанным просто потому, что его имя встретилось где-то в архитектуре.
+_README = pathlib.Path(__file__).resolve().parents[1] / "README.md"
+
+
+def _reference_text() -> str:
+    text = _README.read_text(encoding="utf-8")
+    start = text.index("\n# Конфигурация\n")
+    end = text.index("\n# Проверки, стенд и уроки\n", start)
+    return text[start:end]
 
 
 def _fields(cls, prefix: str = "") -> list[str]:
@@ -33,11 +44,11 @@ def _fields(cls, prefix: str = "") -> list[str]:
 
 
 def test_every_configuration_field_is_documented():
-    text = REFERENCE.read_text(encoding="utf-8")
+    text = _reference_text()
     missing = [name for name in _fields(InstallConfig) if f"`{name}`" not in text]
 
     assert not missing, (
-        "в docs/CONFIG.md нет описания полей: " + ", ".join(missing)
+        "в README, раздел «Конфигурация» нет описания полей: " + ", ".join(missing)
         + ".\nЛибо опишите их, либо уберите из схемы — незадокументированное "
         "поле администратор не найдёт."
     )
@@ -45,7 +56,7 @@ def test_every_configuration_field_is_documented():
 
 def test_the_reference_does_not_describe_fields_that_no_longer_exist():
     """Обратная сторона: удалённое поле должно исчезнуть и из справочника."""
-    text = REFERENCE.read_text(encoding="utf-8")
+    text = _reference_text()
     known = set(_fields(InstallConfig))
     # Имена в таблицах: строки вида `| `поле` | тип |`.
     documented = set(re.findall(r"^\| `([a-z_][a-z0-9_.]*)` \|", text, re.M))
@@ -60,7 +71,7 @@ def test_the_reference_says_what_the_file_is_not():
     Без неё администратор решит, что программа передаёт конфигурацию штатному
     установщику дистрибутива, и будет искать в ней возможности kickstart.
     """
-    text = REFERENCE.read_text(encoding="utf-8")
+    text = _reference_text()
 
     assert "kickstart" in text and "preseed" in text
     assert "установка выполняется не этим файлом" in text.lower()
@@ -72,7 +83,7 @@ def test_the_reference_admits_what_cannot_be_configured_yet():
     Администратор должен узнать про предел из документации, а не наткнувшись
     на него посреди работы.
     """
-    text = REFERENCE.read_text(encoding="utf-8")
+    text = _reference_text()
 
     assert "Чего пока нельзя задать" in text
     assert "system_tasks" in text.split("Чего пока нельзя задать")[1]

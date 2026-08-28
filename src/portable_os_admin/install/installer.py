@@ -7,7 +7,7 @@ save records.
 
 Every destructive step is dry-run by default (see command_runner.py). The
 Debian backend's real path has been executed against a real USB stick; the
-RedOS and Astra backends have not (see docs/ARCHITECTURE.md).
+RedOS and Astra backends have not (see README, раздел «Архитектура»).
 """
 from __future__ import annotations
 
@@ -1496,7 +1496,7 @@ class OSInstaller:
         later without the user's passphrase.
 
         The script is still not wired into the bootloader/initramfs as an
-        automatic recovery entry -- see docs/ARCHITECTURE.md "Known
+        automatic recovery entry -- see README, раздел «Архитектура» "Known
         limitations"."""
         target_dir = f"{layout.mount_root}/boot/efi/{ESP_METADATA_DIR}"
         self._run(["mkdir", "-p", target_dir], plan, dry_run, confirm_device)

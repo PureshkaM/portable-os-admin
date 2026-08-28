@@ -1,7 +1,7 @@
 """Administrator-side recovery flow (UC-7 "Выдача кода восстановления доступа").
 
 The counterpart that runs on the portable medium itself is the reference
-shell script in recovery/recovery_module.sh (see docs/ARCHITECTURE.md for how
+shell script in recovery/recovery_module.sh (see README, раздел «Архитектура» for how
 the two sides fit together).
 """
 from __future__ import annotations

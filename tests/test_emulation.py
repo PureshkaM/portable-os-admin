@@ -2,7 +2,7 @@
 
 These check the decision, not the emulation: whether qemu actually runs an
 x86_64 binary on an arm64 host was established by running it (see
-docs/ARCHITECTURE.md "Поддерживаемые сочетания"), and no unit test can restate
+README, раздел «Архитектура» "Поддерживаемые сочетания"), and no unit test can restate
 that. What is worth pinning down here is that the program refuses *before*
 erasing the medium when the machine is not set up, and that it recognises a
 registration written by whatever the distribution ships rather than one exact

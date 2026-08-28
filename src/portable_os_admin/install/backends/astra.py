@@ -16,7 +16,7 @@ Debian assumptions used elsewhere in this project):
 - The sudo-equivalent group is `astra-admin`, not `sudo` -- Astra also gates
   privileged execution on a PARSEC integrity level (Special Edition only),
   which this backend does not attempt to configure; see
-  docs/ARCHITECTURE.md "Known limitations" for what that means for
+  README, "Архитектура" "Known limitations" for what that means for
   automated setup on Special Edition targets.
 """
 from __future__ import annotations

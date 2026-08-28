@@ -24,7 +24,7 @@ card against a grey window, so where the form begins and ends is visible
 without drawing a single border.
 
 Everything is plain ttk, since the packaging constraint (see
-docs/ARCHITECTURE.md "Упаковка") rules out any widget toolkit from PyPI.
+README, раздел «Архитектура» "Упаковка") rules out any widget toolkit from PyPI.
 """
 from __future__ import annotations
 

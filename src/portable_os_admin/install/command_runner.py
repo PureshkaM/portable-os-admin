@@ -9,7 +9,7 @@ Every real filesystem/disk mutation in this project funnels through
     disk from a mis-clicked UI
 
 This exists because none of this code has been run against a real block
-device yet (see docs/ARCHITECTURE.md "Known limitations" -- this project was
+device yet (see README, раздел «Архитектура» "Known limitations" -- this project was
 built in a sandbox with no spare disks/USB media to test destructive
 operations against). Treat any dry_run=False path as unverified until
 confirmed on real hardware.
