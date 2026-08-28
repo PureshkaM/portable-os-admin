@@ -125,3 +125,64 @@ def test_a_non_removable_device_is_refused_unless_the_stand_hatch_is_open(monkey
 
     monkeypatch.setenv(devices_module.ALLOW_NON_REMOVABLE, "1")
     check_install_eligible(disk, 1_000_000)
+
+
+LOOP_LSBLK_OUTPUT = {
+    "blockdevices": [
+        {
+            "name": "loop1",
+            "path": "/dev/loop1",
+            "size": 17_179_869_184,
+            "model": None,
+            "rm": False,
+            "type": "loop",
+            "mountpoints": [None],
+            "children": [
+                {
+                    "name": "loop1p1",
+                    "path": "/dev/loop1p1",
+                    "size": 536_870_912,
+                    "type": "part",
+                    "fstype": "vfat",
+                    "label": "POA_ESP",
+                    "mountpoints": ["/mnt/poa-esp"],
+                },
+                {
+                    "name": "loop1p2",
+                    "path": "/dev/loop1p2",
+                    "size": 1_073_741_824,
+                    "type": "part",
+                    "fstype": "ext4",
+                    "label": "POA_BOOT",
+                    "mountpoints": [None],
+                },
+            ],
+        }
+    ]
+}
+
+
+def test_describe_reads_a_loop_device_with_its_partitions_and_mountpoints():
+    """Файл-образ через losetup -- штатная цель стенда, и его надо видеть.
+
+    lsblk называет такое устройство типом "loop", а фильтр принимал только
+    "disk". describe возвращал None, мастер строил устройство из текстовых
+    полей, и экран подтверждения объявлял «разделов не обнаружено» о носителе
+    с пятью разделами. Вместе с разделами терялись точки монтирования -- то
+    есть на файл-образе не работала защита от разметки поверх смонтированной
+    файловой системы, ради которой describe и существует.
+
+    Найдено живым прогоном 28.08.2026.
+    """
+
+    class LoopLister(DeviceLister):
+        def _lsblk_json(self, path=None):
+            return LOOP_LSBLK_OUTPUT
+
+    device = LoopLister().describe("/dev/loop1")
+
+    assert device is not None
+    assert device.path == "/dev/loop1"
+    assert device.size_bytes == 17_179_869_184
+    assert len(device.partitions) == 2
+    assert "/mnt/poa-esp" in device.active_mountpoints

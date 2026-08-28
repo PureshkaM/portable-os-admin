@@ -133,6 +133,27 @@ def test_debian_asks_cryptsetup_to_call_the_keyscript():
     assert f"keyscript=/{mb.KEY_SCRIPT_PATH}" in root_row
 
 
+def test_redos_crypttab_carries_no_keyscript():
+    """`keyscript=` -- интерфейс cryptsetup-initramfs, то есть Debian.
+
+    В RHEL-семействе том открывает хук dracut, а systemd-cryptsetup такой
+    опции не знает. crypttab при этом один на оба семейства, поэтому опция,
+    написанная для одного, молча уезжала на носитель другого -- тот самый
+    класс ошибки, ради которого киоск разнесли по средам 27.08.2026.
+
+    Найдено ревизией собранного носителя 28.08.2026, а не прогоном: дефекты
+    этого дня сидели на границах этапов загрузки, и искать их оказалось
+    дешевле разбором цепочки, чем очередной загрузкой.
+    """
+    config = make_config("redos")
+    crypttab = get_backend("redos").config_files(config, layout_for(config))["etc/crypttab"]
+
+    root_row = next(line for line in crypttab.splitlines() if line.startswith("poa-abc12345"))
+    assert "keyscript" not in root_row
+    # Остальное на месте: том по-прежнему описан, и лимит попыток тоже.
+    assert "luks,discard" in root_row
+
+
 def test_redos_opens_the_volume_itself_instead_of_systemd_cryptsetup():
     """С rd.luks.* systemd-cryptsetup спросил бы пароль раньше любого хука.
 
@@ -148,15 +169,95 @@ def test_redos_opens_the_volume_itself_instead_of_systemd_cryptsetup():
     assert backend.unlock_kernel_parameters(layout, config) != []
 
 
-def test_the_dracut_module_is_declared_and_ordered_before_recovery():
+def test_the_machine_key_is_tried_only_against_machine_slots():
+    """Проверка ключа машины идёт по её слотам поимённо, а не по заголовку.
+
+    Без `--key-slot` cryptsetup перебирает каждый занятый keyslot. На готовом
+    носителе их тридцать, и каждый -- отдельный argon2id на 256 МиБ: 8,4
+    секунды по замерам этого проекта, то есть больше четырёх минут ожидания
+    перед вводом пароля на живой машине. Под полной эмуляцией счёт идёт на
+    часы -- прогон 28.08.2026 на этом и встал, а выглядело это как намертво
+    зависшая загрузка, по которой причину не угадать.
+
+    При двух разрешённых машинах проверок должно быть ровно две.
+    """
+    config = make_config("redos")
+    config.machine_binding.slots = 2
+    script = mb.dracut_unlock_script(config, "poa-abc")
+
+    assert "--key-slot" in script, "перебирается весь заголовок вместо машинных слотов"
+    assert "POA_FIRST_MACHINE_SLOT=1" in script
+    assert "POA_LAST_MACHINE_SLOT=2" in script
+
+    # Границы следуют за числом машин, а не зашиты.
+    config.machine_binding.slots = 5
+    wider = mb.dracut_unlock_script(config, "poa-abc")
+    assert "POA_LAST_MACHINE_SLOT=5" in wider
+
+    # То же и в регистрации: «эта машина уже зарегистрирована» проверяется на
+    # КАЖДОЙ загрузке знакомой машины, то есть в самом частом случае из всех.
+    config.machine_binding.slots = 2
+    register = mb.register_script(config, "abcd1234")
+    assert "--key-slot" in register, "регистрация перебирает весь заголовок"
+
+
+def test_the_unlock_script_waits_for_the_medium_to_appear():
+    """Накопитель появляется позже, чем udev успокаивается.
+
+    Замерено на стенде 28.08.2026: initqueue завершился на 11,55 секунде, а
+    sda обнаружился на 12,5. Хук, выходивший по `[ -b "$device" ] || exit 0`,
+    отрабатывал вхолостую -- том оставался закрытым, и systemd потом две с
+    половиной минуты ждал корневое устройство, которого без этого хука не
+    появится. Молчаливый выход здесь неотличим от «всё в порядке».
+    """
+    config = make_config("redos")
+    config.machine_binding.slots = 2
+    script = mb.dracut_unlock_script(config, "poa-abc")
+
+    assert "while [ ! -b \"$device\" ]" in script, "хук не ждёт появления устройства"
+    # Ожидание конечное: носитель, у которого раздела нет вовсе, не должен
+    # висеть вечно -- дальше очередь модуля восстановления.
+    assert "-lt 60" in script
+
+
+def test_the_dracut_module_unlocks_inside_initqueue_not_after_it():
+    """Хук разблокировки обязан успеть до ожидания корня, а не после.
+
+    Прогон 28.08.2026: носитель с привязкой не загрузился вовсе. dracut ждёт
+    появления корневого устройства заданием initqueue/finished/devexists-<uuid
+    корня>, а корень появляется только после расшифровки; pre-mount же идёт
+    ПОСЛЕ initqueue. Хук, который единственный мог открыть том, ждал шага, до
+    которого его собственное бездействие не пускало, и через две минуты
+    initqueue уходил в dracut-emergency с сообщением про несуществующий UUID.
+
+    Тот же симптом уже ловили 26.08.2026, когда в командную строку не попадал
+    rd.luks.uuid. Привязка снимает эти параметры намеренно, поэтому место хука
+    здесь -- не деталь оформления, а условие загружаемости.
+    """
     config = make_config("redos")
     files = get_backend("redos").recovery_boot_files(layout_for(config), config)
 
     setup = files["usr/lib/dracut/modules.d/90poa-machine/module-setup.sh"][0]
     # dracut не включает модуль просто потому, что тот лежит рядом.
     assert "add_dracutmodules" in files["etc/dracut.conf.d/90-poa-machine.conf"][0]
-    # Сначала попытка открыть, потом разговор о том, что она не удалась.
-    assert "pre-mount 50" in setup
+    # Сначала попытка открыть, потом разговор о том, что она не удалась --
+    # и то, и другое внутри initqueue, пока корень ещё ждут.
+    assert "inst_hook initqueue/settled 50" in setup
+    assert "inst_hook initqueue/settled 99" in setup
+    assert "usr/lib/dracut/modules.d/90poa-machine/poa-machine-rescue.sh" in files
+    # Регистрация -- наоборот, строго после того как том открыт.
+    assert "inst_hook pre-pivot 50" in setup
+    # cryptsetup кладётся явно: модуль crypt в systemd-режиме приносит
+    # `systemd-cryptsetup`, а не утилиту, на которую рассчитывают оба модуля.
+    # Без него верная фраза трижды подряд «не подходила»: вызовы падали с
+    # command not found, а `if cryptsetup ...; else` уходил в else, и ошибка
+    # выглядела ровно как неверный пароль.
+    assert "inst_multiple cryptsetup" in setup
+    recovery_setup = files["usr/lib/dracut/modules.d/91poa-recovery/module-setup.sh"][0]
+    assert "inst_multiple cryptsetup" in recovery_setup
+    # Модуль восстановления остаётся на pre-mount для носителей без привязки:
+    # там том открывает systemd-cryptsetup, и хук, сработавший раньше ввода
+    # пароля, спрашивал бы код у того, кто ещё не ошибся ни разу.
     recovery_setup = files["usr/lib/dracut/modules.d/91poa-recovery/module-setup.sh"][0]
     assert "pre-mount 99" in recovery_setup
 

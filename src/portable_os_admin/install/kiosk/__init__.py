@@ -53,7 +53,7 @@ from .common import (
     LOGIND_CONF_PATH,
     OVERRIDE_DIR,
     POLKIT_RULES_PATH,
-    UDEV_RULES_PATH,
+    USB_LOCKDOWN_UNIT_PATH,
     SESSION_NAME,
     SESSION_WAYLAND,
     SESSION_X11,
@@ -67,6 +67,7 @@ from .common import (
     polkit_rules,
     session_entry,
     udev_storage_rules,
+    usb_lockdown_unit,
     wants_wayland,
     xorg_conf,
 )
@@ -126,9 +127,13 @@ def config_files(config: InstallConfig, image=None) -> dict[str, tuple[str, int 
     session_path, session_content = session_entry(config)
     files[session_path] = (session_content, 0o644)
 
-    rules = udev_storage_rules(config)
-    if rules:
-        files[UDEV_RULES_PATH] = (rules, None)
+    # Правило кладёт служба, и только после того как система поднялась. В
+    # /etc ему не место: coldplug при переходе из initramfs шлёт ACTION=add
+    # и для загрузочного носителя, и тот отключает сам себя -- прогон
+    # 28.08.2026 закончился отказом ввода-вывода и корнем в read-only.
+    unit = usb_lockdown_unit(config)
+    if unit:
+        files[USB_LOCKDOWN_UNIT_PATH] = (unit, 0o644)
 
     files.update(environments.for_config(config, image).files(config))
 
@@ -155,6 +160,14 @@ def chroot_commands(mount_root: str, config: InstallConfig, backend) -> list[lis
     display_manager = backend.display_manager_for(config)
     if display_manager:
         commands.append(backend.systemctl_enable(mount_root, display_manager))
+
+    # Запрет на чужие накопители включается службой, а не файлом в /etc:
+    # положенное туда правило срабатывает на coldplug при переходе из
+    # initramfs и отключает загрузочный носитель. Без `enable` служба просто
+    # лежала бы в системе -- ровно та ошибка, которую в этом проекте уже
+    # ловили с модулем dracut.
+    if not config.kiosk.allow_removable_media:
+        commands.append(backend.systemctl_enable(mount_root, "poa-usb-lockdown.service"))
 
     # The text consoles. DontVTSwitch already keeps X from handing them over,
     # and masking the units means there is nothing listening even if it did.

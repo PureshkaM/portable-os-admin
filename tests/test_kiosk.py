@@ -1274,16 +1274,36 @@ def test_dma_is_closed_without_making_the_medium_unbootable():
 def test_a_carried_in_drive_is_refused_at_the_device_level(layout):
     """Выключенного автомонтирования мало: оно закрывает удобный путь, а не
     возможность. Накопитель не авторизуется, поэтому устройства для него не
-    появляется вовсе."""
-    from portable_os_admin.install.kiosk.common import UDEV_RULES_PATH
+    появляется вовсе.
+
+    Запрет включает служба, а правило живёт в /run, и это не оформление.
+    Правило, положенное в /etc, применяется при coldplug -- systemd после
+    перехода из initramfs шлёт `udevadm trigger --action=add` по всем уже
+    существующим устройствам, включая тот, с которого загрузились. Носитель
+    деавторизовывал сам себя: `Synchronizing SCSI cache`, отказ ввода-вывода,
+    корень перемонтирован только для чтения. Найдено прогоном 28.08.2026.
+    """
+    from portable_os_admin.install.kiosk.common import (
+        UDEV_RULES_PATH,
+        UDEV_RUNTIME_RULES_PATH,
+        USB_LOCKDOWN_UNIT_PATH,
+    )
 
     refused = get_backend("debian").scripted_files(make_kiosk_config(), layout)
-    assert UDEV_RULES_PATH in refused
-    assert 'ATTR{authorized}="0"' in refused[UDEV_RULES_PATH][0]
+    # В /etc правила быть не должно -- именно оно отключало носитель.
+    assert UDEV_RULES_PATH not in refused
+    assert USB_LOCKDOWN_UNIT_PATH in refused
+    unit = refused[USB_LOCKDOWN_UNIT_PATH][0]
+    assert 'ATTR{authorized}="0"' in unit
+    assert UDEV_RUNTIME_RULES_PATH in unit
+    # После того как система поднялась, а не раньше: до этого момента правило
+    # достаётся загрузочному носителю.
+    assert "After=multi-user.target" in unit
 
-    # Разрешив носители, администратор получает обычное поведение — и правила,
-    # которое ничего не делает, на носителе не остаётся.
+    # Разрешив носители, администратор получает обычное поведение — и ни
+    # правила, ни службы, которые ничего не делают, на носителе не остаётся.
     allowed = get_backend("debian").scripted_files(
         make_kiosk_config(allow_removable_media=True), layout
     )
     assert UDEV_RULES_PATH not in allowed
+    assert USB_LOCKDOWN_UNIT_PATH not in allowed

@@ -309,6 +309,36 @@ def add_field(
     return entry, next_row
 
 
+def _wheel_scrolls_the_form(combo: ttk.Combobox) -> None:
+    """Колесо над списком прокручивает форму, а не меняет выбранное значение.
+
+    ttk::combobox по умолчанию листает колесом свои значения, а прокрутка
+    формы висит на `bind_all`, то есть на теге `all` -- он в цепочке
+    последний. Поэтому на длинной форме колесо сперва меняло настройку, над
+    которой прошёл курсор, и только потом прокручивало страницу.
+
+    Найдено живым прогоном 28.08.2026: при листании шага «Диск и шифрование»
+    шифр LUKS молча съехал с aes-xts-plain64 на serpent-xts-plain64, и
+    увидеть это удалось лишь на сводке последнего шага. Цена ошибки -- том,
+    зашифрованный не тем алгоритмом, который выбирал администратор.
+
+    Обработчик висит на самом виджете, а привязка виджета срабатывает раньше
+    классовой: "break" не даёт списку увидеть событие вовсе. Прокрутку при
+    этом делаем сами, поднявшись до ближайшего предка, который умеет
+    прокручиваться, -- иначе форма перестала бы листаться над каждым списком.
+    """
+    def handler(event):
+        holder = combo.master
+        while holder is not None and not hasattr(holder, "_on_wheel"):
+            holder = getattr(holder, "master", None)
+        if holder is not None:
+            holder._on_wheel(event)
+        return "break"
+
+    for sequence in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+        combo.bind(sequence, handler)
+
+
 def add_choice(
     parent: tk.Widget,
     row: int,
@@ -340,6 +370,7 @@ def add_choice(
         state="normal" if editable else "readonly",
     )
     combo.grid(row=row, column=1, sticky="w", pady=theme.SPACE_XS)
+    _wheel_scrolls_the_form(combo)
     if on_change is not None:
         combo.bind("<<ComboboxSelected>>", lambda _event: on_change())
     next_row = row + 1

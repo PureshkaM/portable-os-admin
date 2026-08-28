@@ -112,6 +112,30 @@ def test_recovery_files_are_written_before_the_initramfs_is_built(session, make_
     assert env_idx < initramfs_idx, "recovery settings written after the initramfs was built"
 
 
+def test_the_env_names_the_slot_the_code_was_actually_issued_from(make_config):
+    """Номер recovery-слота в env -- тот же, из которого выдан код.
+
+    Раньше здесь стояла константа `RECOVERY_KEYSLOT = 7`, оставшаяся от
+    раскладки до привязки к машинам. При двух разрешённых машинах коды
+    занимают слоты 3..31, и первый выданный лежит в третьем, а в env уезжала
+    семёрка: модуль восстановления проверял бы код против чужого слота и его
+    же уничтожал. Восстановление не сработало бы ни разу, причём молча.
+
+    Найдено осмотром носителя 28.08.2026 -- в env стояло 7 при коде из слота 3.
+    """
+    from portable_os_admin.install import machine_binding
+    from portable_os_admin.install.installer import recovery_env
+
+    config = make_config("stick1", "redos")
+    for slots in (0, 2, 5):
+        config.machine_binding.slots = slots
+        expected = machine_binding.recovery_keyslots(config)[0]
+        env = recovery_env(config, "abcd1234", "11111111-2222-3333-4444-555555555555")
+        assert f"POA_RECOVERY_SLOT={expected}\n" in env
+        # Слот пользователя -- нулевой, его модуль заменяет новым паролем.
+        assert "POA_USER_SLOT=0\n" in env
+
+
 def test_the_recovery_script_is_valid_shell():
     """It runs in a boot environment with no way to report a syntax error."""
     import importlib.resources
@@ -135,6 +159,28 @@ def test_the_recovery_script_no_longer_needs_a_binary_that_was_never_written():
     code = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
     assert "poa-recovery-kdf" not in code
     assert "openssl kdf" in code
+
+
+def test_the_recovery_script_uses_no_tool_the_initramfs_lacks():
+    """`dirname` в initramfs нет, а модуль звал его на четвёртой строке.
+
+    При `set -eu` это роняло его немедленно: путь наружу при забытом пароле не
+    работал ни разу за всё время существования модуля, и заметить это можно
+    было только на настоящей загрузке. Найдено прогоном 28.08.2026 по строке
+    «recovery_module.sh: line 24: dirname: command not found» на экране.
+
+    dracut кладёт в образ только то, что перечислено в inst_multiple, поэтому
+    каждая внешняя команда здесь -- обязательство. Дешевле обойтись
+    подстановкой оболочки.
+    """
+    import importlib.resources
+
+    text = importlib.resources.files("portable_os_admin.recovery").joinpath("recovery_module.sh").read_text(
+        encoding="utf-8"
+    )
+    code = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
+    for tool in ("dirname", "basename", "realpath"):
+        assert tool not in code, f"{tool} нет в initramfs -- модуль упадёт при set -eu"
 
 
 def test_the_user_keyslot_is_only_destroyed_after_the_code_is_accepted():

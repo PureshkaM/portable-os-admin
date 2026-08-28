@@ -162,7 +162,16 @@ class DeviceLister:
             data = self._lsblk_json(path)
         except (subprocess.SubprocessError, OSError, ValueError):
             return None
-        entries = [e for e in data.get("blockdevices", []) if e.get("type") == "disk"]
+        # "loop" наравне с "disk": файл-образ, подключённый через losetup, --
+        # это штатная цель стенда, а lsblk называет его типом "loop". Фильтр
+        # по одному "disk" отбрасывал его, describe возвращал None, и мастер
+        # строил устройство из текстовых полей. Последствие серьёзнее пустого
+        # списка разделов на экране подтверждения: вместе с ними терялись
+        # точки монтирования, ради которых эта функция и написана, -- то есть
+        # на файл-образе не работала защита от разметки поверх смонтированной
+        # файловой системы. Найдено живым прогоном 28.08.2026: экран сказал
+        # «разделов не обнаружено» о носителе с пятью разделами.
+        entries = [e for e in data.get("blockdevices", []) if e.get("type") in ("disk", "loop")]
         if not entries:
             return None
         entry = entries[0]

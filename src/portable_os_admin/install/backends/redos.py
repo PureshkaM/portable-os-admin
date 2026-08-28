@@ -45,6 +45,10 @@ class RedOSInstallBackend(InstallBackend):
     ssh_package = "openssh-server"
     ssh_service = "sshd"
     sudo_group = "wheel"
+    # `keyscript=` -- интерфейс cryptsetup-initramfs, которого в RHEL нет.
+    # Здесь том открывает хук dracut из модуля poa-machine, и опция в crypttab
+    # была бы либо проигнорирована, либо отвергнута systemd-cryptsetup.
+    crypttab_keyscript = False
     # RED OS's image carries sddm and gdm but no lightdm. sddm is the lighter
     # of the two and needs no session bus of its own to autologin.
     display_manager_service = "sddm"
@@ -302,8 +306,12 @@ class RedOSInstallBackend(InstallBackend):
             "depends() { echo crypt; }\n"
             "install() {\n"
             "    # scrypt for the recovery passphrase, plus the small tools the\n"
-            "    # module uses; cryptsetup comes with the crypt module.\n"
-            "    inst_multiple openssl od stty sha256sum\n"
+            "    # module uses. cryptsetup перечислен явно: полагаться на модуль\n"
+            "    # crypt тут было ошибкой -- в systemd-режиме он кладёт\n"
+            "    # `systemd-cryptsetup`, а не утилиту. Найдено прогоном\n"
+            "    # 28.08.2026; до него ни одна команда этого модуля не могла\n"
+            "    # выполниться, и молчал он об этом так же, как хук привязки.\n"
+            "    inst_multiple cryptsetup openssl od stty sha256sum\n"
             "    inst_hook pre-mount 99 \"$moddir/poa-recovery-hook.sh\"\n"
             f"    mkdir -p \"${{initdir}}{RECOVERY_INITRAMFS_DIR}\"\n"
             f"    cp -a /{RECOVERY_DIR}/. \"${{initdir}}{RECOVERY_INITRAMFS_DIR}/\" 2>/dev/null || true\n"
@@ -349,8 +357,42 @@ class RedOSInstallBackend(InstallBackend):
             "check() { return 0; }\n"
             "depends() { echo crypt; }\n"
             "install() {\n"
-            "    inst_multiple sha256sum stty cut grep\n"
-            '    inst_hook pre-mount 50 "$moddir/poa-machine-unlock.sh"\n'
+            # cryptsetup перечислен явно, и это не перестраховка. Модуль crypt
+            # в systemd-режиме кладёт в образ `systemd-cryptsetup`, а саму
+            # утилиту -- нет: найдено прогоном 28.08.2026, когда верная фраза
+            # трижды подряд «не подошла». Каждый вызов падал с command not
+            # found, а `if cryptsetup ...; then ... else` честно уходил в else,
+            # так что ошибка выглядела как неверный пароль и ничем себя не
+            # выдавала.
+            "    inst_multiple cryptsetup sha256sum stty cut grep\n"
+            # initqueue/settled, а не pre-mount, и это выяснилось прогоном
+            # 28.08.2026: носитель не загрузился вовсе. dracut ждёт появления
+            # корневого устройства заданием initqueue/finished/devexists-<uuid
+            # корня>, а корень появляется только после расшифровки. pre-mount
+            # же идёт ПОСЛЕ initqueue -- то есть хук, который единственный мог
+            # открыть том, ждал шага, до которого его собственное бездействие
+            # не пускало. Через две минуты initqueue уходил в
+            # dracut-emergency с сообщением про несуществующий UUID.
+            #
+            # Тот же симптом уже ловили 26.08.2026, когда в командную строку
+            # не попадал rd.luks.uuid. Привязка сняла эти параметры намеренно
+            # (см. unlock_kernel_parameters) и вернула старый дефект: снимать
+            # штатный механизм можно только вместе с переносом своего туда,
+            # где он успевает сработать.
+            #
+            # settled -- после того как udev устаканился, то есть раздел LUKS
+            # уже есть, и до истечения таймаута ожидания корня.
+            '    inst_hook initqueue/settled 50 "$moddir/poa-machine-unlock.sh"\n'
+            # Путь наружу обязан лежать там же. Модуль восстановления сам
+            # висит на pre-mount, а при включённой привязке до pre-mount не
+            # доходят: initqueue не пропускает дальше, пока тома нет. Значит
+            # обещание «не удалось открыть -- объясним, что делать» держится
+            # только если объяснять тоже в initqueue, сразу после попытки.
+            # Ставится отсюда, а не из модуля восстановления, потому что без
+            # привязки том открывает systemd-cryptsetup, и хук, сработавший
+            # раньше ввода пароля, спрашивал бы код восстановления у того, кто
+            # ещё не ошибся ни разу.
+            '    inst_hook initqueue/settled 99 "$moddir/poa-machine-rescue.sh"\n'
             '    inst_hook pre-pivot 50 "$moddir/poa-machine-register.sh"\n'
             f'    mkdir -p "${{initdir}}{RECOVERY_INITRAMFS_DIR}"\n'
             f'    cp -a /{machine_binding.KEY_SCRIPT_PATH} "${{initdir}}{RECOVERY_INITRAMFS_DIR}/" 2>/dev/null || true\n'
@@ -375,9 +417,19 @@ class RedOSInstallBackend(InstallBackend):
             "export POA_PASSPHRASE\n"
             f"{machine_binding.register_script(config, media_id)}"
         )
+        rescue_hook = (
+            "#!/bin/sh\n"
+            "# generated by portable-os-admin\n"
+            "# Том всё ещё закрыт после попыток разблокировки -- значит фраза\n"
+            "# не подошла, и дальше разговор ведёт модуль восстановления.\n"
+            f"[ -b /dev/mapper/{layout.mapper_name} ] && exit 0\n"
+            f"[ -x {RECOVERY_INITRAMFS_DIR}/recovery_module.sh ] || exit 0\n"
+            f"{RECOVERY_INITRAMFS_DIR}/recovery_module.sh </dev/console >/dev/console 2>&1\n"
+        )
         return {
             "usr/lib/dracut/modules.d/90poa-machine/module-setup.sh": (module_setup, 0o755),
             "usr/lib/dracut/modules.d/90poa-machine/poa-machine-unlock.sh": (unlock_hook, 0o755),
+            "usr/lib/dracut/modules.d/90poa-machine/poa-machine-rescue.sh": (rescue_hook, 0o755),
             "usr/lib/dracut/modules.d/90poa-machine/poa-machine-register.sh": (register_hook, 0o755),
             "etc/dracut.conf.d/90-poa-machine.conf": (
                 "# generated by portable-os-admin\n"

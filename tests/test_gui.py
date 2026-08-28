@@ -25,6 +25,7 @@ from portable_os_admin.gui.screens.config_wizard import ConfigWizardFrame
 from portable_os_admin.gui.screens.configs_list import ConfigsListFrame
 from portable_os_admin.gui.screens.install_wizard import InstallWizardFrame
 from portable_os_admin.gui.screens.startup import StartupFrame
+from portable_os_admin.install import machine_binding
 
 
 @pytest.fixture
@@ -201,6 +202,39 @@ def test_config_wizard_account_step_blocks_invalid_username(gui_app, tmp_path):
     assert "имя пользователя" in wizard.message_bar.var.get()
 
 
+def test_config_wizard_wheel_over_a_combobox_does_not_change_it(gui_app, tmp_path):
+    """Прокрутка формы колесом не должна менять настройку под курсором.
+
+    Найдено живым прогоном 28.08.2026: при листании шага «Диск и шифрование»
+    курсор прошёл над списком «Шифр LUKS», ttk::combobox обработал колесо
+    раньше прокрутки формы, и шифр молча съехал с aes-xts-plain64 на
+    serpent-xts-plain64. Увидеть это удалось только на сводке последнего шага
+    -- том был бы зашифрован не тем алгоритмом, который выбирал администратор.
+    """
+    app = gui_app
+    _open_container(app, tmp_path)
+    app.show_frame(ConfigWizardFrame)
+    wizard = app._current_frame
+
+    wizard.name_var.set("stick1")
+    wizard._go_next()  # -> учётная запись
+    app.update()
+    wizard._go_next()  # -> диск и шифрование
+    app.update()
+
+    before = wizard.cipher_var.get()
+    # Button-4/5 -- колесо в X11, то самое событие, что пришло от живой мыши.
+    for _ in range(3):
+        wizard.cipher_combo.event_generate("<Button-5>", x=5, y=5)
+        app.update()
+    assert wizard.cipher_var.get() == before
+
+    for _ in range(3):
+        wizard.cipher_combo.event_generate("<Button-4>", x=5, y=5)
+        app.update()
+    assert wizard.cipher_var.get() == before
+
+
 class _FakeSource:
     """Three packages whose alphabetical and version orders differ, so a sort
     test cannot pass by accident."""
@@ -295,6 +329,7 @@ class _StubInstaller:
     last_device = None
     last_dry_run = None
     last_image_path = None
+    last_config = None
 
     def __init__(self, session):
         from portable_os_admin.install import OSInstaller
@@ -305,6 +340,7 @@ class _StubInstaller:
         _StubInstaller.last_device = device
         _StubInstaller.last_dry_run = dry_run
         _StubInstaller.last_image_path = image_path
+        _StubInstaller.last_config = config
         return self._real.run(
             device, config, passphrase, image_path=image_path, dry_run=True,
             confirm_device=confirm_device, on_step=on_step,
@@ -372,7 +408,12 @@ def test_install_wizard_records_media_and_recovery(gui_app, tmp_path, monkeypatc
     # the wizard asks for a real install -- there is no longer a preview mode
     assert _StubInstaller.last_dry_run is False
     assert len(app.session.container.data.media_records) == 1
-    assert len(app.session.container.data.recovery_records) == 1
+    # По записи на каждый recovery-keyslot, а не одна: остаток заголовка LUKS
+    # уходит под одноразовые коды целиком, и сколько их -- зависит от того,
+    # сколько машин разрешил администратор. Считается из той же функции, что и
+    # раскладка слотов: зашитое число разошлось бы с ней при первой же правке.
+    expected = machine_binding.recovery_keyslots(_StubInstaller.last_config)
+    assert len(app.session.container.data.recovery_records) == len(expected)
     assert "код восстановления" in wizard.message_bar.var.get()
 
 

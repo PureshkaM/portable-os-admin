@@ -78,7 +78,13 @@ TEXT_WRAP = 620
 #: For text in the second column of a form, which already starts well to the
 #: right of the card's edge. Using the full width there pushed the last words
 #: of a long hint off the card entirely.
-HINT_WRAP = 520
+# 440, а не 520: на экранах с длинными подписями («Мин. длина пароля
+# пользователя:», «Разных машин на носитель:») колонка полей начинается
+# примерно с x=510, и подсказка шириной 520 уезжала за правый край карточки --
+# обрезанными оказывались все длинные подсказки шага «Диск и шифрование», а не
+# какая-то одна. Замерено на окне 1040x700, том самом, которым приложение
+# открывается.
+HINT_WRAP = 440
 
 # ----------------------------------------------------------------------
 # Type scale: four roles, no more

@@ -118,10 +118,39 @@ class DeployWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
         if not self.passphrase_var.get():
             self.message_bar.error("Задайте парольную фразу.")
             return False
+        # Длина проверяется здесь, потому что больше нигде: до 28.08.2026
+        # принималась фраза из одного символа. Лимит попыток LUKS от перебора
+        # не спасает -- он действует только при загрузке носителя, а тот, у
+        # кого носитель в руках, снимает образ заголовка и перебирает офлайн.
+        # Там работают ровно два множителя: стоимость попытки (argon2id уже
+        # выбран) и длина фразы.
+        minimum = self._passphrase_minimum()
+        if len(self.passphrase_var.get()) < minimum:
+            self.message_bar.error(
+                f"Парольная фраза короче {minimum} знаков. Носитель защищён только ею: "
+                "тот, у кого он окажется в руках, будет подбирать фразу на своей машине, "
+                "где счётчик попыток не действует."
+            )
+            return False
         if self.passphrase_var.get() != self.passphrase_confirm_var.get():
             self.message_bar.error("Пароли не совпадают.")
             return False
         return True
+
+    def _passphrase_minimum(self) -> int:
+        """Минимум из конфигурации носителя, а не из кода этого экрана.
+
+        Конфигурация здесь -- та, с которой собран выбранный дистрибутив, и
+        порог задаётся вместе с остальными свойствами LUKS. Если прочитать её
+        не удалось (экран открыт до выбора дистрибутива), берётся значение по
+        умолчанию из схемы -- не ноль, потому что «не смогли прочитать» не
+        повод не проверять вовсе.
+        """
+        from ...config.schema import LuksConfig
+
+        config = getattr(self.metadata, "config", None)
+        luks = getattr(config, "luks", None)
+        return int(getattr(luks, "min_passphrase_length", 0) or LuksConfig().min_passphrase_length)
 
     # -- шаг 3: подтверждение и запись --------------------------------------
     def _build_step_confirm(self, body: ttk.Frame) -> None:

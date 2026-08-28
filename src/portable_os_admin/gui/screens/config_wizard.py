@@ -27,6 +27,7 @@ from ...config.schema import (
 )
 from ...config.validator import ConfigValidationUnavailableError
 from ...errors import RepoBrowseError
+from ...install import machine_binding
 from ...install.emulation import probe as probe_emulation
 from .. import theme
 from ..widgets import KNOWN_ERRORS, WizardFrame, add_choice, add_field, run_in_background
@@ -416,8 +417,21 @@ class ConfigWizardFrame(WizardFrame):
             width=12,
         )
         self.attempts_var = tk.StringVar(value=str(luks.failed_attempts_limit))
-        add_field(
+        _, row = add_field(
             form, row, "Лимит попыток пароля:", self.attempts_var, hint="от 1 до 10", width=6
+        )
+        self.binding_slots_var = tk.StringVar(value=str(self.config.machine_binding.slots))
+        add_field(
+            form,
+            row,
+            "Разных машин на носитель:",
+            self.binding_slots_var,
+            hint=(
+                "0 — ограничения нет. Пока свободные слоты есть, фраза открывает носитель "
+                "на любой машине; запрет начинает действовать, когда занят последний. "
+                "Освободить слот можно только через администратора"
+            ),
+            width=6,
         )
 
     def _on_cipher_changed(self) -> None:
@@ -451,6 +465,13 @@ class ConfigWizardFrame(WizardFrame):
             luks.failed_attempts_limit = int(self.attempts_var.get().strip())
         except ValueError:
             luks.failed_attempts_limit = 0
+        try:
+            self.config.machine_binding.slots = int(self.binding_slots_var.get().strip())
+        except ValueError:
+            # -1, а не 0: 0 -- это осмысленный выбор «без ограничения», и молча
+            # выдать его за набранную ерунду значило бы отключить защиту вместо
+            # того, чтобы сказать об ошибке. Валидация ниже отвергает -1.
+            self.config.machine_binding.slots = -1
 
     def _validate_step_disk(self) -> bool:
         disk = self.config.disk
@@ -484,6 +505,12 @@ class ConfigWizardFrame(WizardFrame):
             return False
         if not (1 <= luks.failed_attempts_limit <= 10):
             self.message_bar.error("Лимит попыток пароля должен быть от 1 до 10.")
+            return False
+        slots = self.config.machine_binding.slots
+        if not (0 <= slots <= machine_binding.MAX_SLOTS):
+            self.message_bar.error(
+                f"Число машин должно быть от 0 до {machine_binding.MAX_SLOTS}."
+            )
             return False
         return True
 

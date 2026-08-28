@@ -134,6 +134,20 @@ poa_fingerprint_id() {{
 poa_machine_key() {{
     printf '%s%s' "$1" "$(poa_fingerprint_id)" | sha256sum | cut -d' ' -f1
 }}
+
+# Первые восемь знаков отпечатка -- в консоль загрузки. Без них отказ на
+# незарегистрированной машине неотличим от неверной фразы: и то, и другое
+# выглядит как «пароль не подошёл». Администратору этого хватает, чтобы
+# сказать, ту ли машину видит носитель, а секрета здесь нет -- отпечаток
+# известен всякому, у кого машина в руках.
+#
+# Только в консоль и в stderr, никогда в stdout: у Debian этот же файл
+# подключается как keyscript, и весь его stdout cryptsetup принимает за ключ.
+# Строка «Машина: …», попавшая туда, сделала бы носитель незагружаемым.
+poa_say_fingerprint() {{
+    short=$(poa_fingerprint_id | cut -c1-8)
+    echo "Машина: $short" > /dev/console 2>/dev/null || echo "Машина: $short" >&2
+}}
 """
 
 
@@ -143,23 +157,49 @@ KEY_SCRIPT_PATH = "usr/local/sbin/poa-machine-key"
 REGISTER_SCRIPT_PATH = "usr/local/sbin/poa-machine-register"
 
 
-def unlock_functions() -> str:
+def unlock_functions(config) -> str:
     """Общая часть: спросить фразу и выбрать подходящий ключ.
 
     Выбор делается проверкой, а не догадкой: сначала пробуется ключ машины, и
     только если такого keyslot нет -- сама фраза. Так один и тот же код
     обслуживает и зарегистрированную машину, и первую загрузку на новой, и
     пользователь в обоих случаях вводит пароль ровно один раз.
+
+    Проверка идёт по машинным слотам поимённо, а не по всему заголовку. Без
+    `--key-slot` cryptsetup перебирает каждый занятый keyslot, а их на готовом
+    носителе тридцать, и на каждый приходится отдельный argon2id на 256 МиБ --
+    8,4 секунды по замерам этого проекта. Четыре минуты ожидания перед вводом
+    пароля на живой машине и часы под эмуляцией: прогон 28.08.2026 на этом и
+    встал. При двух разрешённых машинах проверок ровно две.
     """
-    return """
+    machines = machine_keyslots(config)
+    first = machines[0] if machines else FIRST_MACHINE_KEYSLOT
+    last = machines[-1] if machines else FIRST_MACHINE_KEYSLOT - 1
+    return (
+        f"""
+# Слоты, отданные машинам. Только их и проверяем.
+POA_FIRST_MACHINE_SLOT={first}
+POA_LAST_MACHINE_SLOT={last}
+"""
+        + """
 # Запрос фразы. askpass есть в initramfs обоих семейств; при его отсутствии
 # читаем с консоли сами -- носитель не должен зависеть от того, положил ли
 # дистрибутив в образ конкретную утилиту.
 poa_ask_passphrase() {
     if [ -x /lib/cryptsetup/askpass ]; then
-        /lib/cryptsetup/askpass "Введите пароль носителя: "
+        /lib/cryptsetup/askpass "Введите пароль носителя: " || true
     elif command -v systemd-ask-password >/dev/null 2>&1; then
-        systemd-ask-password "Введите пароль носителя:"
+        # --timeout=300 вместо умолчания dracut: замерено на стенде
+        # 28.08.2026 -- запрос жил 45 секунд и молча закрывался с «Failed to
+        # query password: Timer expired». Столько же не хватает человеку,
+        # который сперва читает, что машина носителю незнакома, а потом
+        # набирает длинную фразу. Истёкший таймер здесь -- незагружаемый
+        # носитель, и цена ошибки несопоставима с ожиданием.
+        #
+        # `|| true` -- потому что скрипт идёт под `set -e`, а неудачный ввод
+        # возвращает ненулевой код: без этого первая же осечка убивала хук
+        # целиком вместо того, чтобы отдать вторую и третью попытку.
+        systemd-ask-password --timeout=300 "Введите пароль носителя:" || true
     else
         printf 'Введите пароль носителя: ' > /dev/console 2>/dev/null || true
         stty -echo 2>/dev/null || true
@@ -170,23 +210,43 @@ poa_ask_passphrase() {
     fi
 }
 
+# Номер слота этой машины, если он есть, иначе пусто.
+#
+# Каждый слот проверяется поимённо, через --key-slot. Без него cryptsetup
+# перебирает весь заголовок, а занятых слотов на готовом носителе тридцать, и
+# каждый -- отдельный argon2id на 256 МиБ. Восемь секунд на слот превращаются
+# в четыре минуты ожидания перед вводом пароля, а под эмуляцией -- в часы:
+# прогон 28.08.2026 на этом и встал, выглядело это как зависшая загрузка.
+poa_machine_slot() {  # $1 -- устройство, $2 -- ключ машины
+    ( umask 077; printf '%s' "$2" > /run/poa-try.key )
+    poa_slot="$POA_FIRST_MACHINE_SLOT"
+    while [ "$poa_slot" -le "$POA_LAST_MACHINE_SLOT" ]; do
+        if cryptsetup luksOpen --test-passphrase --key-slot "$poa_slot" \
+                --key-file /run/poa-try.key "$1" 2>/dev/null; then
+            rm -f /run/poa-try.key
+            printf '%s' "$poa_slot"
+            return 0
+        fi
+        poa_slot=$((poa_slot + 1))
+    done
+    rm -f /run/poa-try.key
+    return 0
+}
+
 # Ключ, которым этот носитель открывается на этой машине. Печатает ключ
 # машины, если её keyslot существует, иначе саму фразу -- она подойдёт, пока
 # жив регистрационный слот, и не подойдёт, когда он уничтожен. Второе и есть
 # отказ на незарегистрированной машине.
 poa_unlock_key() {  # $1 -- устройство, $2 -- фраза
-    machine=$(printf '%s%s' "$2" "$(poa_fingerprint_id)" | sha256sum | cut -d' ' -f1)
-    printf '%s' "$machine" > /run/poa-try.key
-    chmod 600 /run/poa-try.key 2>/dev/null || true
-    if cryptsetup luksOpen --test-passphrase --key-file /run/poa-try.key "$1" 2>/dev/null; then
-        rm -f /run/poa-try.key
+    machine=$(poa_machine_key "$2")
+    if [ -n "$(poa_machine_slot "$1" "$machine")" ]; then
         printf '%s' "$machine"
     else
-        rm -f /run/poa-try.key
         printf '%s' "$2"
     fi
 }
 """
+    )
 
 
 def key_script(config) -> str:
@@ -216,9 +276,10 @@ def key_script(config) -> str:
 set -eu
 
 {fingerprint_functions()}
-{unlock_functions()}
+{unlock_functions(config)}
 
 device="${{CRYPTTAB_SOURCE:-$1}}"
+poa_say_fingerprint
 passphrase=$(poa_ask_passphrase)
 [ -n "$passphrase" ] || exit 0
 
@@ -284,10 +345,21 @@ slot_taken() {{  # $1 -- номер слота
 [ -n "${{POA_PASSPHRASE:-}}" ] || exit 0
 
 # Ключ этой машины уже есть -- значит она зарегистрирована, и делать нечего.
+#
+# Проверяются только машинные слоты, поимённо. Без --key-slot cryptsetup
+# перебирает весь заголовок -- тридцать занятых слотов, каждый со своим
+# argon2id на 256 МиБ, -- и это на каждой загрузке уже зарегистрированной
+# машины, то есть в самом частом случае. Та же ошибка была в разблокировке и
+# там же измерена: четыре минуты на живом железе, часы под эмуляцией.
 ( umask 077; poa_machine_key "$POA_PASSPHRASE" > "$KEY" )
-if cryptsetup luksOpen --test-passphrase --key-file "$KEY" "$device" 2>/dev/null; then
-    exit 0
-fi
+poa_slot=$FIRST_SLOT
+while [ "$poa_slot" -le "$LAST_SLOT" ]; do
+    if cryptsetup luksOpen --test-passphrase --key-slot "$poa_slot" \
+            --key-file "$KEY" "$device" 2>/dev/null; then
+        exit 0
+    fi
+    poa_slot=$((poa_slot + 1))
+done
 
 used=0
 free_slot=""
@@ -312,6 +384,7 @@ say ""
 say "======================================================================"
 say " Эта машина носителю незнакома."
 say ""
+say " Отпечаток машины: $(poa_fingerprint_id | cut -c1-8)"
 say " Занято слотов: $used из $SLOTS, свободно: $((SLOTS - used))."
 say ""
 say " Если продолжить, конфигурация этой машины будет записана в носитель"
@@ -378,10 +451,23 @@ device="/dev/disk/by-uuid/${{POA_LUKS_UUID}}"
 
 # Уже открыт -- значит этот хук отработал раньше или том открыли иначе.
 [ -b "/dev/mapper/{mapper_name}" ] && exit 0
+
+# Ждём сам накопитель, а не выходим молча. udev успокаивается раньше, чем
+# появляется USB-устройство: замерено на стенде 28.08.2026 -- initqueue
+# завершился на 11,55 секунде, а sda обнаружился на 12,5. Хук отрабатывал
+# вхолостую, том оставался закрытым, и systemd потом две с половиной минуты
+# ждал корневое устройство, которого без нас не будет.
+poa_waited=0
+while [ ! -b "$device" ] && [ "$poa_waited" -lt 60 ]; do
+    sleep 1
+    poa_waited=$((poa_waited + 1))
+done
 [ -b "$device" ] || exit 0
 
 {fingerprint_functions()}
-{unlock_functions()}
+{unlock_functions(config)}
+
+poa_say_fingerprint
 
 attempt=1
 while [ "$attempt" -le 3 ]; do
