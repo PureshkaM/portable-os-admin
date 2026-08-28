@@ -4,7 +4,7 @@ These tests assert the *shape* of what gets written, which is all a test can
 do here: whether MATE honours a lock, whether lightdm autologins into a locked
 account and whether `noexec` stops the thing an administrator worried about
 are properties of the medium, not of this code, and are recorded as verified or
-unverified in docs/HANDOVER.md.
+unverified in docs/VERIFICATION.md.
 
 What they do catch is the failure mode this feature is most prone to -- a
 restriction that is generated but inert. Every real defect found while building

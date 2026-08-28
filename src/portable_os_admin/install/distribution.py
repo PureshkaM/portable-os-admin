@@ -333,7 +333,7 @@ def verify_archive(directory: str, metadata: DistributionMetadata) -> str:
     Whoever can replace the archive can replace the checksum file beside it and
     the digest inside the metadata. Only a signature over the digest, made with
     a key the substituting party does not hold, would answer that -- see
-    docs/HANDOVER.md for where that is recorded as the next step.
+    docs/PLAN.md for where that is recorded as the next step.
     """
     archive = archive_path(directory, metadata)
     expected = metadata.sha256
