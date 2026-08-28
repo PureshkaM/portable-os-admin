@@ -200,6 +200,13 @@ def test_the_machine_key_is_tried_only_against_machine_slots():
     register = mb.register_script(config, "abcd1234")
     assert "--key-slot" in register, "регистрация перебирает весь заголовок"
 
+    # И само открытие тома тоже идёт по известному слоту. Дороже всего это
+    # обходилось на отказе: на незарегистрированной машине ключ не подходит
+    # никуда, cryptsetup перебирал все тридцать слотов, и так трижды подряд.
+    # Замерено 28.08.2026 -- одиннадцать минут на попытку, экран при этом
+    # неотличим от зависшего.
+    assert 'luksOpen --key-slot "$slot"' in script
+
 
 def test_the_unlock_script_waits_for_the_medium_to_appear():
     """Накопитель появляется позже, чем udev успокаивается.

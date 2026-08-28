@@ -473,9 +473,28 @@ attempt=1
 while [ "$attempt" -le 3 ]; do
     passphrase=$(poa_ask_passphrase)
     if [ -n "$passphrase" ]; then
-        key=$(poa_unlock_key "$device" "$passphrase")
+        # Слот известен заранее, и открываем строго его. Без --key-slot
+        # cryptsetup перебирает весь заголовок -- тридцать занятых слотов на
+        # готовом носителе, каждый со своим argon2id на 256 МиБ. Хуже всего
+        # это било по отказу: на незарегистрированной машине ключ не подходит
+        # никуда, перебор идёт до конца и повторяется трижды. Замерено на
+        # стенде 28.08.2026 -- одиннадцать минут на одну попытку, и всё это
+        # время экран выглядит зависшим. Теперь отказ мгновенный: слота нет --
+        # значит нет.
+        machine_key=$(poa_machine_key "$passphrase")
+        slot=$(poa_machine_slot "$device" "$machine_key")
+        if [ -n "$slot" ]; then
+            key="$machine_key"
+        else
+            # Регистрационный слот. Когда он уничтожен -- а это и означает
+            # исчерпанный носитель, -- открывать нечем, и проверять больше
+            # нечего.
+            slot="${{POA_USER_SLOT:-0}}"
+            key="$passphrase"
+        fi
         ( umask 077; printf '%s' "$key" > /run/poa-unlock.key )
-        if cryptsetup luksOpen --key-file /run/poa-unlock.key "$device" "{mapper_name}" 2>/dev/null; then
+        if cryptsetup luksOpen --key-slot "$slot" --key-file /run/poa-unlock.key \
+                "$device" "{mapper_name}" 2>/dev/null; then
             rm -f /run/poa-unlock.key
             # Фразу оставляем шагу регистрации: он идёт следом, в этой же
             # загрузке, и второй запрос пароля выглядел бы как сбой.
