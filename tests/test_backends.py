@@ -452,6 +452,20 @@ def test_the_boot_screen_is_built_only_from_plugins_the_image_carries():
     # Тема выбрана: без этого plymouth возьмёт тему дистрибутива.
     assert "Theme=poa" in files["etc/plymouth/plymouthd.conf"]
 
+    # Шрифт назван явно. В initramfs шрифтов нет вовсе, и без имени plymouth
+    # рисует прямоугольники вместо букв -- проверено осмотром 29.08.2026.
+    assert "DejaVu Sans" in theme
+
+    # А сам шрифт и плагин, рисующий текст, кладутся в initramfs руками:
+    # модуль plymouth копирует `two-step.so`, но не `label.so`, и без него
+    # графический режим не показывает ни строчки -- plymouth молча уходит в
+    # текстовый, где кириллицы нет.
+    setup = get_backend("redos").recovery_boot_files(layout, config)[
+        "usr/lib/dracut/modules.d/91poa-recovery/module-setup.sh"
+    ][0]
+    assert "label.so" in setup
+    assert "DejaVuSans.ttf" in setup
+
     # И плагины, на которых она держится, установлены поимённо: сам `plymouth`
     # приносит только details, text и tribar.
     packages = get_backend("redos").boot_packages(config)

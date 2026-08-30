@@ -314,6 +314,33 @@ class RedOSInstallBackend(InstallBackend):
             # awk -- для таблицы готовых строк запроса: модуль ищет в ней
             # строку по слоту и виду, а не считает base32 сам.
             "    inst_multiple cryptsetup openssl od stty sha256sum awk grep\n"
+            # Графический экран загрузки собирается здесь, потому что модуль
+            # plymouth сам его не доносит. Проверено осмотром initramfs
+            # 29.08.2026: `two-step.so` он копирует, а `label.so` -- нет, и
+            # без него графический режим не может показать ни строчки, так
+            # что plymouth молча откатывается в текстовый. Экран при этом
+            # выглядит работающим -- он просто рисуется консольным шрифтом,
+            # который кириллицы не знает, и весь русский текст идёт блоками.
+            '    for _poa_plugin in /usr/lib64/plymouth/label.so /usr/lib/plymouth/label.so; do\n'
+            '        [ -e "$_poa_plugin" ] && inst_simple "$_poa_plugin"\n'
+            "    done\n"
+            # Шрифт -- по той же причине: в initramfs их нет вовсе, а plymouth
+            # без шрифта рисует прямоугольники. DejaVu берётся потому, что он
+            # есть в образе РЕД ОС и знает кириллицу; без него графика была бы
+            # ровно так же нема, как консоль.
+            '    for _poa_font in /usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf \\\n'
+            '                     /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf; do\n'
+            '        [ -e "$_poa_font" ] && inst_simple "$_poa_font"\n'
+            "    done\n"
+            # Одного файла шрифта мало. plymouth ищет шрифт через Pango, а тот
+            # -- через fontconfig, по имени «DejaVu Sans». Без правил и кэша
+            # fontconfig имя не разрешается ни во что, текст не рисуется вовсе,
+            # и plymouth уходит в текстовый режим -- туда, где кириллицы нет.
+            # Осмотр initramfs 29.08.2026: Pango на месте, `/etc/fonts` пуст.
+            '    for _poa_fc in /etc/fonts/fonts.conf /etc/fonts/conf.d; do\n'
+            '        [ -e "$_poa_fc" ] && inst_multiple -o "$_poa_fc"\n'
+            "    done\n"
+            '    [ -d /var/cache/fontconfig ] && inst_multiple -o /var/cache/fontconfig/*\n'
             "    inst_hook pre-mount 99 \"$moddir/poa-recovery-hook.sh\"\n"
             f"    mkdir -p \"${{initdir}}{RECOVERY_INITRAMFS_DIR}\"\n"
             f"    cp -a /{RECOVERY_DIR}/. \"${{initdir}}{RECOVERY_INITRAMFS_DIR}/\" 2>/dev/null || true\n"
