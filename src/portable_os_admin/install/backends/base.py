@@ -661,8 +661,17 @@ class InstallBackend(ABC):
             "DialogVerticalAlignment=.5\n"
             "TitleHorizontalAlignment=.5\n"
             "TitleVerticalAlignment=.5\n"
-            "MessageHorizontalAlignment=.5\n"
-            "MessageVerticalAlignment=.7\n"
+            # Сообщения -- под диалогом, а не в левом верхнем углу.
+            #
+            # Здесь стояли `MessageHorizontalAlignment` и
+            # `MessageVerticalAlignment`, и они не делали ничего: плагин
+            # `two-step` таких ключей не знает вовсе. Выяснено 31.08.2026
+            # осмотром самого плагина (`strings two-step.so`) -- он читает
+            # `MessageBelowAnimation`, и это единственное, чем положение
+            # сообщений вообще управляется. До этого объяснение, почему
+            # компьютер незнаком, и причина восстановления печатались в углу,
+            # мелко и мимо взгляда.
+            "MessageBelowAnimation=true\n"
             # Белый текст. Указывается отдельно от фона: по умолчанию plymouth
             # берёт цвет темы дистрибутива, а она у РЕД ОС своя.
             "TitleColor=0xffffff\n"

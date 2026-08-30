@@ -449,6 +449,15 @@ def test_the_boot_screen_is_built_only_from_plugins_the_image_carries():
     assert "BackgroundEndColor=0x000000" in theme
     assert "MessageColor=0xffffff" in theme
 
+    # Сообщения -- под диалогом. Ключи задаются только те, что плагин читает:
+    # `MessageHorizontalAlignment`/`MessageVerticalAlignment` стояли в теме и
+    # не делали ничего -- `two-step` их не знает, и объяснения печатались в
+    # левом верхнем углу мимо взгляда. Выяснено осмотром самого плагина
+    # 31.08.2026.
+    assert "MessageBelowAnimation=true" in theme
+    assert "MessageHorizontalAlignment" not in theme
+    assert "MessageVerticalAlignment" not in theme
+
     # Тема выбрана: без этого plymouth возьмёт тему дистрибутива.
     assert "Theme=poa" in files["etc/plymouth/plymouthd.conf"]
 

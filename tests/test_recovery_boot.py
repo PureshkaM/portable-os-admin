@@ -270,23 +270,66 @@ def test_the_medium_decides_itself_what_went_wrong():
     assert "kind=machines" in text
 
 
-def test_the_reset_forgets_every_machine_and_registers_none():
-    """Сброс возвращает носитель в исходное состояние, и только.
+def test_changing_the_passphrase_also_clears_the_machines_it_orphaned():
+    """Смена фразы делает все машинные ключи нерабочими -- значит их надо убрать.
 
-    Текущая машина не записывается, хотя человек звонил администратору именно
-    ради неё: регистрация спрашивает разрешение, а вопрос, заданный посреди
-    восстановления, получит «да» не глядя. После перезагрузки он ответит на
-    него штатно, увидев счётчик занятых слотов.
+    Ключ машины выводится из фразы и отпечатка: `sha256(фраза ‖ отпечаток)`.
+    Восстановление меняет фразу, и записанные ключи разом перестают ей
+    соответствовать, но слоты остаются занятыми. Носитель на две машины после
+    одного восстановления оказывался исчерпан, и та же машина, с которой
+    человек только что работал, встречала его словами «этот компьютер
+    незнаком, занять место 2 из 2». Проверено загрузкой 31.08.2026.
+
+    Мёртвый ключ ничего не защищает и ничего не открывает -- он только
+    занимает место, поэтому уходит вместе с фразой, которая его породила.
     """
     text = _module_text()
-    reset = text[text.index('if [ "$kind" = machines ]; then'):]
+    body = "\n".join(
+        line for line in text.splitlines() if not line.lstrip().startswith("#")
+    )
 
-    # Перебираются все машинные слоты, а не один.
-    assert '$POA_MACHINE_FIRST' in reset and '$POA_MACHINE_LAST' in reset
-    assert 'luksKillSlot "$device" "$slot"' in reset
-    # Регистрация здесь не вызывается ни в каком виде.
-    assert "luksAddKey" not in reset.split("while :;")[0]
-    assert "reboot" in text, "после сброса нужна перезагрузка"
+    # Очистка машинных слотов -- вне ветки «сброс», то есть в обоих случаях.
+    clearing = body[body.index("POA_MACHINE_FIRST="):]
+    assert 'luksKillSlot "$device" "$slot"' in clearing
+    before_kill = body[: body.index('luksKillSlot "$device" "$slot"')]
+    assert 'if [ "$kind" = machines ]; then' not in before_kill.split("accepted")[-1], (
+        "очистка машинных слотов осталась только в ветке сброса"
+    )
+
+
+def test_both_kinds_of_trouble_take_exactly_the_same_path():
+    """Забытый пароль и исчерпанный носитель различаются только объяснением.
+
+    Разделение нужно человеку -- чтобы он знал, почему звонит администратору.
+    Дальше и там, и там одно: открыть том кодом, забыть записанные компьютеры,
+    задать пароль заново. Администратору эти обращения тоже ничем не
+    отличаются -- он выдаёт код, и всё.
+
+    Раньше пути расходились, и это было ошибкой: очистка машинных слотов
+    делалась только при сбросе, а после смены пароля мёртвые ключи оставались
+    занимать места.
+    """
+    text = _module_text()
+    body = "\n".join(
+        line for line in text.splitlines() if not line.lstrip().startswith("#")
+    )
+
+    # Единственное, на что влияет вид, -- итоговое сообщение.
+    assert body.count('"$kind" = machines') == 1
+
+    # Машинные слоты перебираются целиком и вне всякой ветки.
+    assert "$POA_MACHINE_FIRST" in body and "$POA_MACHINE_LAST" in body
+    assert 'luksKillSlot "$device" "$slot"' in body
+    # Пароль спрашивается одинаковыми словами, без ветвления по виду:
+    # регистрационный слот пересоздаётся в обоих случаях.
+    calls = [line for line in body.splitlines() if "=$(poa_ask_secret" in line]
+    assert len(calls) == 2, calls
+    assert "Задайте пароль" in calls[0]
+    # Текущая машина не регистрируется: вопрос, заданный посреди
+    # восстановления, получил бы «да» не глядя. Она запишется после
+    # перезагрузки, штатным путём.
+    assert "poa_machine_key" not in body
+    assert "reboot" in body
 
 
 def test_the_request_string_is_taken_from_a_table_not_computed():
