@@ -235,6 +235,8 @@ cryptsetup luksKillSlot "$device" "$POA_USER_SLOT" --batch-mode \
 # Тот же потолок памяти, что и при создании тома (install/luks.py): слот,
 # созданный здесь без ограничения, получил бы стоимость по этой машине — а
 # носитель переносной, и следующая машина может оказаться слабее.
+poa_say "Записываю новый пароль, это займёт около минуты…"
+
 cryptsetup luksAddKey "$device" "$NEW_KEY" \
     --pbkdf-memory 262144 \
     --key-slot "$POA_USER_SLOT" --key-file "$RECOVERY_KEY" \
