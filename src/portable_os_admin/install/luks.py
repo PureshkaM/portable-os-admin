@@ -54,6 +54,26 @@ MAX_PBKDF_MEMORY_KIB = 262144
 #: а не число дорожек.
 PBKDF_PARALLEL = 2
 
+#: Число проходов argon2id, записываемое в заголовок.
+#:
+#: Третья и последняя из тех же граблей. Память и потоки здесь уже
+#: зафиксированы, а число проходов оставалось на откуп cryptsetup -- и он
+#: подбирает его так, чтобы уложиться в две секунды **на машине, где создаётся
+#: слот**. Замерено 31.08.2026: на машине администратора в заголовок уходит
+#: `Time cost: 40`, и ровно во столько же раз дороже становится каждая
+#: проверка пароля на машине пользователя.
+#:
+#: Цена была видна во всём: минуты на разблокировку вместо секунд, «зависшая»
+#: на восемнадцать минут регистрация компьютера, семь минут на двадцать девять
+#: слотов при развёртывании. Создание слота с фиксированным числом проходов --
+#: 2,2 секунды против 6,4.
+#:
+#: 4 при 256 МиБ -- обычная величина для argon2id: RFC 9106 предлагает от
+#: одного прохода при большой памяти. Стойкость держит память, а не проходы:
+#: атакующему нужно 256 МиБ на каждую попытку, и это тот барьер, ради которого
+#: argon2id и выбран.
+PBKDF_ITERATIONS = 4
+
 
 @contextlib.contextmanager
 def _key_path(data: bytes, dry_run: bool):
@@ -104,6 +124,7 @@ class LuksManager:
                 "--pbkdf", kdf,
                 "--pbkdf-memory", str(MAX_PBKDF_MEMORY_KIB),
                 "--pbkdf-parallel", str(PBKDF_PARALLEL),
+                "--pbkdf-force-iterations", str(PBKDF_ITERATIONS),
                 "--sector-size", str(sector_size),
                 "--key-file", str(key_path), "--batch-mode", partition,
             ]
@@ -133,6 +154,7 @@ class LuksManager:
                 "cryptsetup", "luksAddKey", partition,
                 "--pbkdf-memory", str(MAX_PBKDF_MEMORY_KIB),
                 "--pbkdf-parallel", str(PBKDF_PARALLEL),
+                "--pbkdf-force-iterations", str(PBKDF_ITERATIONS),
                 "--key-file", str(existing_path),
             ]
             if slot is not None:

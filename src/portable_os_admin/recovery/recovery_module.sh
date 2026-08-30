@@ -238,7 +238,7 @@ cryptsetup luksKillSlot "$device" "$POA_USER_SLOT" --batch-mode \
 poa_say "Записываю новый пароль, это займёт около минуты…"
 
 cryptsetup luksAddKey "$device" "$NEW_KEY" \
-    --pbkdf-memory 262144 \
+    --pbkdf-memory 262144 --pbkdf-parallel 2 --pbkdf-force-iterations 4 \
     --key-slot "$POA_USER_SLOT" --key-file "$RECOVERY_KEY" \
     || fail "не удалось создать новый пользовательский keyslot"
 

@@ -91,12 +91,6 @@ def recovery_keyslots(config) -> tuple[int, ...]:
     first = (machines[-1] if machines else FIRST_MACHINE_KEYSLOT - 1) + 1
     return tuple(range(first, LAST_KEYSLOT + 1))
 
-#: Запрос на сброс слотов, который пользователь читает администратору.
-#: Отличается от запроса на восстановление пароля словом в середине, чтобы
-#: администратор с одного взгляда видел, что у него просят.
-RESET_REQUEST_KIND = "machines"
-
-
 def is_enabled(config) -> bool:
     return int(getattr(config.machine_binding, "slots", 0) or 0) > 0
 
@@ -443,7 +437,14 @@ say "Записываю компьютер в носитель, это займ�
 
 ( umask 077; printf '%s' "$POA_PASSPHRASE" > "$KEY" )
 ( umask 077; poa_machine_key "$POA_PASSPHRASE" > "$NEWKEY" )
-if ! cryptsetup luksAddKey "$device" "$NEWKEY" --pbkdf-memory 262144 \
+# Стоимость задаётся целиком, а не подбирается. Без --pbkdf-force-iterations
+# cryptsetup калибрует число проходов под машину, на которой слот создаётся:
+# замерено 31.08.2026 -- в заголовок уходит `Time cost: 40` вместо 4, и во
+# столько же раз дороже становится каждая последующая проверка пароля. Слот
+# при этом пишется шесть секунд вместо двух, а под эмуляцией -- минуты, и
+# выглядит это как зависшая машина.
+if ! cryptsetup luksAddKey "$device" "$NEWKEY" \
+        --pbkdf-memory 262144 --pbkdf-parallel 2 --pbkdf-force-iterations 4 \
         --key-slot "$free_slot" --key-file "$KEY" 2>/dev/null; then
     halt_now "Не удалось записать машину в носитель."
 fi

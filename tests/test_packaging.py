@@ -20,6 +20,12 @@ def test_non_python_files_ship_with_the_package():
     and nothing notices until the feature is used."""
     for package, name in (
         ("portable_os_admin.recovery", "recovery_module.sh"),
+        # Слой вывода, которым носитель разговаривает с человеком. Появился
+        # 29.08.2026 и в перечень package-data не попал: собранный пакет отдал
+        # бы носителю модуль восстановления без экрана, и выяснилось бы это на
+        # живой загрузке у того, кто остался без системы. Список заменён на
+        # `recovery/*.sh` -- перечислять поимённо оказалось нечем помочь.
+        ("portable_os_admin.recovery", "ui.sh"),
         ("portable_os_admin.config", "kickstart_runner.py"),
     ):
         assert importlib.resources.files(package).joinpath(name).is_file(), name

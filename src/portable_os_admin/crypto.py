@@ -129,10 +129,13 @@ _RECOVERY_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"  # Crockford-ish, no 0/O
 
 
 def generate_recovery_code(group_count: int = 4, group_size: int = 4) -> str:
-    """Generates a human-typable, high-entropy recovery code, e.g. "K7ZQ-9XPT-3F2M-QA57".
+    """Случайный код восстановления -- как их делали до 29.08.2026.
 
-    This code is what the administrator reads out to the user; it is never
-    itself a LUKS passphrase (see module docstring)."""
+    Установщик им больше не пользуется: коды выводятся из секрета
+    администратора (`derive_recovery_code`) и не хранятся нигде. Функция
+    оставлена, потому что контейнеры, созданные раньше, несут в себе именно
+    такие коды, и тесты совместимости должны уметь их изготовить.
+    """
     groups = []
     for _ in range(group_count):
         groups.append("".join(secrets.choice(_RECOVERY_ALPHABET) for _ in range(group_size)))

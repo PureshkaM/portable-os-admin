@@ -31,7 +31,12 @@ portable-os-admin = "portable_os_admin.gui.app:run"
 where = ["src"]
 
 [tool.setuptools.package-data]
-portable_os_admin = ["recovery/recovery_module.sh"]
+# Оба файла едут на носитель и исполняются в загрузочной среде. Перечислять
+# их поимённо -- плохая идея: `ui.sh` появился 29.08.2026 и в этот список не
+# попал, то есть собранный пакет отдал бы носителю модуль восстановления без
+# слоя вывода, которым тот разговаривает с человеком. Обнаружилось бы это на
+# живой загрузке у того, кто остался без системы.
+portable_os_admin = ["recovery/*.sh"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

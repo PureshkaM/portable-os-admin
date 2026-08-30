@@ -111,6 +111,20 @@ def test_every_keyslot_is_capped_to_a_memory_a_weak_machine_has():
         assert argv[argv.index("--pbkdf-parallel") + 1] == str(luks_module.PBKDF_PARALLEL)
     assert luks_module.PBKDF_PARALLEL == 2
 
+    # И третья из тех же граблей -- число проходов. Его калибровка стоила
+    # дороже всего: замер 31.08.2026 показал `Time cost: 40` вместо 4, то есть
+    # каждая проверка пароля на машине пользователя вдесятеро дороже, чем
+    # задумано. Отсюда были и минуты на разблокировку, и «зависшая» на
+    # восемнадцать минут регистрация компьютера, и семь минут на двадцать
+    # девять слотов при развёртывании.
+    for plan in (formatted, added):
+        argv = plan.results[0].argv
+        assert "--pbkdf-force-iterations" in argv, " ".join(argv)
+        assert argv[argv.index("--pbkdf-force-iterations") + 1] == str(
+            luks_module.PBKDF_ITERATIONS
+        )
+    assert luks_module.PBKDF_ITERATIONS == 4
+
 
 def test_the_medium_is_trimmed_before_partitioning_but_a_refusal_is_not_fatal():
     """Запись в стёртый блок быстрее, а TRIM умеют не все флешки.
