@@ -465,6 +465,8 @@ def test_the_boot_screen_is_built_only_from_plugins_the_image_carries():
     ][0]
     assert "label.so" in setup
     assert "DejaVuSans.ttf" in setup
+    # fontconfig: Pango в initramfs есть, а разрешать имя шрифта нечем.
+    assert "/etc/fonts" in setup
 
     # И плагины, на которых она держится, установлены поимённо: сам `plymouth`
     # приносит только details, text и tribar.

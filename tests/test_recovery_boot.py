@@ -221,6 +221,40 @@ def _module_text() -> str:
     ).read_text(encoding="utf-8")
 
 
+def test_recovery_talks_through_the_shared_screen_not_the_console():
+    """Экран в этот момент занят plymouth, и консоли человек не видит.
+
+    Модуль печатал запрос через `cat` и читал ответ через `read`: на прогоне
+    29.08.2026 пользователь получал чёрный экран и не узнавал ни строки,
+    которую надо продиктовать администратору, ни того, что у него вообще
+    спрашивают. Весь диалог идёт через общий слой -- тот же, которым
+    пользуются разблокировка и регистрация машины.
+    """
+    text = _module_text()
+    body = "\n".join(
+        line for line in text.splitlines() if not line.lstrip().startswith("#")
+    )
+
+    # Запрос, ввод кода и ввод пароля -- через общий слой.
+    assert "poa_say " in body
+    assert "poa_ask " in body
+    assert "poa_ask_secret " in body
+    # И ничего из этого не печатается мимо него.
+    assert "cat <<EOF" not in body
+    assert "read -r recovery_code" not in body
+    assert "read -r new_password" not in body
+    # Причина отказа тоже должна быть видна, а не уходить в stderr.
+    assert 'echo "Ошибка восстановления' not in body
+
+    # Код запроса -- в приглашении вопроса, а не отдельным сообщением.
+    # plymouth показывает сообщения в одном месте, и каждое новое перекрывает
+    # предыдущее: на прогоне 29.08.2026 до человека дошло только последнее, а
+    # сам код, который надо продиктовать, он так и не увидел. Звонить есть
+    # зачем, а сказать нечего -- восстановление становится бесполезным.
+    prompt = next(line for line in body.splitlines() if "recovery_code=$(poa_ask" in line)
+    assert "${request}" in prompt
+
+
 def test_the_medium_decides_itself_what_went_wrong():
     """Носитель не спрашивает у человека, что случилось, а смотрит в заголовок.
 
@@ -268,6 +302,35 @@ def test_the_request_string_is_taken_from_a_table_not_computed():
     assert '"$HERE/requests"' in text
     # Ничего похожего на собственное вычисление контрольной суммы запроса.
     assert "sha256sum | cut -c1-8" not in text
+
+
+def test_the_theme_gets_the_images_the_password_field_is_drawn_from(session, make_config):
+    """Плагин two-step рисует поле ввода из готовых картинок.
+
+    Их у темы не было вовсе -- и plymouth, которому нечем показать запрос,
+    молча уходил в текстовый режим: моноширинный шрифт, серый фон, кириллица
+    блоками. По экрану это выглядело как «графика не включилась», хотя тема
+    лежала на месте и была выбрана. Найдено 29.08.2026 сравнением со штатной
+    темой РЕД ОС, где рядом с `.plymouth` лежат entry, bullet, box и lock.
+    """
+    from portable_os_admin.config import ConfigManager
+    from portable_os_admin.install import BlockDevice, OSInstaller
+
+    config = make_config("stick1", "debian")
+    ConfigManager().validate(config)
+    device = BlockDevice(
+        name="sdb", path="/dev/sdb", size_bytes=32_000_000_000, model="Cruzer",
+        removable=True, mountpoints=(),
+    )
+    result = OSInstaller(session).run(device, config, b"user-passphrase-123", dry_run=True)
+    flat = [" ".join(entry.argv) for entry in result.plan.results]
+
+    copy = next((c for c in flat if "entry.png" in c), None)
+    assert copy, "элементы поля ввода не кладутся в тему"
+    assert "bullet.png" in copy
+    # Ищется первая тема, где они есть, а не жёсткое имя: у семейств темы
+    # называются по-разному, и пропавшая картинка стоила бы немого экрана.
+    assert "themes" in copy
 
 
 def test_the_env_carries_the_slot_ranges_the_reset_needs():

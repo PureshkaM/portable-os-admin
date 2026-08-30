@@ -1526,12 +1526,37 @@ class OSInstaller:
         # привязки к машине.
         self._run(["cp", RECOVERY_UI_SRC, f"{target_dir}/ui.sh"], plan, dry_run, confirm_device)
         self._run(["chmod", "0644", f"{target_dir}/ui.sh"], plan, dry_run, confirm_device)
-        # Каталог темы plymouth. Сам файл темы пишется как обычный
-        # конфигурационный (см. backends/base.py), а каталог нужен, чтобы
-        # `ImageDir` указывал на существующее место: без него two-step
-        # отказывается загружаться, хотя картинок в теме нет и не должно быть.
+        # Тема plymouth: каталог и элементы поля ввода.
+        #
+        # Картинки берутся из штатной темы дистрибутива, и это не лень. Плагин
+        # two-step рисует запрос пароля из готовых изображений -- рамки поля,
+        # точки, замок, -- и без них показать его не может: plymouth молча
+        # уходит в текстовый режим, где кириллицы нет. Тема без единой
+        # картинки именно так и вела себя на прогоне 29.08.2026, и по экрану
+        # это выглядело как «графика не включилась».
+        #
+        # Берутся только элементы поля. Фон, цвета и выравнивание -- свои (см.
+        # backends/base.py), поэтому логотипа и полосы загрузки дистрибутива
+        # на экране не будет.
+        theme_dir = f"{layout.mount_root}/usr/share/plymouth/themes/{PLYMOUTH_THEME_NAME}"
+        self._run(["mkdir", "-p", theme_dir], plan, dry_run, confirm_device)
+        themes_root = f"{layout.mount_root}/usr/share/plymouth/themes"
         self._run(
-            ["mkdir", "-p", f"{layout.mount_root}/usr/share/plymouth/themes/{PLYMOUTH_THEME_NAME}"],
+            [
+                "sh", "-c",
+                # Первая тема, где эти элементы есть целиком. Перебор, а не
+                # жёсткое имя: у семейств темы называются по-разному, и
+                # пропавшая картинка стоила бы немого экрана.
+                f'for d in "{themes_root}"/*/; do '
+                f'  if [ -f "$d/entry.png" ] && [ -f "$d/bullet.png" ]; then '
+                f'    cp -f "$d"/entry.png "$d"/bullet.png "{theme_dir}/" 2>/dev/null; '
+                f'    for extra in box.png lock.png; do '
+                f'      [ -f "$d/$extra" ] && cp -f "$d/$extra" "{theme_dir}/"; '
+                f'    done; '
+                f'    break; '
+                f'  fi; '
+                f'done; true',
+            ],
             plan, dry_run, confirm_device,
         )
         self._write_file(

@@ -115,14 +115,19 @@ def test_the_registration_gives_up_the_machine_rather_than_the_limit():
     script = mb.register_script(make_config(), "abc12345")
 
     assert "poweroff -f" in script
+    # Весь смысл -- в одной строке вопроса, а не в россыпи сообщений: тема
+    # plymouth их не центрирует и не убирает, и на экране 29.08.2026 от
+    # объяснения остались обрывки в левом верхнем углу.
+    question = next(line for line in script.splitlines() if line.startswith("question="))
     # Пользователю сказано, что место занимается навсегда: согласие даётся
     # один раз, а освободить его сможет только администратор.
-    assert "только через администратора" in script
-    # И ответить на вопрос можно с той раскладки, которая есть. Консоль
-    # загрузки латинская, и кириллическое «да» набрать физически нечем: на
-    # прогоне 28.08.2026 вопрос «(да/нет)» удалось подтвердить лишь латинским
-    # `y`, которого в самом вопросе не было.
-    question = next(line for line in script.splitlines() if "Записать этот компьютер?" in line)
+    assert "Освободить сможет только администратор" in question
+    # Видно, сколько мест уходит и сколько всего.
+    assert "$SLOTS" in question
+    # И ответить можно с той раскладки, которая есть. Консоль загрузки
+    # латинская, кириллическое «да» набрать физически нечем: на прогоне
+    # 28.08.2026 вопрос «(да/нет)» удалось подтвердить лишь латинским `y`,
+    # которого в самом вопросе не было.
     assert "yes/no" in question
     # Последний слот забирает с собой регистрационный ключ -- именно это
     # превращает механизм из проверки в гарантию.
@@ -214,6 +219,25 @@ def test_the_machine_key_is_tried_only_against_machine_slots():
     # Замерено 28.08.2026 -- одиннадцать минут на попытку, экран при этом
     # неотличим от зависшего.
     assert 'luksOpen --key-slot "$slot"' in script
+
+
+def test_an_exhausted_medium_asks_for_the_password_only_once():
+    """Три попытки там, где не поможет и тридцать.
+
+    Если регистрационный слот уничтожен, носитель занял все машинные места, и
+    на незнакомой машине верная фраза не откроет том никогда: подходящего
+    ключа в заголовке не существует. Человеку, которому дальше всё равно
+    звонить администратору, предлагалось ввести пароль трижды -- и каждая
+    попытка стоила ему минут ожидания. Замечено на прогоне 29.08.2026.
+    """
+    config = make_config("redos")
+    config.machine_binding.slots = 2
+    script = mb.dracut_unlock_script(config, "poa-abc")
+
+    assert "poa_registration_slot_alive" in script
+    # Выход из цикла попыток, а не продолжение.
+    tail = script[script.index("poa_registration_slot_alive; then"):]
+    assert tail.split("fi")[0].strip().endswith("break")
 
 
 def test_the_unlock_script_waits_for_the_medium_to_appear():

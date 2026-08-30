@@ -38,8 +38,22 @@ HERE=${0%/*}
 if [ -f "$HERE/ui.sh" ]; then
     . "$HERE/ui.sh"
 else
+    # Носитель собран версией, где общего слоя ещё не было. Текст пойдёт в
+    # консоль -- по-русски он там читается блоками, но путь наружу остаётся.
     poa_ui_active() { return 1; }
     poa_say() { echo "$1" > /dev/console 2>/dev/null || echo "$1"; }
+    poa_ask() {
+        printf '%s ' "$1" > /dev/console 2>/dev/null || printf '%s ' "$1"
+        read -r poa_reply < /dev/console 2>/dev/null || read -r poa_reply
+        printf '%s' "$poa_reply"
+    }
+    poa_ask_secret() {
+        printf '%s ' "$1" > /dev/console 2>/dev/null || printf '%s ' "$1"
+        stty -echo 2>/dev/null || true
+        read -r poa_reply < /dev/console 2>/dev/null || read -r poa_reply
+        stty echo 2>/dev/null || true
+        printf '%s' "$poa_reply"
+    }
 fi
 SALT_FILE="${POA_SALT_FILE:-$HERE/recovery_salt.bin}"
 
@@ -52,7 +66,10 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 fail() {
-    echo "Ошибка восстановления: $1" >&2
+    # Через общий слой: stderr уходит в консоль, которую перекрыл plymouth, и
+    # человек видел бы чёрный экран вместо причины отказа.
+    poa_say "Ошибка восстановления: $1"
+    sleep 10
     exit 1
 }
 
@@ -117,19 +134,12 @@ done
 request=$(awk -v s="$recovery_slot" -v k="$kind" '$1 == s && $2 == k {print $3}' "$HERE/requests" 2>/dev/null)
 [ -n "$request" ] || fail "на носителе нет строки запроса для слота $recovery_slot"
 
-cat <<EOF
-
-======================================================================
- Вход в систему невозможен. ${trouble}
-
- Сообщите администратору этот код:
-
-     ${request}
-
- ${promise}
-======================================================================
-
-EOF
+# Одно сообщение, а не четыре. plymouth показывает их в одном месте, и каждое
+# новое перекрывает предыдущее: на прогоне 29.08.2026 до человека дошло только
+# последнее -- «администратор выдаст код», -- а сам код запроса, который надо
+# продиктовать, он так и не увидел. Восстановление от этого становится
+# бесполезным: звонить есть зачем, а сказать нечего.
+poa_say "${trouble} ${promise}"
 
 derive_passphrase() {
     # -binary so the result is the raw key rather than a hex listing: these are
@@ -150,15 +160,19 @@ derive_passphrase() {
 accepted=""
 attempt=1
 while [ "$attempt" -le 3 ]; do
-    printf 'Введите код восстановления (попытка %s из 3): ' "$attempt"
-    read -r recovery_code
+    # Ввод виден: код переписывают с бумажки, и человек должен видеть, что
+    # набрал. Через общий слой -- консоль в этот момент перекрыта plymouth.
+    # Код запроса -- в самом приглашении, а не отдельным сообщением: так он
+    # остаётся на экране всё время, пока человек диктует его по телефону и
+    # набирает ответ. Отдельное сообщение к этому моменту уже перекрыто.
+    recovery_code=$(poa_ask "Продиктуйте администратору код ${request} и введите ответ ($attempt из 3):")
     ( umask 077; derive_passphrase "$recovery_code" > "$RECOVERY_KEY" )
     if cryptsetup luksOpen --test-passphrase --key-slot "$recovery_slot" \
             --key-file "$RECOVERY_KEY" "$device" 2>/dev/null; then
         accepted="yes"
         break
     fi
-    echo "Код не подошёл." >&2
+    poa_say "Код не подошёл."
     attempt=$((attempt + 1))
 done
 
@@ -195,23 +209,15 @@ while :; do
         # позвонил потому, что пароль подходит, а машина не принимается.
         # Спросить его нужно затем, что регистрационный слот уничтожен и его
         # надо создать заново, а из чего -- знает только человек.
-        printf 'Введите пароль от системы: '
+        new_password=$(poa_ask_secret "Введите пароль от системы")
     else
-        printf 'Задайте новый пароль для входа: '
+        new_password=$(poa_ask_secret "Задайте новый пароль для входа")
     fi
-    stty -echo 2>/dev/null || true
-    read -r new_password
-    stty echo 2>/dev/null || true
-    echo
-    printf 'Повторите пароль: '
-    stty -echo 2>/dev/null || true
-    read -r repeat_password
-    stty echo 2>/dev/null || true
-    echo
+    repeat_password=$(poa_ask_secret "Повторите пароль")
     if [ -n "$new_password" ] && [ "$new_password" = "$repeat_password" ]; then
         break
     fi
-    echo "Пароли не совпали или пусты, попробуйте ещё раз." >&2
+    poa_say "Пароли не совпали или пусты, попробуйте ещё раз."
 done
 
 ( umask 077; printf '%s' "$new_password" > "$NEW_KEY" )
@@ -246,16 +252,16 @@ cryptsetup luksKillSlot "$device" "$recovery_slot" --batch-mode \
     || fail "не удалось удалить использованный recovery keyslot"
 
 cleanup
-echo
 if [ "$kind" = machines ]; then
     # Перезагрузка, а не продолжение загрузки: заголовок изменился под уже
     # работающим initramfs, и регистрация этой машины должна пройти обычным
     # путём -- с вопросом и со счётчиком занятых слотов, который она увидит
     # заново.
-    echo "Носитель снова принимает любые компьютеры. Система будет перезагружена,"
-    echo "и при следующем запуске спросит разрешение записать этот компьютер."
+    poa_say "Список компьютеров очищен. Сейчас система перезагрузится"
+    poa_say "и спросит разрешение записать этот компьютер."
 else
-    echo "Доступ восстановлен. Система будет перезагружена."
+    poa_say "Доступ восстановлен. Система будет перезагружена."
 fi
-sleep 5
+# Успеть прочитать: сразу за этим экран гаснет и машина уходит в перезагрузку.
+sleep 8
 reboot -f 2>/dev/null || echo b > /proc/sysrq-trigger
