@@ -206,8 +206,84 @@ def test_the_recovery_slot_is_removed_with_the_new_password():
     text = importlib.resources.files("portable_os_admin.recovery").joinpath("recovery_module.sh").read_text(
         encoding="utf-8"
     )
-    tail = text[text.index('luksKillSlot "$device" "$POA_RECOVERY_SLOT"'):]
+    # Слот здесь -- переменная, а не константа из env: коды расходуются по
+    # одному, и модуль берёт первый ещё живой, иначе второе восстановление
+    # подряд било бы в уже уничтоженный слот.
+    tail = text[text.index('luksKillSlot "$device" "$recovery_slot"'):]
     assert '--key-file "$NEW_KEY"' in tail.split("||")[0]
+
+
+def _module_text() -> str:
+    import importlib.resources
+
+    return importlib.resources.files("portable_os_admin.recovery").joinpath(
+        "recovery_module.sh"
+    ).read_text(encoding="utf-8")
+
+
+def test_the_medium_decides_itself_what_went_wrong():
+    """Носитель не спрашивает у человека, что случилось, а смотрит в заголовок.
+
+    Регистрационный слот жив -- фраза открыла бы том на любой машине, и раз не
+    открыла, забыт пароль. Слот уничтожен -- значит машины исчерпаны, и верная
+    фраза здесь бессильна по устройству механизма. Спрашивать «что у вас?»
+    значило бы требовать от пользователя понимания keyslot'ов LUKS.
+    """
+    text = _module_text()
+
+    assert 'if slot_taken "$POA_USER_SLOT"; then' in text
+    assert "kind=password" in text
+    assert "kind=machines" in text
+
+
+def test_the_reset_forgets_every_machine_and_registers_none():
+    """Сброс возвращает носитель в исходное состояние, и только.
+
+    Текущая машина не записывается, хотя человек звонил администратору именно
+    ради неё: регистрация спрашивает разрешение, а вопрос, заданный посреди
+    восстановления, получит «да» не глядя. После перезагрузки он ответит на
+    него штатно, увидев счётчик занятых слотов.
+    """
+    text = _module_text()
+    reset = text[text.index('if [ "$kind" = machines ]; then'):]
+
+    # Перебираются все машинные слоты, а не один.
+    assert '$POA_MACHINE_FIRST' in reset and '$POA_MACHINE_LAST' in reset
+    assert 'luksKillSlot "$device" "$slot"' in reset
+    # Регистрация здесь не вызывается ни в каком виде.
+    assert "luksAddKey" not in reset.split("while :;")[0]
+    assert "reboot" in text, "после сброса нужна перезагрузка"
+
+
+def test_the_request_string_is_taken_from_a_table_not_computed():
+    """Кодирование запроса живёт в одном месте -- в recovery/request.py.
+
+    Вторая реализация base32 и sha256 в shell разошлась бы с первой при первой
+    же правке, причём молча: пользователь диктовал бы строку, которую
+    администратор не может разобрать, и выяснилось бы это на живой загрузке у
+    человека, оставшегося без системы.
+    """
+    text = _module_text()
+
+    assert '"$HERE/requests"' in text
+    # Ничего похожего на собственное вычисление контрольной суммы запроса.
+    assert "sha256sum | cut -c1-8" not in text
+
+
+def test_the_env_carries_the_slot_ranges_the_reset_needs():
+    from portable_os_admin.install import machine_binding
+    from portable_os_admin.install.installer import recovery_env
+
+    config = InstallConfig.create_default("stick1", "redos")
+    config.machine_binding.slots = 2
+    env = recovery_env(config, "abcd1234", "11111111-2222-3333-4444-555555555555")
+
+    machines = machine_binding.machine_keyslots(config)
+    recovery = machine_binding.recovery_keyslots(config)
+    assert f"POA_MACHINE_FIRST={machines[0]}" in env
+    assert f"POA_MACHINE_LAST={machines[-1]}" in env
+    assert f"POA_RECOVERY_FIRST={recovery[0]}" in env
+    assert f"POA_RECOVERY_LAST={recovery[-1]}" in env
 
 
 def test_the_hook_still_copies_the_flow_if_openssl_is_missing():

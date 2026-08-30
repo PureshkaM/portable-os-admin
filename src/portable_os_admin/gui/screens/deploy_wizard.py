@@ -383,10 +383,13 @@ class DeployWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
         self.app.save_container()
         for warning in getattr(result, "warnings", ()):
             self._log("ВНИМАНИЕ: " + warning)
+        # Кода на экране нет намеренно -- см. install_wizard: он выводится
+        # из секрета администратора тогда, когда понадобится, и до этого
+        # момента не существует нигде.
         self.message_bar.success(
-            f"Носитель готов. media_id={result.media_record.media_id}, "
-            f"код восстановления: {result.recovery_record.code} — запишите его, "
-            "он также сохранён в контейнере администратора."
+            f"Носитель готов. media_id={result.media_record.media_id}. "
+            "Код восстановления выдаётся по запросу пользователя, на экране "
+            "«Восстановление»."
         )
 
     def _failed(self, exc: BaseException) -> None:

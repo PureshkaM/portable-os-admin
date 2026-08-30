@@ -6,6 +6,7 @@ the two sides fit together).
 """
 from __future__ import annotations
 
+from .. import crypto
 from ..container import AdminContainer, RecoveryRecord
 from ..errors import MediaNotRegisteredError, RecoveryDeniedError
 from ..session import AdminSession
@@ -50,7 +51,19 @@ class RecoveryService:
         from datetime import datetime, timezone
 
         record.used_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
-        return record.code
+
+        # Код вычисляется здесь, а не достаётся из записи. Хранимый код
+        # пришлось бы держать в контейнере готовым и выносить наружу при
+        # каждой выдаче; выведенный из секрета не хранится нигде, и сам секрет
+        # границу приложения не пересекает ни разу.
+        #
+        # Записи, созданные до 29.08.2026, код в себе несут -- носители с ними
+        # уже выданы, и их keyslot'ы записаны именно теми кодами.
+        if record.code:
+            return record.code
+        return crypto.derive_recovery_code(
+            self.container.admin_secret, request.media_id, request.slot
+        )
 
     def register_recovery_record(self, record: RecoveryRecord) -> None:
         """Used by the installer right after a successful install

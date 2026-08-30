@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import hmac
 import os
 import secrets
 from dataclasses import dataclass
@@ -164,3 +165,40 @@ def derive_recovery_passphrase(code: str, salt: bytes) -> bytes:
     ("Восстановление.Код.НеПароль")."""
     params = recovery_kdf_params(salt=salt)
     return derive_key(code, params)
+
+
+#: Длина секрета администратора. Из него выводятся все коды восстановления
+#: всех носителей организации, и запоминать его человеку не нужно.
+ADMIN_SECRET_BYTES = 32
+
+
+def new_admin_secret() -> bytes:
+    return secrets.token_bytes(ADMIN_SECRET_BYTES)
+
+
+def derive_recovery_code(secret: bytes, media_id: str, slot: int) -> str:
+    """Код восстановления, выведенный из секрета администратора.
+
+    Раньше код был случайным и хранился в контейнере готовым. Разница не в
+    стойкости -- она та же, -- а в том, сколько раз секретное пересекает
+    границу приложения. Хранимый код уходил наружу при каждой выдаче и,
+    хуже того, показывался на экране при развёртывании с припиской «запишите
+    его»: то есть содержимое контейнера штатно выносилось наружу на каждом
+    собранном носителе. Выведенный код не хранится нигде и вычисляется в
+    момент звонка.
+
+    Секрет из кода не восстановить: `media_id` и номер слота входят в хеш, а
+    сама функция односторонняя. Компрометация одного выданного кода не даёт
+    ни других кодов того же носителя, ни чужих носителей.
+
+    HMAC, а не просто конкатенация с sha256: у HMAC ключ и данные разделены
+    по построению, и склеить «секрет ‖ media_id» так, чтобы два разных набора
+    дали одну строку, невозможно.
+    """
+    material = hmac.new(
+        secret, f"{media_id}:{slot}".encode("utf-8"), hashlib.sha256
+    ).digest()
+    # Тот же вид, что у прежних кодов: четыре группы по четыре знака. Человек
+    # диктует их по телефону, и менять привычную форму незачем.
+    chars = [_RECOVERY_ALPHABET[b % len(_RECOVERY_ALPHABET)] for b in material[:16]]
+    return "-".join("".join(chars[i:i + 4]) for i in range(0, 16, 4))

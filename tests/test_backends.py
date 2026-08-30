@@ -420,6 +420,45 @@ def test_redos_tells_the_initramfs_to_unlock_the_volume():
     assert "grep -q" in append, "дописывание не проверяет, нет ли параметров уже"
 
 
+def test_the_boot_screen_is_built_only_from_plugins_the_image_carries():
+    """Тема опирается на плагины, которые есть в образе, а не на удобные.
+
+    Первая версия была написана на плагине `script` -- он даёт полный контроль
+    над отрисовкой. В образе РЕД ОС его нет вовсе: там `label` и `two-step`, а
+    собирать носитель из сети этот проект принципиально не умеет. Тема на
+    отсутствующем плагине не загружается молча, и носитель остаётся с немым
+    экраном ровно там, где должен разговаривать с человеком.
+
+    Найдено осмотром собранного носителя 29.08.2026: в системе стояли только
+    `details`, `text` и `tribar`.
+    """
+    from portable_os_admin.install.disk import build_media_layout, plan_partitions
+
+    config = InstallConfig.create_default("stick", "redos")
+    layout = build_media_layout(
+        plan_partitions("/dev/sdb", config.disk), mapper_name="poa-abc", mount_root="/mnt/root"
+    )
+    files = get_backend("redos").config_files(config, layout)
+
+    theme = files["usr/share/plymouth/themes/poa/poa.plymouth"]
+    assert "ModuleName=two-step" in theme
+    assert "ModuleName=script" not in theme, "плагина script нет в образе РЕД ОС"
+    assert "ScriptFile" not in theme
+    # Чёрный фон и белый текст -- весь вид этого экрана.
+    assert "BackgroundStartColor=0x000000" in theme
+    assert "BackgroundEndColor=0x000000" in theme
+    assert "MessageColor=0xffffff" in theme
+
+    # Тема выбрана: без этого plymouth возьмёт тему дистрибутива.
+    assert "Theme=poa" in files["etc/plymouth/plymouthd.conf"]
+
+    # И плагины, на которых она держится, установлены поимённо: сам `plymouth`
+    # приносит только details, text и tribar.
+    packages = get_backend("redos").boot_packages(config)
+    assert "plymouth-plugin-two-step" in packages
+    assert "plymouth-plugin-label" in packages
+
+
 def test_both_families_build_a_generic_initramfs():
     """Носитель поедет на машину, которой никто не видел.
 
@@ -597,8 +636,15 @@ def test_graphical_boot_parameter_matches_the_family():
         config = InstallConfig.create_default("stick", target_os)
         config.boot.quiet = True
         cmdline = get_backend(target_os).kernel_cmdline(config)
-        assert f"quiet {expected}" in cmdline, target_os
+        assert expected in cmdline, target_os
+        assert "quiet" in cmdline, target_os
 
-    config = InstallConfig.create_default("stick", "redos")
-    config.boot.quiet = False
-    assert "rhgb" not in get_backend("redos").kernel_cmdline(config)
+        # И заставка не зависит от `quiet`. Это две разные вещи: `quiet`
+        # убирает сообщения ядра, а заставка -- то, чем носитель разговаривает
+        # с человеком до загрузки системы. Пока они были связаны, графика
+        # пропадала ровно тогда, когда администратор хотел видеть подробности
+        # загрузки, и вместе с ней пропадал экран ввода пароля.
+        config.boot.quiet = False
+        verbose = get_backend(target_os).kernel_cmdline(config)
+        assert expected in verbose, target_os
+        assert "quiet" not in verbose, target_os

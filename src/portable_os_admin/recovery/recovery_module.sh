@@ -30,6 +30,17 @@ set -eu
 HERE=${0%/*}
 [ "$HERE" = "$0" ] && HERE=.
 [ -f "$HERE/env" ] && . "$HERE/env"
+
+# Общий слой вывода -- тот же, которым пользуются разблокировка и регистрация
+# машины. Экран у носителя один; отличается только то, кто его вызывает.
+# Без файла остаётся консоль: русский текст пойдёт блоками, но путь наружу
+# сохранится.
+if [ -f "$HERE/ui.sh" ]; then
+    . "$HERE/ui.sh"
+else
+    poa_ui_active() { return 1; }
+    poa_say() { echo "$1" > /dev/console 2>/dev/null || echo "$1"; }
+fi
 SALT_FILE="${POA_SALT_FILE:-$HERE/recovery_salt.bin}"
 
 RECOVERY_KEY=/run/poa-recovery.key
@@ -61,20 +72,61 @@ device="/dev/disk/by-uuid/${POA_LUKS_UUID}"
 [ -b "$device" ] || fail "не найден раздел с UUID ${POA_LUKS_UUID}"
 [ -f "$SALT_FILE" ] || fail "не найден файл соли recovery-пароля"
 
-# The request the user reads out to the administrator. Same shape as
-# recovery/request.py RecoveryRequest.encode(): media_id:slot:checksum.
-checksum=$(printf '%s' "${POA_MEDIA_ID}:${POA_RECOVERY_SLOT}" | sha256sum | cut -c1-8)
+slot_taken() {  # $1 -- номер слота
+    cryptsetup luksDump "$device" 2>/dev/null | grep -qE "^[[:space:]]+$1: luks2"
+}
+
+# Что именно случилось, носитель определяет сам, а не спрашивает у человека.
+#
+# Регистрационный слот жив -- значит фраза открыла бы том на любой машине, и
+# раз не открыла, дело в самой фразе: пользователь её забыл. Слот уничтожен --
+# значит носитель занял все машинные слоты, и верная фраза здесь бессильна по
+# устройству механизма: ключа для этой машины в заголовке нет.
+#
+# Для пользователя это два разных несчастья, и спрашивать «что у вас?» значило
+# бы требовать от него понимания keyslot'ов LUKS.
+if slot_taken "$POA_USER_SLOT"; then
+    kind=password
+    trouble="Пароль введён неверно слишком много раз."
+    promise="Администратор выдаст одноразовый код восстановления."
+else
+    kind=machines
+    trouble="Носитель уже занят другими компьютерами и на этом работать не будет."
+    promise="Администратор выдаст код, чтобы очистить список компьютеров."
+fi
+
+# Первый ещё живой recovery-слот: коды расходуются по одному, и второй раз
+# подряд один и тот же слот не подойдёт.
+POA_RECOVERY_FIRST="${POA_RECOVERY_FIRST:-$POA_RECOVERY_SLOT}"
+POA_RECOVERY_LAST="${POA_RECOVERY_LAST:-$POA_RECOVERY_SLOT}"
+recovery_slot=""
+slot="$POA_RECOVERY_FIRST"
+while [ "$slot" -le "$POA_RECOVERY_LAST" ]; do
+    if slot_taken "$slot"; then
+        recovery_slot="$slot"
+        break
+    fi
+    slot=$((slot + 1))
+done
+[ -n "$recovery_slot" ] || fail "коды восстановления исчерпаны; носитель придётся собрать заново"
+
+# Строка запроса берётся готовой из таблицы, а не считается здесь. Кодирование
+# живёт в recovery/request.py в единственном экземпляре: вторая реализация
+# base32 и sha256 разошлась бы с первой при первой же правке, и молча --
+# пользователь диктовал бы строку, которую администратор не может разобрать.
+request=$(awk -v s="$recovery_slot" -v k="$kind" '$1 == s && $2 == k {print $3}' "$HERE/requests" 2>/dev/null)
+[ -n "$request" ] || fail "на носителе нет строки запроса для слота $recovery_slot"
 
 cat <<EOF
 
 ======================================================================
- Доступ к системе заблокирован: пароль введён неверно слишком много раз.
+ Вход в систему невозможен. ${trouble}
 
- Сообщите администратору этот запрос на восстановление:
+ Сообщите администратору этот код:
 
-     ${POA_MEDIA_ID}:${POA_RECOVERY_SLOT}:${checksum}
+     ${request}
 
- Администратор выдаст одноразовый код восстановления.
+ ${promise}
 ======================================================================
 
 EOF
@@ -101,7 +153,7 @@ while [ "$attempt" -le 3 ]; do
     printf 'Введите код восстановления (попытка %s из 3): ' "$attempt"
     read -r recovery_code
     ( umask 077; derive_passphrase "$recovery_code" > "$RECOVERY_KEY" )
-    if cryptsetup luksOpen --test-passphrase --key-slot "$POA_RECOVERY_SLOT" \
+    if cryptsetup luksOpen --test-passphrase --key-slot "$recovery_slot" \
             --key-file "$RECOVERY_KEY" "$device" 2>/dev/null; then
         accepted="yes"
         break
@@ -112,13 +164,46 @@ done
 
 [ -n "$accepted" ] || fail "код восстановления не принят; обратитесь к администратору"
 
+# Сброс списка машин: уничтожаются все машинные слоты, и носитель возвращается
+# в исходное состояние -- фраза снова открывает его где угодно, а машины он
+# набирает заново по мере работы.
+#
+# Текущая машина здесь НЕ регистрируется, хотя человек звонил администратору
+# именно ради неё. Регистрация спрашивает разрешение, и задавать этот вопрос
+# посреди восстановления значило бы получить «да» не глядя. После перезагрузки
+# он ответит на него штатно, увидев, сколько слотов занимает.
+if [ "$kind" = machines ]; then
+    POA_MACHINE_FIRST="${POA_MACHINE_FIRST:-1}"
+    POA_MACHINE_LAST="${POA_MACHINE_LAST:--1}"
+    killed=0
+    slot="$POA_MACHINE_FIRST"
+    while [ "$slot" -le "$POA_MACHINE_LAST" ]; do
+        if slot_taken "$slot"; then
+            cryptsetup luksKillSlot "$device" "$slot" --batch-mode \
+                --key-file "$RECOVERY_KEY" 2>/dev/null \
+                && killed=$((killed + 1))
+        fi
+        slot=$((slot + 1))
+    done
+    echo
+    echo "Список компьютеров очищен (забыто: $killed)."
+fi
+
 while :; do
-    printf 'Задайте новый пароль для входа: '
+    if [ "$kind" = machines ]; then
+        # Пароль тот же, что и был: пользователь его помнит -- он ведь и
+        # позвонил потому, что пароль подходит, а машина не принимается.
+        # Спросить его нужно затем, что регистрационный слот уничтожен и его
+        # надо создать заново, а из чего -- знает только человек.
+        printf 'Введите пароль от системы: '
+    else
+        printf 'Задайте новый пароль для входа: '
+    fi
     stty -echo 2>/dev/null || true
     read -r new_password
     stty echo 2>/dev/null || true
     echo
-    printf 'Повторите новый пароль: '
+    printf 'Повторите пароль: '
     stty -echo 2>/dev/null || true
     read -r repeat_password
     stty echo 2>/dev/null || true
@@ -134,6 +219,10 @@ done
 # Order matters: remove the old password first, then add the new one into the
 # slot it freed, then drop the recovery slot. Doing it the other way round
 # would leave the medium with two working passwords if the last step failed.
+#
+# При сбросе списка машин этого слота уже нет -- он уничтожается в тот момент,
+# когда занимается последняя машина, и именно поэтому носитель сюда и попал.
+# Отказ здесь ожидаем и не должен ронять восстановление.
 cryptsetup luksKillSlot "$device" "$POA_USER_SLOT" --batch-mode \
     --key-file "$RECOVERY_KEY" 2>/dev/null || true
 
@@ -152,12 +241,21 @@ cryptsetup luksAddKey "$device" "$NEW_KEY" \
 # refuses to destroy a keyslot using the very key that slot holds ("Key is not
 # available with this passphrase"), which is why this step failed the first
 # time it was run against a real container.
-cryptsetup luksKillSlot "$device" "$POA_RECOVERY_SLOT" --batch-mode \
+cryptsetup luksKillSlot "$device" "$recovery_slot" --batch-mode \
     --key-file "$NEW_KEY" \
     || fail "не удалось удалить использованный recovery keyslot"
 
 cleanup
 echo
-echo "Доступ восстановлен. Система будет перезагружена."
-sleep 3
+if [ "$kind" = machines ]; then
+    # Перезагрузка, а не продолжение загрузки: заголовок изменился под уже
+    # работающим initramfs, и регистрация этой машины должна пройти обычным
+    # путём -- с вопросом и со счётчиком занятых слотов, который она увидит
+    # заново.
+    echo "Носитель снова принимает любые компьютеры. Система будет перезагружена,"
+    echo "и при следующем запуске спросит разрешение записать этот компьютер."
+else
+    echo "Доступ восстановлен. Система будет перезагружена."
+fi
+sleep 5
 reboot -f 2>/dev/null || echo b > /proc/sysrq-trigger

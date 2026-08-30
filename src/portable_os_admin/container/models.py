@@ -50,6 +50,10 @@ class MediaRecord:
 class RecoveryRecord:
     media_id: str
     slot: int
+    #: Сам код здесь больше не хранится: он выводится из секрета
+    #: администратора в момент выдачи. Поле осталось пустым ради контейнеров,
+    #: созданных до 29.08.2026, -- в них коды записаны, и выдавать их надо
+    #: по-прежнему из записи.
     code: str
     salt_b64: str
     status: str = "available"  # "available" | "used"
@@ -68,11 +72,26 @@ class RecoveryRecord:
 class AdminContainerData:
     media_records: list[MediaRecord] = field(default_factory=list)
     recovery_records: list[RecoveryRecord] = field(default_factory=list)
+    #: Секрет администратора, из которого выводятся все коды восстановления.
+    #:
+    #: Он и есть содержимое контейнера, ради которого тот зашифрован. Коды не
+    #: хранятся: каждый вычисляется в момент звонка как
+    #: `KDF(секрет ‖ media_id ‖ слот)`. Разница не в объёме, а в том, сколько
+    #: раз секретное пересекает границу приложения: хранимый код уходит наружу
+    #: при каждой выдаче и показывался на экране при развёртывании, а секрет
+    #: не покидает контейнер ни разу за всю жизнь носителя.
+    #:
+    #: Закреплён за администратором и не меняется: слоты на выданных носителях
+    #: записаны его производными, и смена секрета означала бы пересборку всех
+    #: носителей организации. Забыл пароль от контейнера — контейнер бесполезен,
+    #: и это принятое решение, а не недоработка.
+    admin_secret_b64: str = ""
 
     def to_dict(self) -> dict:
         return {
             "media_records": [m.to_dict() for m in self.media_records],
             "recovery_records": [r.to_dict() for r in self.recovery_records],
+            "admin_secret_b64": self.admin_secret_b64,
         }
 
     @classmethod
@@ -80,4 +99,5 @@ class AdminContainerData:
         return cls(
             media_records=[MediaRecord.from_dict(m) for m in data.get("media_records", [])],
             recovery_records=[RecoveryRecord.from_dict(r) for r in data.get("recovery_records", [])],
+            admin_secret_b64=data.get("admin_secret_b64", ""),
         )

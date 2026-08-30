@@ -186,7 +186,12 @@ POA_LAST_MACHINE_SLOT={last}
 # читаем с консоли сами -- носитель не должен зависеть от того, положил ли
 # дистрибутив в образ конкретную утилиту.
 poa_ask_passphrase() {
-    if [ -x /lib/cryptsetup/askpass ]; then
+    # Сначала общий слой вывода: он рисует запрос во весь экран через plymouth
+    # и умеет кириллицу, которой консоль ядра не знает -- там весь русский
+    # текст идёт сплошными блоками.
+    if command -v plymouth >/dev/null 2>&1 && plymouth --ping >/dev/null 2>&1; then
+        plymouth ask-for-password --prompt="Введите пароль от системы" || true
+    elif [ -x /lib/cryptsetup/askpass ]; then
         /lib/cryptsetup/askpass "Введите пароль носителя: " || true
     elif command -v systemd-ask-password >/dev/null 2>&1; then
         # --timeout=300 вместо умолчания dracut: замерено на стенде
@@ -324,7 +329,20 @@ trap cleanup EXIT INT TERM
 
 {fingerprint_functions()}
 
-say() {{ echo "$1" > /dev/console 2>/dev/null || echo "$1"; }}
+# Экран у носителя один на все случаи, и живёт он в /poa/ui.sh: разблокировка,
+# регистрация, восстановление и сброс показывают человеку одно и то же. Если
+# файла нет (носитель собран старой версией), остаётся консоль -- текст пойдёт
+# блоками, но человек хотя бы дойдёт до администратора.
+. /poa/ui.sh 2>/dev/null || true
+command -v poa_ui_active >/dev/null 2>&1 || poa_ui_active() {{ return 1; }}
+
+say() {{
+    if poa_ui_active; then
+        plymouth display-message --text="$1"
+    else
+        echo "$1" > /dev/console 2>/dev/null || echo "$1"
+    fi
+}}
 ask() {{ printf '%s' "$1" > /dev/console 2>/dev/null || printf '%s' "$1"; }}
 
 # Выключение, а не продолжение: смысл механизма в том, что на машине, которую
@@ -381,22 +399,25 @@ if [ -z "$free_slot" ]; then
 fi
 
 say ""
-say "======================================================================"
-say " Эта машина носителю незнакома."
-say ""
-say " Отпечаток машины: $(poa_fingerprint_id | cut -c1-8)"
-say " Занято слотов: $used из $SLOTS, свободно: $((SLOTS - used))."
-say ""
-say " Если продолжить, конфигурация этой машины будет записана в носитель"
-say " и займёт один слот. Освободить его потом можно будет ТОЛЬКО с"
-say " участием администратора организации."
-say "======================================================================"
-say ""
-ask "Внести эту машину в память носителя? (да/нет): "
-read -r answer < /dev/console 2>/dev/null || read -r answer
+say "Этот компьютер носителю незнаком."
+say "Отпечаток: $(poa_fingerprint_id | cut -c1-8)"
+say "Занято мест: $used из $SLOTS, свободно: $((SLOTS - used))."
+say "Если продолжить, компьютер займёт одно место навсегда:"
+say "освободить его можно будет только через администратора."
+
+# Ответ разбирается сразу в двух раскладках. Консоль загрузки латинская, и
+# кириллическое «да» пользователю набрать физически нечем -- на прогоне
+# 28.08.2026 вопрос «(да/нет)» удалось подтвердить только латинским `y`,
+# которого в самом вопросе не было.
+if poa_ui_active; then
+    answer=$(plymouth ask-question --prompt="Записать этот компьютер? (да/нет, yes/no)")
+else
+    ask "Записать этот компьютер? (да/нет, yes/no): "
+    read -r answer < /dev/console 2>/dev/null || read -r answer
+fi
 case "$answer" in
-    да|Да|ДА|yes|Yes|y|Y|д|Д) ;;
-    *) halt_now "Машина не внесена. Система не запускается." ;;
+    да|Да|ДА|yes|Yes|YES|y|Y|д|Д) ;;
+    *) halt_now "Компьютер не записан. Система не запускается." ;;
 esac
 
 ( umask 077; printf '%s' "$POA_PASSPHRASE" > "$KEY" )

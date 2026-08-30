@@ -270,4 +270,8 @@ def test_kernel_parameters_reach_the_bootloader():
     # «тихая загрузка» складываются в неё вместе.
     assert "intel_iommu=on" in grub
     assert "GRUB_TIMEOUT=0" in grub
-    assert "quiet splash" in grub
+    # Заставка и «тихая загрузка» -- рядом, но независимо: первая рисует экран
+    # пользователю и стоит всегда, вторая убирает сообщения ядра по просьбе
+    # администратора.
+    assert "splash" in grub
+    assert "quiet" in grub

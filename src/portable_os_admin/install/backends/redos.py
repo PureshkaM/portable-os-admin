@@ -311,7 +311,9 @@ class RedOSInstallBackend(InstallBackend):
             "    # `systemd-cryptsetup`, а не утилиту. Найдено прогоном\n"
             "    # 28.08.2026; до него ни одна команда этого модуля не могла\n"
             "    # выполниться, и молчал он об этом так же, как хук привязки.\n"
-            "    inst_multiple cryptsetup openssl od stty sha256sum\n"
+            # awk -- для таблицы готовых строк запроса: модуль ищет в ней
+            # строку по слоту и виду, а не считает base32 сам.
+            "    inst_multiple cryptsetup openssl od stty sha256sum awk grep\n"
             "    inst_hook pre-mount 99 \"$moddir/poa-recovery-hook.sh\"\n"
             f"    mkdir -p \"${{initdir}}{RECOVERY_INITRAMFS_DIR}\"\n"
             f"    cp -a /{RECOVERY_DIR}/. \"${{initdir}}{RECOVERY_INITRAMFS_DIR}/\" 2>/dev/null || true\n"
@@ -558,6 +560,20 @@ class RedOSInstallBackend(InstallBackend):
             # passphrase with scrypt and nothing else in a boot
             # environment can do that. The initramfs hook copies it in.
             "openssl",
+            # Графический экран загрузки -- то, чем носитель разговаривает с
+            # человеком до запуска системы: спрашивает пароль, сообщает, что
+            # компьютер незнаком, принимает код восстановления. Консоль ядра
+            # для этого не годится: она не знает кириллицы и показывает
+            # русский текст сплошными блоками.
+            #
+            # Плагины перечислены поимённо. Сам `plymouth` ставит только
+            # `details`, `text` и `tribar`, а тема на них не построится:
+            # `two-step` рисует фон и картинки, `label` -- текст, и без него
+            # экран остаётся немым. Проверено осмотром собранного носителя
+            # 29.08.2026 -- нужных плагинов там не оказалось.
+            "plymouth",
+            "plymouth-plugin-two-step",
+            "plymouth-plugin-label",
             self.syslog_package,
         ]
 

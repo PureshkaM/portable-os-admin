@@ -8,6 +8,7 @@ protects its contents from unauthorized reading/modification (Требовани
 """
 from __future__ import annotations
 
+import base64
 import json
 import os
 import tempfile
@@ -38,6 +39,19 @@ class AdminContainer:
         self._kdf_params = kdf_params
         self.data = data
         self.closed = False
+
+    @property
+    def admin_secret(self) -> bytes:
+        """Секрет, из которого выводятся коды восстановления.
+
+        Заводится на месте, если контейнер создан до 29.08.2026: там его нет,
+        и без этого носители, собранные таким контейнером дальше, остались бы
+        вовсе без кодов. Уже выданные носители это не затрагивает -- их коды
+        лежат в записях и выдаются оттуда.
+        """
+        if not self.data.admin_secret_b64:
+            self.data.admin_secret_b64 = base64.b64encode(crypto.new_admin_secret()).decode()
+        return base64.b64decode(self.data.admin_secret_b64)
 
     # -- media records ----------------------------------------------------
     def add_media_record(self, record: MediaRecord) -> None:
@@ -89,7 +103,13 @@ class ContainerManager:
 
         kdf_params = crypto.default_kdf_params()
         key = crypto.derive_key(password, kdf_params)
-        data = AdminContainerData()
+        # Секрет администратора рождается вместе с контейнером и живёт ровно
+        # столько же. Из него выводятся коды восстановления всех носителей,
+        # которые этот администратор когда-либо соберёт, поэтому сменить его
+        # нельзя, не пересобрав их все.
+        data = AdminContainerData(
+            admin_secret_b64=base64.b64encode(crypto.new_admin_secret()).decode()
+        )
         container = AdminContainer(path, key, kdf_params, data)
         self.save(container)
         return container

@@ -597,10 +597,15 @@ class InstallWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
         # architecture, and that is the part a person must not skim past.
         for warning in getattr(result, "warnings", ()):
             self._log("ВНИМАНИЕ: " + warning)
+        # Код восстановления здесь не показывается, и это осознанно. Он
+        # выводится из секрета администратора в момент, когда пользователь
+        # позвонит, а до тех пор не существует нигде: ни на экране, ни в
+        # контейнере. Прежняя приписка «запишите его» выносила содержимое
+        # контейнера наружу на каждом собранном носителе.
         self.message_bar.success(
-            f"Установка завершена. media_id={result.media_record.media_id}, "
-            f"код восстановления: {result.recovery_record.code} — запишите его, "
-            "он также сохранён в контейнере администратора."
+            f"Установка завершена. media_id={result.media_record.media_id}. "
+            "Код восстановления выдаётся по запросу пользователя, на экране "
+            "«Восстановление»."
             + ("  " + " ".join(result.warnings) if getattr(result, "warnings", ()) else "")
         )
 

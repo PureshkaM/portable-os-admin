@@ -336,7 +336,16 @@ def test_deploying_generates_the_encryption_afresh(session, kiosk_config, big_de
     assert any(c.startswith("cp -a") for c in commands), "система не копируется на носитель"
     # And the medium gets its own identity.
     assert result.media_record.media_id
-    assert result.recovery_record.code
+    # Код восстановления в записи не хранится: он выводится из секрета
+    # администратора в момент выдачи. Проверяется, что вывести его можно, --
+    # это и есть «у носителя есть коды».
+    from portable_os_admin import crypto
+
+    assert crypto.derive_recovery_code(
+        session.container.admin_secret,
+        result.recovery_record.media_id,
+        result.recovery_record.slot,
+    )
 
 
 def test_service_volumes_are_mounted_before_the_system_is_copied(
@@ -399,8 +408,17 @@ def test_two_deployments_get_different_identities(session, kiosk_config, big_dev
         big_device, str(directory), b"passphrase-two", dry_run=True, confirm_device="/dev/sdb"
     )
 
+    from portable_os_admin import crypto
+
     assert first.media_record.media_id != second.media_record.media_id
-    assert first.recovery_record.code != second.recovery_record.code
+    # Коды разные, хотя секрет администратора один: media_id входит в вывод,
+    # поэтому носители из одного дистрибутива не делят ни одного кода.
+    secret = session.container.admin_secret
+    assert crypto.derive_recovery_code(
+        secret, first.recovery_record.media_id, first.recovery_record.slot
+    ) != crypto.derive_recovery_code(
+        secret, second.recovery_record.media_id, second.recovery_record.slot
+    )
     assert first.media_record.service_key_b64 != second.media_record.service_key_b64
 
 

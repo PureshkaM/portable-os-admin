@@ -101,6 +101,57 @@ def _open_container(app, tmp_path):
     assert app.session is not None
 
 
+def test_recovery_screen_tells_the_administrator_what_is_being_asked(gui_app, tmp_path):
+    """Забытый пароль и исчерпанный носитель приходят одной строкой.
+
+    Различает их вид, упакованный в сам запрос. Администратору это надо
+    сказать до того, как код уйдёт пользователю: во втором случае носитель
+    забудет все машины и начнёт набирать их заново, и предупредить об этом
+    задним числом уже поздно.
+    """
+    import base64
+
+    from portable_os_admin import crypto
+    from portable_os_admin.container import MediaRecord, RecoveryRecord
+    from portable_os_admin.gui.screens.recovery import RecoveryFrame
+    from portable_os_admin.recovery.request import KIND_MACHINES, RecoveryRequest
+
+    app = gui_app
+    _open_container(app, tmp_path)
+
+    media_id = "abcd1234"
+    app.session.container.add_media_record(
+        MediaRecord(
+            media_id=media_id, luks_uuid="u-1", label="stick",
+            config_name="cfg", target_os="redos",
+        )
+    )
+    for slot in (3, 4):
+        app.session.container.add_recovery_record(
+            RecoveryRecord(
+                media_id=media_id, slot=slot, code=crypto.generate_recovery_code(),
+                salt_b64=base64.b64encode(crypto.new_salt()).decode(),
+            )
+        )
+
+    app.show_frame(RecoveryFrame)
+    screen = app._current_frame
+
+    screen.request_var.set(RecoveryRequest(media_id=media_id, slot=3).encode())
+    screen._issue()
+    app.update()
+    assert "забыл пароль" in screen.message_bar.var.get()
+
+    screen.request_var.set(
+        RecoveryRequest(media_id=media_id, slot=4, kind=KIND_MACHINES).encode()
+    )
+    screen._issue()
+    app.update()
+    message = screen.message_bar.var.get()
+    assert "исчерпал список машин" in message
+    assert "забудет все машины" in message, "администратора не предупредили о последствии"
+
+
 def test_startup_wrong_password_shows_error(gui_app, tmp_path):
     app = gui_app
     _open_container(app, tmp_path)
@@ -414,7 +465,15 @@ def test_install_wizard_records_media_and_recovery(gui_app, tmp_path, monkeypatc
     # раскладка слотов: зашитое число разошлось бы с ней при первой же правке.
     expected = machine_binding.recovery_keyslots(_StubInstaller.last_config)
     assert len(app.session.container.data.recovery_records) == len(expected)
-    assert "код восстановления" in wizard.message_bar.var.get()
+
+    # Кода на экране быть не должно. Он выводится из секрета администратора
+    # тогда, когда пользователь позвонит, и до этого момента не существует
+    # нигде: ни в контейнере, ни здесь. Прежняя приписка «запишите его»
+    # выносила содержимое контейнера наружу на каждом собранном носителе.
+    message = wizard.message_bar.var.get()
+    assert "Установка завершена" in message
+    assert "запишите его" not in message
+    assert all(not record.code for record in app.session.container.data.recovery_records)
 
 
 def test_install_wizard_passes_the_real_device_not_the_form_fields(gui_app, tmp_path, monkeypatch):

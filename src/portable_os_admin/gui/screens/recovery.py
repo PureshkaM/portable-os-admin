@@ -5,6 +5,7 @@ import tkinter as tk
 from tkinter import ttk
 
 from ...recovery import RecoveryService
+from ...recovery.request import KIND_MACHINES, RecoveryRequest
 from ..widgets import MessageBar, add_field, error_guard
 
 
@@ -23,10 +24,10 @@ class RecoveryFrame(ttk.Frame):
         add_field(
             form,
             0,
-            "Запрос восстановления:",
+            "Запрос от пользователя:",
             self.request_var,
-            hint="формат: media_id:слот:контрольная_сумма",
-            width=60,
+            hint="три группы по четыре знака, например CSJ0-J20E-VEC3",
+            width=30,
         )
 
         actions = ttk.Frame(self)
@@ -44,6 +45,22 @@ class RecoveryFrame(ttk.Frame):
             return
         service = RecoveryService(self.app.session)
         with error_guard(self.message_bar):
+            # Вид запроса разбирается отдельно и до выдачи: администратор
+            # должен видеть, что у него просят. Забытый пароль и исчерпанный
+            # носитель -- разные события с разными последствиями: во втором
+            # случае носитель забудет все машины и наберёт их заново, и
+            # сказать об этом надо до того, как код уйдёт пользователю.
+            request = RecoveryRequest.parse(request_text)
             code = service.issue_code(request_text)
             self.app.save_container()
-            self.message_bar.success(f"Код восстановления: {code} — передайте его пользователю.")
+            if request.kind == KIND_MACHINES:
+                self.message_bar.success(
+                    f"Носитель {request.media_id} исчерпал список машин. "
+                    f"Код сброса: {code} — передайте его пользователю. "
+                    "После сброса носитель забудет все машины и начнёт набирать их заново."
+                )
+            else:
+                self.message_bar.success(
+                    f"Пользователь носителя {request.media_id} забыл пароль. "
+                    f"Код восстановления: {code} — передайте его пользователю."
+                )
