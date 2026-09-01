@@ -1307,3 +1307,122 @@ def test_a_carried_in_drive_is_refused_at_the_device_level(layout):
     )
     assert UDEV_RULES_PATH not in allowed
     assert USB_LOCKDOWN_UNIT_PATH not in allowed
+
+
+# ----------------------------------------------------------------------
+# Файловый менеджер: его нет ни в пакетах, ни в компонентах сессии
+# ----------------------------------------------------------------------
+def test_no_file_manager_is_installed_on_either_family():
+    """Файловый менеджер прямо нарушает определение минимальной системы.
+
+    Пользователю киоска он не положен: адресная строка файлового менеджера --
+    это и обзор всей файловой системы, и запуск чего угодно, то есть пролом
+    сразу двух слоёв. Долгое время caja стоял в наборе MATE как «рисовальщик
+    рабочего стола и потому неизбежный»; собственная схема MATE говорит иначе,
+    и это проверено по gschema образа: фон рисует mate-settings-daemon
+    (`draw-background`), а Caja отвечает только за значки
+    (`show-desktop-icons`), которых в киоске нет.
+
+    Проверяются оба семейства сразу: правило, записанное для одной среды и
+    молча не применённое к другой, -- тот самый класс ошибки, ради которого
+    киоск разнесли по средам 27.08.2026.
+    """
+    for target_os in ("debian", "redos"):
+        config = make_kiosk_config(target_os, allowed_apps=["mate-calc"])
+        config.kiosk.desktop_environment = "mate"
+        packages = get_backend(target_os).desktop_packages(config)
+        for manager in ("caja", "dolphin", "nautilus", "thunar", "pcmanfm"):
+            assert manager not in packages, f"{target_os}: в наборе есть {manager}"
+
+
+def test_the_session_stops_demanding_a_file_manager():
+    """Удалить пакет мало: mate-session вернёт его при следующем входе.
+
+    Умолчание MATE -- required-components-list из windowmanager, panel,
+    filemanager и dock, где filemanager это caja. Описание ключа в gschema
+    прямо обещает: сессия «automatically add the required components back to
+    the session at login time if they do get removed». Без этой правки
+    носитель каждый вход просил бы то, чего на нём нет.
+
+    Оконный менеджер и панель остаются: без них сеанс -- чёрный экран, и это
+    в проекте уже получалось однажды, живой загрузкой.
+    """
+    from portable_os_admin.install.kiosk.environments import mate
+
+    config = make_kiosk_config("debian", allowed_apps=["mate-calc"])
+    config.kiosk.desktop_environment = "mate"
+    keyfile = mate.dconf_keyfile(config)
+
+    assert "required-components-list=['windowmanager', 'panel']" in keyfile
+    assert "filemanager" not in keyfile
+    # Фон рисуется без файлового менеджера, значков нет.
+    assert "draw-background=true" in keyfile
+    assert "show-desktop-icons=false" in keyfile
+    # Настройка без замка -- это умолчание, которое пользователь перепишет.
+    assert "/org/mate/desktop/session/required-components-list" in mate.dconf_locks(config)
+
+
+# ----------------------------------------------------------------------
+# Что администратор может разрешить настраивать
+# ----------------------------------------------------------------------
+def test_language_and_keyboard_can_be_allowed():
+    """Пять назначений, а не три.
+
+    Определение минимальной базовой системы оставляет пользователю язык и
+    раскладку, а обслуживались только сеть, звук и время: поле в конфигурации
+    было, а разрешить им язык было нечем. Имена модулей общие для обоих
+    поколений -- проверено по plasma-workspace 5.27.11 РЕД ОС и 6.3.6 Debian,
+    а не по памяти.
+    """
+    from portable_os_admin.install.kiosk.environments import kde
+
+    config = make_kiosk_config("redos", allowed_apps=["mate-calc"],
+                               allowed_settings=["localisation", "keyboard"])
+    script = kde.settings_modules_script(config, kde.KDE5_PATHS)
+
+    assert "kcm_regionandlang" in script
+    assert "kcm_keyboard" in script
+    # Разрешено ровно названное: звук и сеть не приезжают заодно.
+    assert "kcm_pulseaudio" not in script
+    assert "kcm_networkmanagement" not in script
+
+
+def test_the_generations_do_not_share_a_settings_tree():
+    """Разделы у Plasma 5 и 6 разные, и перепутать их дорого.
+
+    Прочитано из образов по `X-KDE-System-Settings-Parent-Category`: в 5.27
+    регион лежит под персонализацией
+    (`settings-personalization-regionalsettings`), а в 6.3 это раздел верхнего
+    уровня (`settings-regionalsettings`), и раскладка получила собственный
+    подраздел. Разреши шестому поколению пятое дерево -- и пользователь
+    получит либо пустой видимый раздел, либо спрятанное разрешённое. Пустой
+    раздел в этом проекте уже находили: «Внешние носители».
+    """
+    from portable_os_admin.install.kiosk.environments import kde
+
+    config = make_kiosk_config("debian", allowed_apps=["mate-calc"],
+                               allowed_settings=["localisation"])
+    five = kde.settings_modules_script(config, kde.KDE5_PATHS)
+    six = kde.settings_modules_script(config, kde.KDE6_PATHS)
+
+    assert "settings-personalization-regionalsettings" in five
+    assert "settings-regionalsettings" in six
+    # Именно то, чего нельзя допустить: персонализация в шестом поколении
+    # осталась бы пустой, потому что регион из неё уехал.
+    assert "settings-personalization" not in six
+    # А в пятом нет раздела верхнего уровня, который есть в шестом.
+    assert " settings-regionalsettings" not in five.replace(
+        "settings-personalization-regionalsettings", "")
+
+
+def test_the_keyboard_section_follows_the_generation():
+    """Раскладка: в 5.27 под оборудованием, в 6.3 -- собственный подраздел."""
+    from portable_os_admin.install.kiosk.environments import kde
+
+    config = make_kiosk_config("debian", allowed_apps=["mate-calc"],
+                               allowed_settings=["keyboard"])
+    five = kde.settings_modules_script(config, kde.KDE5_PATHS)
+    six = kde.settings_modules_script(config, kde.KDE6_PATHS)
+
+    assert "settings-hardware-input" in five and "settings-hardware" in five
+    assert "settings-hardware-keyboard" in six

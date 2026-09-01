@@ -172,7 +172,9 @@ class RedOSInstallBackend(InstallBackend):
         "mate-session-manager",
         "mate-panel",
         "marco",
-        "caja",
+        # Caja здесь нет намеренно -- см. debian.py, где то же решение
+        # объяснено полностью: файловый менеджер пользователю киоска не
+        # положен, а рабочий стол без него не пропадает.
         "mate-settings-daemon",
         "mate-polkit",
         "mate-notification-daemon",

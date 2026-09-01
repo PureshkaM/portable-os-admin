@@ -125,7 +125,36 @@ def _dconf_settings(config: InstallConfig) -> list[tuple[str, list[tuple[str, st
             # spelling turned out to be wrong and would have silently written
             # a setting nothing reads.
             "org/mate/desktop/session",
-            [("idle-delay", str(blank_minutes) if blanking else "0")],
+            [
+                ("idle-delay", str(blank_minutes) if blanking else "0"),
+                # Файловый менеджер снят со списка обязательных компонентов
+                # сессии. Умолчание MATE -- ['windowmanager', 'panel',
+                # 'filemanager', 'dock'], где filemanager это caja, и
+                # mate-session, по описанию собственного ключа, «automatically
+                # add the required components back to the session at login
+                # time if they do get removed». То есть удалить пакет мало:
+                # сессия каждый вход просила бы то, чего на носителе нет.
+                #
+                # Оконный менеджер и панель остаются -- без них сеанс это
+                # чёрный экран, и это уже проверялось живой загрузкой. Dock в
+                # умолчании пуст, поэтому и не назван.
+                ("required-components-list", "['windowmanager', 'panel']"),
+            ],
+        ),
+        (
+            "org/mate/desktop/background",
+            [
+                # Фон рисует mate-settings-daemon, а не файловый менеджер:
+                # «Have MATE draw the desktop background» -- прочитано в
+                # gschema образа, а не предположено.
+                ("draw-background", "true"),
+                # А это -- «Have MATE file manager (Caja) draw the desktop
+                # icons». Caja на носителе нет, и ключ пишется на случай,
+                # когда он всё же появится зависимостью пакета
+                # администратора: рабочий стол со значками -- это папка, а
+                # папка -- это файловый менеджер.
+                ("show-desktop-icons", "false"),
+            ],
         ),
     ]
     return settings

@@ -45,11 +45,62 @@ class KdePaths:
     kcm_plugin_dirs: str
     #: Чем пересобирать кэш меню.
     sycoca_tools: str
+    #: Разделы «Параметров системы», нужные каждому назначению.
+    #:
+    #: Здесь, а не рядом с модулями, потому что дерево разделов у поколений
+    #: разное, а имена модулей -- нет. Прочитано из самих образов
+    #: (`X-KDE-System-Settings-Parent-Category` в файлах категорий), а не
+    #: выведено из имён: в Plasma 5 регион лежит под персонализацией, а в
+    #: Plasma 6 он раздел верхнего уровня, и раскладка там же переехала под
+    #: собственный подраздел. Ошибиться здесь -- значит либо оставить
+    #: пользователю пустой видимый раздел, либо спрятать разрешённое.
+    settings_categories: "dict[str, tuple[str, ...]]"
 
     @property
     def services_glob(self) -> str:
         return f"{self.services_dir}/*.desktop" if self.services_dir else ""
 
+
+#: Разделы «Параметров системы», нужные каждому разрешению, — Plasma 5.
+#:
+#: Их приходится называть отдельно от модулей: раздел -- это собственный файл
+#: в /usr/share/systemsettings/categories, и он показывается сам по себе, даже
+#: когда внутри не осталось ни одного модуля. Так и нашлись «Внешние
+#: носители»: раздел пустой, все модули под ним закрыты, а пользователь его
+#: всё равно видит. Запретами модулей раздел не убрать -- убирается только
+#: удалением его файла.
+#:
+#: Дерево прочитано из plasma-systemsettings 5.27.11 РЕД ОС: регион лежит под
+#: персонализацией, устройства ввода -- под оборудованием.
+KDE5_SETTINGS_CATEGORIES = {
+    "network": ("settings-network", "settings-network-connectivity",
+                "settings-network-networksettings"),
+    "sound": ("settings-hardware", "settings-hardware-multimedia"),
+    "datetime": ("settings-personalization", "settings-personalization-regionalsettings"),
+    "localisation": ("settings-personalization",
+                     "settings-personalization-regionalsettings"),
+    "keyboard": ("settings-hardware", "settings-hardware-input"),
+}
+
+#: То же для Plasma 6, и список другой не по недосмотру.
+#:
+#: Прочитано из systemsettings 6.3.4 Debian 13, по полю
+#: `X-KDE-System-Settings-Parent-Category` каждого раздела:
+#:
+#: * `settings-regionalsettings` -- раздел **верхнего уровня**, тогда как в
+#:   пятом поколении тот же раздел лежал под персонализацией. Разрешив здесь
+#:   `settings-personalization`, мы оставили бы пользователю видимый пустой
+#:   раздел -- ровно то, из-за чего в списке появились «Внешние носители»;
+#: * `settings-hardware-input` тоже поднялся на верхний уровень, а раскладка
+#:   получила собственный подраздел `settings-hardware-keyboard`;
+#: * `settings-network-connectivity` в Debian нет вовсе.
+KDE6_SETTINGS_CATEGORIES = {
+    "network": ("settings-network", "settings-network-networksettings"),
+    "sound": ("settings-hardware", "settings-hardware-multimedia"),
+    "datetime": ("settings-regionalsettings",),
+    "localisation": ("settings-regionalsettings",),
+    "keyboard": ("settings-hardware-input", "settings-hardware-keyboard"),
+}
 
 #: Plasma 5: модули лежат и в kservices5, и плагинами под qt5.
 KDE5_PATHS = KdePaths(
@@ -60,6 +111,7 @@ KDE5_PATHS = KdePaths(
         "/usr/lib/*/qt5/plugins/plasma/kcms /usr/lib/*/qt5/plugins/kcms"
     ),
     sycoca_tools="kbuildsycoca5",
+    settings_categories=KDE5_SETTINGS_CATEGORIES,
 )
 
 #: Plasma 6: kservices5 больше нет, всё — плагины под qt6.
@@ -71,6 +123,7 @@ KDE6_PATHS = KdePaths(
         "/usr/lib/*/qt6/plugins/plasma/kcms /usr/lib/*/qt6/plugins/kcms"
     ),
     sycoca_tools="kbuildsycoca6",
+    settings_categories=KDE6_SETTINGS_CATEGORIES,
 )
 
 
@@ -81,21 +134,14 @@ SETTINGS_MODULES = {
     "network": ("kcm_networkmanagement",),
     "sound": ("kcm_pulseaudio",),
     "datetime": ("kcm_clock",),
-}
-
-#: Разделы «Параметров системы», нужные каждому разрешению.
-#:
-#: Их приходится называть отдельно от модулей: раздел -- это собственный файл
-#: в /usr/share/systemsettings/categories, и он показывается сам по себе, даже
-#: когда внутри не осталось ни одного модуля. Так и нашлись «Внешние
-#: носители»: раздел пустой, все модули под ним закрыты, а пользователь его
-#: всё равно видит. Запретами модулей раздел не убрать -- убирается только
-#: удалением его файла.
-SETTINGS_CATEGORIES = {
-    "network": ("settings-network", "settings-network-connectivity",
-                "settings-network-networksettings"),
-    "sound": ("settings-hardware", "settings-hardware-multimedia"),
-    "datetime": ("settings-personalization", "settings-personalization-regionalsettings"),
+    # Язык, форматы чисел и дат, единицы измерения -- один модуль на всё.
+    # Имя у него общее для обоих поколений: проверено по plasma-workspace
+    # 5.27.11 РЕД ОС и 6.3.6 Debian.
+    "localisation": ("kcm_regionandlang",),
+    # Раскладка клавиатуры -- отдельно от языка, и это не педантизм:
+    # администратор может разрешить человеку добавить русскую раскладку,
+    # не позволяя переводить всю систему на другой язык, и наоборот.
+    "keyboard": ("kcm_keyboard",),
 }
 
 #: Корневой раздел: без него дерево не строится вовсе.
@@ -126,7 +172,7 @@ def settings_modules_script(config: InstallConfig, paths: "KdePaths | None" = No
     categories = set()
     for purpose in config.kiosk.allowed_settings:
         allowed.update(SETTINGS_MODULES.get(purpose, ()))
-        categories.update(SETTINGS_CATEGORIES.get(purpose, ()))
+        categories.update(paths.settings_categories.get(purpose, ()))
     if allowed:
         allowed.add(SETTINGS_LANDING_MODULE)
         categories.add(SETTINGS_ROOT_CATEGORY)

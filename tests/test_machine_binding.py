@@ -342,3 +342,29 @@ def test_the_unlock_script_takes_down_its_own_progress_message():
     opened = script[script.index("cryptsetup luksOpen --key-slot \"$slot\""):]
     assert "poa_checking_hide" in opened.split("exit 0")[0], "не снято перед передачей экрана"
     assert opened.count("poa_checking_hide") >= 2, "не снято на пути отказа"
+
+
+def test_the_attempt_limit_reaches_the_medium_with_binding():
+    """Пять попыток, заданные администратором, должны быть пятью.
+
+    `luks.failed_attempts_limit` доходил только до `tries=` в crypttab, то
+    есть до Debian, где повторы делает cryptroot. На РЕД ОС при включённой
+    привязке том открывает наш хук, а в нём стояла вписанная в код тройка:
+    администратор ставил пять и молча получал три. Поле существовало, но до
+    носителя не доезжало -- тот же класс, что `luks.kdf` и
+    `firewall.open_ports`, которые в этом проекте уже находили. Найдено
+    разбором 01.09.2026.
+    """
+    config = make_config("redos")
+    config.machine_binding.slots = 2
+    config.luks.failed_attempts_limit = 5
+    script = mb.dracut_unlock_script(config, "poa-abc")
+
+    assert "POA_MAX_ATTEMPTS=5" in script
+    assert '-le "$POA_MAX_ATTEMPTS"' in script
+    # Тройки, вписанной в код, больше нет ни в каком виде.
+    assert '-le 3' not in script
+
+    # И значение действительно берётся из конфигурации, а не совпало случайно.
+    config.luks.failed_attempts_limit = 1
+    assert "POA_MAX_ATTEMPTS=1" in mb.dracut_unlock_script(config, "poa-abc")

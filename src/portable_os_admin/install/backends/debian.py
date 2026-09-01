@@ -74,7 +74,22 @@ class DebianInstallBackend(InstallBackend):
         "mate-session-manager",
         "mate-panel",
         "marco",
-        "caja",
+        # Caja не ставится: файловый менеджер прямо нарушает определение
+        # минимальной базовой системы, а «нечего запускать» -- самый прочный
+        # из слоёв киоска. Долгое время он тут стоял, потому что считался
+        # рисовальщиком рабочего стола и потому неизбежным.
+        #
+        # Собственная схема MATE говорит иначе, и это проверено по gschema
+        # образа, а не по памяти: `draw-background` -- «Have MATE draw the
+        # desktop background», то есть фон рисует mate-settings-daemon своим
+        # плагином background; `show-desktop-icons` -- «Have MATE file manager
+        # (Caja) draw the desktop icons», то есть Caja отвечает только за
+        # значки. Значков в киоске нет и не должно быть: все *-icon-visible
+        # выключены, а ярлыки приложений убраны с рабочего стола ещё на KDE.
+        #
+        # Одного удаления пакета мало: mate-session держит файловый менеджер
+        # в required-components-list и возвращает его при каждом входе.
+        # Список переписан в kiosk/environments/mate.py.
         "mate-settings-daemon",
         "mate-polkit",
         "mate-notification-daemon",

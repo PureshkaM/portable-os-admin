@@ -27,9 +27,10 @@ def apply_script(config: InstallConfig, image=None) -> str:
 
     The override is a **copy of the original with NoDisplay=true added**, not a
     stub. Writing a stub with Hidden=true and no Exec broke the session
-    outright, and only a real boot showed it: marco, mate-panel and caja are
-    not menu entries but components of the desktop itself, and mate-session
-    reads their .desktop files to start them. With no Exec it started none of
+    outright, and only a real boot showed it: marco and mate-panel (and, at the
+    time, caja -- since removed from the package set) are not menu entries but
+    components of the desktop itself, and mate-session reads their .desktop
+    files to start them. With no Exec it started none of
     them, so the medium booted to a black screen -- autologin fine, X running,
     and nothing inside. Hidden=true means "this entry has been deleted";
     NoDisplay=true means "it exists, just keep it out of the menu", which is
@@ -81,10 +82,11 @@ for f in /usr/share/applications/*.desktop; do
     # Копия исходной записи плюс NoDisplay=true — а не подмена её пустышкой.
     #
     # Раньше здесь создавалась запись с Hidden=true и без Exec, и это ломало
-    # сессию целиком. marco, mate-panel и caja — не «приложения из меню», а
-    # компоненты самой среды: оконный менеджер, панель и рисовальщик рабочего
-    # стола. mate-session читает их .desktop, чтобы запустить их, не находит
-    # Exec и не поднимает ни одного. Носитель загружался в чёрный экран:
+    # сессию целиком. marco и mate-panel — не «приложения из меню», а
+    # компоненты самой среды: оконный менеджер и панель. mate-session читает
+    # их .desktop, чтобы запустить их, не находит Exec и не поднимает ни
+    # одного. Тогда в этом ряду стоял и caja; из набора пакетов он с тех пор
+    # убран, но урок относится к любому компоненту среды. Носитель загружался в чёрный экран:
     # автологин проходил, X работал, а внутри не было ни окон, ни панели.
     #
     # Hidden=true по спецификации значит «записи больше нет», то есть её
