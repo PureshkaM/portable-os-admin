@@ -969,3 +969,27 @@ def test_debian_installs_sudo_when_it_is_asked_for():
     assert "sudo" not in backend.boot_packages(_config_with_sudo("debian"))
     assert "sudo" in backend.boot_packages(_config_with_sudo("debian", account_sudo=True))
     assert "sudo" in backend.boot_packages(_config_with_sudo("debian", extra_sudo=True))
+
+
+def test_debian_installs_what_its_own_locale_step_calls():
+    """Сборка зовёт `locale-gen` -- значит пакет, который его даёт, обязан быть.
+
+    Прогон Debian + KDE 01.09.2026 встал ровно здесь: «chroot: не удалось
+    выполнить команду `locale-gen`: No such file or directory». Дефект жил
+    незамеченным, потому что Debian не собирали с 21.08.2026, а у РЕД ОС
+    локали приходят готовыми пакетами glibc-langpack-* и шага сборки нет
+    вовсе.
+    """
+    from portable_os_admin.config import InstallConfig
+    from portable_os_admin.install.backends import get_backend
+
+    config = InstallConfig.create_default("stick", "debian")
+    backend = get_backend("debian")
+
+    commands = backend.locale_generation_commands("/mnt/t", config)
+    calls_locale_gen = any("locale-gen" in " ".join(argv) for argv in commands)
+    assert calls_locale_gen, "тест устарел: сборка больше не зовёт locale-gen"
+
+    assert "locales" in backend.boot_packages(config), (
+        "locale-gen зовётся, а пакет, который его приносит, не ставится"
+    )

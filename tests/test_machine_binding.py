@@ -368,3 +368,65 @@ def test_the_attempt_limit_reaches_the_medium_with_binding():
     # И значение действительно берётся из конфигурации, а не совпало случайно.
     config.luks.failed_attempts_limit = 1
     assert "POA_MAX_ATTEMPTS=1" in mb.dracut_unlock_script(config, "poa-abc")
+
+
+def test_both_families_actually_run_the_registration_step():
+    """Ключ подставить мало -- машину надо ещё и записать.
+
+    Найдено прогоном Debian + KDE 01.09.2026: том открылся, рабочий стол
+    поднялся, а машинные keyslot'ы остались пустыми. Регистрацию у РЕД ОС
+    вызывает свой dracut-хук (pre-pivot), а у Debian такого не было вовсе --
+    то есть привязка, включённая в конфигурации, не действовала совсем: фраза
+    открывала бы носитель на любой машине.
+
+    Заметить это можно было только заглянув в заголовок LUKS: снаружи
+    носитель вёл себя как исправный.
+    """
+    from portable_os_admin.install.backends import get_backend
+
+    for target_os in ("redos", "debian"):
+        config = make_config(target_os)
+        config.machine_binding.slots = 2
+        layout = layout_for(config)
+        backend = get_backend(target_os)
+        # Оба источника сразу: у РЕД ОС вызов регистрации живёт в
+        # dracut-модуле (recovery_boot_files), у Debian -- в хуках
+        # initramfs-tools рядом со скриптами привязки. Смотреть надо туда, где
+        # семейство держит запуск, а не туда, где удобнее искать.
+        files = dict(backend.machine_binding_files(config, layout))
+        files.update(backend.recovery_boot_files(layout, config))
+
+        # Проверяется не наличие скрипта -- он кладётся базовым классом и
+        # был на месте у обоих, -- а то, что его кто-то запускает. Первая
+        # версия этого теста ловила именно скрипт и проходила на семействе,
+        # где регистрация не работала вовсе.
+        launchers = [
+            content
+            for path, (content, _mode) in files.items()
+            if path != mb.REGISTER_SCRIPT_PATH
+            and "poa-machine-register" in content
+        ]
+        assert launchers, f"{target_os}: скрипт регистрации никем не запускается"
+
+
+def test_debian_registers_after_the_root_is_unlocked_not_before():
+    """Хук ставится в local-bottom, и это не деталь оформления.
+
+    Регистрация правит заголовок LUKS и требует открытого тома: до
+    разблокировки писать некуда, после передачи управления системе -- уже
+    поздно и опаснее. local-bottom -- ровно то место, где у initramfs-tools
+    корень уже открыт, а система ещё не запущена; у dracut ему соответствует
+    pre-pivot.
+    """
+    from portable_os_admin.install.backends import get_backend
+
+    config = make_config("debian")
+    config.machine_binding.slots = 2
+    files = get_backend("debian").machine_binding_files(config, layout_for(config))
+
+    assert "etc/initramfs-tools/scripts/local-bottom/poa-machine" in files
+    script, _mode = files["etc/initramfs-tools/scripts/local-bottom/poa-machine"]
+    assert 'PREREQ="cryptroot"' in script, "хук может сработать раньше разблокировки"
+    # Пароль берётся из того же места, куда его кладёт keyscript: второй
+    # запрос выглядел бы как сбой.
+    assert "/run/poa-passphrase" in script
