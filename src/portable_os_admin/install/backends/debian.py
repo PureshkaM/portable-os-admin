@@ -25,6 +25,22 @@ class DebianInstallBackend(InstallBackend):
 
     EXTRA_TOOLS = ("debootstrap",)
 
+    #: Чего не должно быть в базовой системе, хотя дистрибутив кладёт это сам.
+    #:
+    #: debootstrap ставит всё с приоритетами required и important, а nano и
+    #: vim-tiny числятся important — то есть редактор приезжает в систему,
+    #: которой по определению редактор не положен. Проверено по индексу
+    #: образа Debian 13, а не по памяти.
+    #:
+    #: mc и htop здесь не нужны: в Debian у них приоритет optional, и
+    #: debootstrap их не ставит вовсе. В РЕД ОС оба лежат в группе `core`
+    #: образа, поэтому там список длиннее — расхождение не в подходе, а в
+    #: том, что каждое семейство кладёт в базу.
+    #:
+    #: `less` оставлен намеренно, как и у РЕД ОС: он important, его тянет
+    #: man-db, и сам он ни файлами не управляет, ни текст не правит.
+    UNWANTED_PACKAGES = ("nano", "vim-tiny")
+
     ARCH_NAMES = {
         "x86_64": "amd64",
         "amd64": "amd64",
@@ -190,6 +206,16 @@ class DebianInstallBackend(InstallBackend):
             "debootstrap",
             f"--arch={self.normalize_arch(config.arch)}",
         ]
+        # То же, что UNWANTED_PACKAGES у РЕД ОС, и по той же причине: редактор
+        # в базовой системе прямо нарушает её определение. Разница лишь в том,
+        # где это перехватывается: у RHEL список базовых пакетов читается из
+        # comps и фильтруется, а debootstrap ставит всё с приоритетами
+        # required и important, и вырезать оттуда можно только --exclude.
+        #
+        # Не поставить дешевле, чем поставить и потом удалить: удаление стоит
+        # ещё одного прохода apt по цепочке зависимостей внутри chroot.
+        if self.UNWANTED_PACKAGES:
+            argv.append(f"--exclude={','.join(self.UNWANTED_PACKAGES)}")
         if source_url.startswith("file:"):
             # Measured on debian-13.6.0-amd64-DVD-1.iso: the image carries
             # dists/<suite>/Release but neither Release.gpg nor InRelease, so

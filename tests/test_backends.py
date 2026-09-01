@@ -673,3 +673,70 @@ def test_graphical_boot_parameter_matches_the_family():
         verbose = get_backend(target_os).kernel_cmdline(config)
         assert expected in verbose, target_os
         assert "quiet" not in verbose, target_os
+
+
+# ----------------------------------------------------------------------
+# Чего не должно быть в базовой системе
+# ----------------------------------------------------------------------
+def test_neither_family_installs_an_editor_or_a_file_manager():
+    """Определение минимальной базовой системы держится составом, а не запретами.
+
+    Найдено осмотром собранного корня 01.09.2026, в тот же день, когда из
+    состава убирали caja: файловый менеджер выносили через дверь, а mc стоял
+    в соседней комнате. В группе `core` образа РЕД ОС mc, nano и vim-minimal
+    числятся mandatory, htop -- default; в Debian nano и vim-tiny имеют
+    приоритет important, и debootstrap ставит их сам.
+
+    Опаснее всех mc: файловый менеджер, редактор и командная строка разом, то
+    есть готовый трамплин для всякого, кто найдёт способ выполнить программу.
+    """
+    from portable_os_admin.install.backends import get_backend
+
+    for target_os, forbidden in (
+        ("redos", ("mc", "nano", "vim-minimal", "htop")),
+        ("debian", ("nano", "vim-tiny")),
+    ):
+        unwanted = get_backend(target_os).UNWANTED_PACKAGES
+        for name in forbidden:
+            assert name in unwanted, f"{target_os}: {name} остаётся в базовой системе"
+
+
+def test_redos_filters_the_unwanted_out_of_the_images_own_core_group():
+    """Список образа -- не приказ: то, что нарушает определение, отсеивается.
+
+    Базовый набор РЕД ОС читается из comps.xml самого образа, и там эти
+    пакеты названы обязательными. Фильтр существовал ради
+    dracut-config-rescue; теперь он же держит и определение минимальной
+    системы.
+    """
+    from portable_os_admin.install.backends import get_backend
+
+    backend = get_backend("redos")
+    backend.image_core_packages = ("bash", "mc", "nano", "vim-minimal", "htop", "less")
+
+    names = backend.core_package_names()
+    assert "bash" in names
+    # less остаётся: его требует man-db, и сам он ничего не запускает.
+    assert "less" in names
+    for name in ("mc", "nano", "vim-minimal", "htop"):
+        assert name not in names, f"{name} прошёл из comps образа"
+
+
+def test_debian_excludes_them_at_bootstrap_time():
+    """У Debian отсечь можно только на входе: debootstrap ставит important сам.
+
+    Не поставить дешевле, чем поставить и потом удалить: удаление стоит ещё
+    одного прохода apt по зависимостям внутри chroot.
+    """
+    from portable_os_admin.config import InstallConfig
+    from portable_os_admin.install.backends import get_backend
+
+    config = InstallConfig.create_default("stick", "debian")
+    config.arch = "amd64"
+    backend = get_backend("debian")
+    argv = backend.bootstrap_command("/mnt/t", config, "file:///mnt/iso", "trixie")
+
+    excludes = [arg for arg in argv if arg.startswith("--exclude=")]
+    assert excludes, "debootstrap зовётся без --exclude"
+    named = excludes[0].split("=", 1)[1].split(",")
+    assert "nano" in named and "vim-tiny" in named
