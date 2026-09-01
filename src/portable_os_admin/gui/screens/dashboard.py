@@ -58,6 +58,11 @@ class DashboardFrame(ttk.Frame):
             ("Обмен", self._open_exchange),
             ("Восстановление", self._open_recovery),
             ("Состояние", self._check_leftovers),
+            # «Пароль», а не «Пароль контейнера»: в ряду из шести кнопок
+            # длинная подпись не помещается в окно минимальной ширины, и это
+            # тот же дефект, который здесь правили дважды. Другого пароля на
+            # этом экране нет, так что короткое имя ничего не теряет.
+            ("Пароль", self._open_password),
         ):
             ttk.Button(secondary, text=text, command=command).pack(
                 side="left", padx=(0, theme.SPACE_SM)
@@ -174,6 +179,11 @@ class DashboardFrame(ttk.Frame):
         from .exchange import ExchangeFrame
 
         self.app.show_frame(ExchangeFrame)
+
+    def _open_password(self) -> None:
+        from .password import PasswordFrame
+
+        self.app.show_frame(PasswordFrame)
 
     def _open_recovery(self) -> None:
         from .recovery import RecoveryFrame

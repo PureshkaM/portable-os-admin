@@ -88,6 +88,21 @@ class AdminContainer:
     def kdf_params(self) -> crypto.KdfParams:
         return self._kdf_params
 
+    def rekey(self, key: bytes, kdf_params: crypto.KdfParams) -> None:
+        """Заменить ключ, которым контейнер шифруется, оставив содержимое.
+
+        Старый ключ затирается на месте, а не выбрасывается сборщику мусора:
+        `close()` затирает его по той же причине (Требования к
+        безопасности-10), и смена пароля -- ровно тот случай, когда старый
+        ключ в памяти больше не нужен ни на секунду.
+        """
+        if self.closed:
+            raise RuntimeError("container is closed")
+        for i in range(len(self._key)):
+            self._key[i] = 0
+        self._key = bytearray(key)
+        self._kdf_params = kdf_params
+
 
 class ContainerManager:
     """Creates and opens admin-container files on disk."""
@@ -146,6 +161,33 @@ class ContainerManager:
             raise ContainerCorruptedError(f"повреждено содержимое контейнера: {exc}") from exc
 
         return AdminContainer(path, key, kdf_params, data)
+
+    def change_password(self, container: AdminContainer, new_password: str) -> None:
+        """Перешифровать открытый контейнер новым паролем.
+
+        Носителей это не касается вовсе, и в этом главное. Пароль контейнера
+        шифрует файл, а коды восстановления выводятся из секрета
+        администратора, который лежит внутри и остаётся прежним: носитель,
+        собранный вчера, после смены пароля откроется теми же кодами. Иначе
+        смена пароля означала бы пересборку всех носителей, какие этот
+        администратор когда-либо выдал.
+
+        Контейнер должен быть открыт -- то есть старый пароль уже предъявлен.
+        Спрашивать его второй раз незачем: это тот же сеанс, и других способов
+        получить открытый контейнер нет.
+
+        Соль KDF берётся новая, а не переиспользуется. Она не секрет, но одна
+        и та же соль на два пароля означала бы, что по двум версиям файла
+        видно, менялся пароль или нет, а перебор по обеим ведётся за одну
+        цену.
+        """
+        problems = crypto.validate_password_strength(new_password)
+        if problems:
+            raise WeakPasswordError(problems)
+
+        kdf_params = crypto.default_kdf_params()
+        container.rekey(crypto.derive_key(new_password, kdf_params), kdf_params)
+        self.save(container)
 
     def save(self, container: AdminContainer) -> None:
         plaintext = json.dumps(container.data.to_dict()).encode("utf-8")
