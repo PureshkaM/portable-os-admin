@@ -1150,3 +1150,159 @@ def test_an_empty_hostname_does_not_produce_a_nameless_system(gui_app, tmp_path)
     wizard.save_step(0)
 
     assert wizard.config.hostname == "portable-os"
+
+
+# ----------------------------------------------------------------------
+# Свои пакеты администратора: путь от кнопки до сборки
+# ----------------------------------------------------------------------
+def _build_wizard_with_config(app, tmp_path, target_os="redos"):
+    """Мастер сборки с уже выбранной проверенной конфигурацией."""
+    from portable_os_admin.gui.screens.build_wizard import BuildWizardFrame
+
+    config = app.config_manager.create(app.configs_dir, "stick1", target_os)
+    config.validation_status = "valid"
+    path = app.configs_dir / "stick1.json"
+    app.config_manager.save(config, path)
+
+    app.show_frame(BuildWizardFrame)
+    app.update()
+    frame = app._current_frame
+    frame.selected_config_path = path
+    return frame
+
+
+def test_the_wizard_has_a_step_for_the_administrators_own_packages(gui_app, tmp_path):
+    """Ради этого шага инструмент во многом и существует.
+
+    Клиентов VPN и удалённого рабочего стола в базовой системе нет намеренно:
+    у каждой организации свой шлюз и свой клиент, и выбор за администратора не
+    сделать. Последний шаг до готового рабочего места он делает сам, своими
+    `.deb` и `.rpm`, — а сделать это через интерфейс было нельзя:
+    `build_distribution` принимал `extra_packages` с самого начала, и ни одна
+    кнопка их не заполняла. По правилу этого проекта то, чего нет в
+    интерфейсе, не считается сделанным.
+    """
+    app = gui_app
+    _open_container(app, tmp_path)
+    frame = _build_wizard_with_config(app, tmp_path)
+    assert "Свои пакеты" in frame.step_titles
+
+
+def test_a_package_for_the_wrong_family_is_refused_at_once(gui_app, tmp_path):
+    """`.deb` для РЕД ОС отвергается при выборе, а не через полчаса сборки.
+
+    Проверка была и раньше, но только в установщике: узнать об ошибке
+    администратор мог лишь после распаковки образа. Расширение берётся из
+    `OSInstaller.PACKAGE_SUFFIX`, а не пишется в интерфейсе второй раз —
+    разойдись эти списки, и мастер принимал бы файл, который сборка отвергнет.
+    """
+    app = gui_app
+    _open_container(app, tmp_path)
+    frame = _build_wizard_with_config(app, tmp_path)
+    frame.step_index = frame.step_titles.index("Свои пакеты")
+    frame._render_step()
+    app.update()
+
+    assert frame._package_suffix() == ".rpm"
+
+    wrong = tmp_path / "rudesktop.deb"
+    wrong.write_bytes(b"not a real package")
+    right = tmp_path / "rudesktop.rpm"
+    right.write_bytes(b"not a real package either")
+
+    from portable_os_admin.gui.screens import build_wizard as module
+
+    module.filedialog.askopenfilenames = lambda **kwargs: (str(wrong), str(right))
+    frame._browse_packages()
+    app.update()
+
+    assert frame.extra_packages == [str(right)], "принят пакет чужого семейства"
+
+
+def test_the_chosen_packages_reach_the_build(gui_app, tmp_path, monkeypatch):
+    """То, что выбрано кнопкой, доезжает до `build_distribution`."""
+    app = gui_app
+    _open_container(app, tmp_path)
+    frame = _build_wizard_with_config(app, tmp_path)
+
+    captured = {}
+
+    class _FakeInstaller:
+        PACKAGE_SUFFIX = {"debian": ".deb", "astra": ".deb", "redos": ".rpm"}
+
+        def __init__(self, session):
+            pass
+
+        def build_distribution(self, config, destination, **kwargs):
+            captured.update(kwargs)
+            raise RuntimeError("дальше не идём: проверяется только передача")
+
+    package = tmp_path / "rudesktop.rpm"
+    package.write_bytes(b"not a real package")
+    frame.extra_packages = [str(package)]
+    frame.image_path = str(tmp_path / "image.iso")
+    frame.destination = str(tmp_path)
+
+    from portable_os_admin.gui.screens import build_wizard as module
+
+    monkeypatch.setattr(module, "OSInstaller", _FakeInstaller)
+    frame.step_index = frame.step_titles.index("Сборка")
+    frame._render_step()
+    app.update()
+    frame._start()
+    app.update()
+
+    assert captured.get("extra_packages") == [str(package)], (
+        "выбранные пакеты не доехали до сборки"
+    )
+
+
+def test_the_summary_names_the_packages_before_anything_starts(gui_app, tmp_path):
+    """Последний экран перечисляет их: сборка идёт четверть часа."""
+    app = gui_app
+    _open_container(app, tmp_path)
+    frame = _build_wizard_with_config(app, tmp_path)
+
+    package = tmp_path / "rudesktop.rpm"
+    package.write_bytes(b"not a real package")
+    frame.extra_packages = [str(package)]
+    frame.image_path = str(tmp_path / "image.iso")
+    frame.destination = str(tmp_path)
+
+    frame.step_index = frame.step_titles.index("Сборка")
+    frame._render_step()
+    app.update()
+
+    assert "rudesktop.rpm" in _visible_text(frame)
+
+
+def test_a_successful_choice_takes_down_the_previous_refusal(gui_app, tmp_path):
+    """Список пополнился — значит красного отказа под ним быть не должно.
+
+    Замечено прогоном через интерфейс 01.09.2026: после отказа «Нужен .rpm»
+    администратор выбирал правильный файл, тот появлялся в списке, а сообщение
+    оставалось висеть. Экран противоречил сам себе.
+    """
+    app = gui_app
+    _open_container(app, tmp_path)
+    frame = _build_wizard_with_config(app, tmp_path)
+    frame.step_index = frame.step_titles.index("Свои пакеты")
+    frame._render_step()
+    app.update()
+
+    from portable_os_admin.gui.screens import build_wizard as module
+
+    wrong = tmp_path / "client.deb"
+    wrong.write_bytes(b"not a real package")
+    module.filedialog.askopenfilenames = lambda **kwargs: (str(wrong),)
+    frame._browse_packages()
+    app.update()
+    assert "Нужен .rpm" in _visible_text(frame)
+
+    right = tmp_path / "client.rpm"
+    right.write_bytes(b"not a real package either")
+    module.filedialog.askopenfilenames = lambda **kwargs: (str(right),)
+    frame._browse_packages()
+    app.update()
+
+    assert "Нужен .rpm" not in _visible_text(frame), "отказ пережил удачный выбор"

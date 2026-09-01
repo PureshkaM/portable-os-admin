@@ -26,16 +26,22 @@ class BuildWizardFrame(WizardFrame):
         self.destination = ""
         self.selected_config_path: Path | None = None
         self._valid_paths: list[Path] = []
+        self.extra_packages: list[str] = []
         self._running = False
         self._result = None
 
         super().__init__(
             parent,
             app,
-            step_titles=["Образ ОС", "Конфигурация", "Куда сохранить", "Сборка"],
+            step_titles=["Образ ОС", "Конфигурация", "Свои пакеты", "Куда сохранить", "Сборка"],
             step_hints=[
                 "",
                 "",
+                # Единственная подсказка на весь мастер, и она несёт неочевидное:
+                # почему это делается здесь, а не на собранном носителе.
+                "Ставятся при сборке, поэтому зависимости разрешаются по образу "
+                "один раз, и каждый носитель из этого дистрибутива получает "
+                "одно и то же.",
                 "",
                 "",
             ],
@@ -115,7 +121,86 @@ class BuildWizardFrame(WizardFrame):
         self.selected_config_path = self._valid_paths[index]
         return True
 
-    # -- step 2: destination ------------------------------------------------
+    # -- step 2: the administrator's own packages ---------------------------
+    def _build_step_packages(self, body: ttk.Frame) -> None:
+        """Файлы .deb/.rpm, которых нет ни в одном репозитории.
+
+        Ради этого шага инструмент во многом и существует. Клиента VPN и
+        клиента удалённого рабочего стола в базовой системе нет намеренно: у
+        каждой организации свой шлюз и свой клиент, и выбор за администратора
+        не сделать. Значит последний шаг до готового рабочего места он делает
+        сам, своими пакетами, -- а до этого шага сделать это через интерфейс
+        было нельзя: код установки существовал с самого начала и не был
+        подключён ни к одной кнопке.
+        """
+        self.packages_table = ttk.Treeview(
+            body, columns=("name", "size"), show="headings", height=7
+        )
+        for column, title, width in (("name", "Файл", 420), ("size", "Размер", 120)):
+            self.packages_table.heading(column, text=title)
+            self.packages_table.column(column, width=width, anchor="w")
+        self.packages_table.pack(fill="both", expand=True)
+
+        buttons = ttk.Frame(body)
+        buttons.pack(anchor="w", fill="x", pady=(theme.SPACE_SM, 0))
+        ttk.Button(buttons, text="Добавить пакеты…", command=self._browse_packages).pack(side="left")
+        ttk.Button(buttons, text="Убрать", command=self._remove_package).pack(
+            side="left", padx=(theme.SPACE_SM, 0)
+        )
+        self._refresh_packages()
+
+    def _package_suffix(self) -> str:
+        """Какое расширение подходит выбранной конфигурации.
+
+        Берётся из установщика, а не пишется здесь второй раз: разойдись эти
+        два списка -- и интерфейс принимал бы файл, который сборка отвергнет
+        через полчаса работы.
+        """
+        config = self.app.config_manager.open(self.selected_config_path)
+        return OSInstaller.PACKAGE_SUFFIX.get(config.target_os, "")
+
+    def _refresh_packages(self) -> None:
+        self.packages_table.delete(*self.packages_table.get_children())
+        for path in self.extra_packages:
+            size = Path(path).stat().st_size if Path(path).is_file() else 0
+            self.packages_table.insert(
+                "", "end", values=(Path(path).name, f"{size / 1024 / 1024:.1f} МБ")
+            )
+
+    def _browse_packages(self) -> None:
+        suffix = self._package_suffix()
+        chosen = filedialog.askopenfilenames(
+            parent=self,
+            title="Выберите пакеты",
+            filetypes=[(f"Пакеты {suffix}", f"*{suffix}"), ("Все файлы", "*")],
+        )
+        # Расширение проверяется здесь, а не только перед сборкой: узнать о
+        # том, что взят .deb вместо .rpm, следует в тот же миг, а не после
+        # получаса распаковки.
+        wrong = [name for name in chosen if suffix and not name.lower().endswith(suffix)]
+        if wrong:
+            names = ", ".join(Path(name).name for name in wrong)
+            self.message_bar.error(f"Нужен {suffix}: {names}")
+        elif chosen:
+            # Снять прошлый отказ. Иначе экран противоречит сам себе: список
+            # пополнился, а под ним красным висит «Нужен .rpm» от предыдущей
+            # попытки -- замечено прогоном через интерфейс 01.09.2026.
+            self.message_bar.clear()
+        for name in chosen:
+            if name not in self.extra_packages and name not in wrong:
+                self.extra_packages.append(name)
+        self._refresh_packages()
+
+    def _remove_package(self) -> None:
+        selection = self.packages_table.selection()
+        if not selection:
+            return
+        for item in selection:
+            index = self.packages_table.index(item)
+            del self.extra_packages[index]
+        self._refresh_packages()
+
+    # -- step 3: destination ------------------------------------------------
     def _build_step_destination(self, body: ttk.Frame) -> None:
         form = ttk.Frame(body)
         form.pack(anchor="w", fill="x")
@@ -154,6 +239,7 @@ class BuildWizardFrame(WizardFrame):
             ("Образ:", Path(self.image_path).name),
             ("Конфигурация:", self.selected_config_path.name),
             ("Режим:", "киоск" if config.kiosk.enabled else "консольная система"),
+            ("Свои пакеты:", ", ".join(Path(p).name for p in self.extra_packages) or "нет"),
             ("Куда:", self.destination),
         ):
             row = ttk.Frame(summary)
@@ -212,6 +298,7 @@ class BuildWizardFrame(WizardFrame):
                 config,
                 self.destination,
                 image_path=self.image_path,
+                extra_packages=list(self.extra_packages),
                 dry_run=False,
                 on_step=self._on_stage,
             )
@@ -247,11 +334,20 @@ class BuildWizardFrame(WizardFrame):
                 button.configure(state="normal")
 
     # -- wiring -------------------------------------------------------------
-    _STEP_BUILDERS = [_build_step_image, _build_step_config, _build_step_destination, _build_step_run]
-    _STEP_SAVERS = [_save_step_image, None, _save_step_destination, None]
+    _STEP_BUILDERS = [
+        _build_step_image,
+        _build_step_config,
+        _build_step_packages,
+        _build_step_destination,
+        _build_step_run,
+    ]
+    _STEP_SAVERS = [_save_step_image, None, None, _save_step_destination, None]
     _STEP_VALIDATORS = [
         _validate_step_image,
         _validate_step_config,
+        # Своих пакетов может не быть вовсе, и это обычный случай: проверять
+        # здесь нечего, отобранные проверены при выборе.
+        None,
         _validate_step_destination,
         None,
     ]
