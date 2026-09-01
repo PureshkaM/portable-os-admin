@@ -909,3 +909,63 @@ def test_redos_needs_no_extra_console_files():
 
     config = InstallConfig.create_default("stick", "redos")
     assert get_backend("redos").console_font_files(config) == {}
+
+
+# ----------------------------------------------------------------------
+# sudo: ставится тогда и только тогда, когда о правах просят
+# ----------------------------------------------------------------------
+def _config_with_sudo(target_os, account_sudo=False, extra_sudo=False):
+    from portable_os_admin.config import InstallConfig
+
+    config = InstallConfig.create_default("stick", target_os)
+    config.account.sudo = account_sudo
+    if extra_sudo:
+        config.extra_users = [{"username": "admin2", "sudo": True}]
+    return config
+
+
+def test_sudo_is_asked_for_by_the_account_or_by_an_extra_user():
+    """Спрашивать надо обо всех, а не только о главной учётной записи."""
+    from portable_os_admin.install.backends import get_backend
+
+    backend = get_backend("redos")
+    assert not backend.needs_sudo(_config_with_sudo("redos"))
+    assert backend.needs_sudo(_config_with_sudo("redos", account_sudo=True))
+    assert backend.needs_sudo(_config_with_sudo("redos", extra_sudo=True))
+
+
+def test_redos_drops_sudo_and_with_it_the_editor():
+    """Смысл не в одном пакете, а в том, что он за собой тянет.
+
+    sudo требует `/usr/bin/vi`, и dnf закрывает это требование `vim-minimal`.
+    Проверено сборкой 01.09.2026: mc, nano и htop из системы ушли, а
+    vim-minimal вернулся именно так -- вычеркнуть его списком не вышло.
+    Значит вопрос не в списке, а в том, нужен ли киоску sudo вообще.
+    """
+    from portable_os_admin.install.backends import get_backend
+
+    backend = get_backend("redos")
+    backend.image_core_packages = ("bash", "sudo", "kbd")
+
+    without = backend.core_package_names(_config_with_sudo("redos"))
+    assert "sudo" not in without, "sudo остался, хотя о правах никто не просит"
+    assert "bash" in without
+
+    with_sudo = backend.core_package_names(_config_with_sudo("redos", account_sudo=True))
+    assert "sudo" in with_sudo, "администратор просил права, а sudo не поставлен"
+
+
+def test_debian_installs_sudo_when_it_is_asked_for():
+    """Обратная ошибка, и она была в другом семействе.
+
+    В индексе Debian у sudo приоритет optional, то есть debootstrap его не
+    ставит, и до 01.09.2026 не ставили и мы -- а `usermod -aG sudo`
+    выполнялся. Администратор просил права для дополнительной учётной записи и
+    получал членство в группе, за которой нет программы.
+    """
+    from portable_os_admin.install.backends import get_backend
+
+    backend = get_backend("debian")
+    assert "sudo" not in backend.boot_packages(_config_with_sudo("debian"))
+    assert "sudo" in backend.boot_packages(_config_with_sudo("debian", account_sudo=True))
+    assert "sudo" in backend.boot_packages(_config_with_sudo("debian", extra_sudo=True))

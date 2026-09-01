@@ -662,6 +662,29 @@ class InstallBackend(ABC):
         """
         return {}
 
+    @staticmethod
+    def needs_sudo(config: InstallConfig) -> bool:
+        """Просит ли эту систему хоть кто-нибудь о правах через sudo.
+
+        Вопрос не праздный. У пользователя киоска `sudo=false` по определению
+        режима, и тогда пакет в системе — лишняя программа, дающая права; а в
+        РЕД ОС он тянет за собой ещё и редактор, потому что требует
+        `/usr/bin/vi` и dnf закрывает это требование `vim-minimal`. То есть
+        «нечего запускать» ломалось не о наш список, а о зависимость.
+
+        Обратная ошибка тоже была, и в другом семействе: в Debian sudo не
+        ставился никогда (в его индексе приоритет optional), а `usermod -aG
+        sudo` выполнялся -- администратор просил права для дополнительной
+        учётной записи и получал членство в группе, за которой нет программы.
+        """
+        if config.account.sudo:
+            return True
+        for raw in config.extra_users:
+            user = ExtraUserConfig(**raw) if isinstance(raw, dict) else raw
+            if getattr(user, "sudo", False):
+                return True
+        return False
+
     def _vconsole_conf(self, config: InstallConfig) -> str:
         """Раскладка и шрифт консоли.
 

@@ -280,13 +280,28 @@ class RedOSInstallBackend(InstallBackend):
             "--repo=poa-image",
             "--nogpgcheck",
             "--forcearch", self.normalize_arch(config.arch),
-            "install", *self.core_package_names(),
+            "install", *self.core_package_names(config),
         ]
 
-    def core_package_names(self) -> tuple[str, ...]:
+    def core_package_names(self, config: "InstallConfig | None" = None) -> tuple[str, ...]:
+        """Базовый набор минус то, чему в этой системе места нет.
+
+        Кроме постоянного списка отсеивается sudo, когда о правах никто не
+        просит. Смысл не в одном пакете: sudo требует `/usr/bin/vi`, и dnf
+        закрывает это требование `vim-minimal`, то есть вместе с ним в систему
+        приезжает редактор -- ровно то, чего определение минимальной базовой
+        системы не допускает. Проверено сборкой 01.09.2026: вычеркнуть
+        редактор списком не вышло, он вернулся зависимостью.
+
+        `config` необязателен: без него набор считается как раньше, и это
+        поведение для мест, где конфигурации под рукой нет.
+        """
+        unwanted = set(self.UNWANTED_PACKAGES)
+        if config is not None and not self.needs_sudo(config):
+            unwanted.add("sudo")
         return tuple(
             name for name in self._core_package_names()
-            if name not in self.UNWANTED_PACKAGES
+            if name not in unwanted
         )
 
     def _core_package_names(self) -> tuple[str, ...]:

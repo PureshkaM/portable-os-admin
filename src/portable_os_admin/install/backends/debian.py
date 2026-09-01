@@ -630,7 +630,7 @@ class DebianInstallBackend(InstallBackend):
 
     def boot_packages(self, config: InstallConfig) -> list[str]:
         arch = self.normalize_arch(config.arch)
-        return [
+        packages = [
             # First, deliberately: it is installed in the same transaction as
             # the kernel, and every package command after that one picks it up
             # (see package_install_command). On a cross-architecture build the
@@ -670,6 +670,15 @@ class DebianInstallBackend(InstallBackend):
             "console-setup",
             self.syslog_package,
         ]
+        # sudo -- только если о правах просят. В индексе Debian у него
+        # приоритет optional, то есть debootstrap его не ставит, и до
+        # 01.09.2026 не ставили и мы: `usermod -aG sudo` выполнялся, а самой
+        # программы в системе не было. Администратор просил права для
+        # дополнительной учётной записи и получал членство в группе, за
+        # которой ничего нет.
+        if self.needs_sudo(config):
+            packages.append("sudo")
+        return packages
 
     def locale_generation_commands(self, mount_root, config) -> list[list[str]]:
         """В Debian локаль надо собрать: в образе её нет.
