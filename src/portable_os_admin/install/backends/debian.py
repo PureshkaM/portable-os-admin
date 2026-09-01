@@ -23,6 +23,15 @@ class DebianInstallBackend(InstallBackend):
     sudo_group = "sudo"
     display_manager_service = "lightdm"
 
+    #: Экран загрузки рисует `script`, а не `two-step`.
+    #:
+    #: Общего плагина у семейств нет, и это не недоделка дистрибутивов, а
+    #: факт: в plymouth 24.004.60 Debian 13 лежат details, script, text и
+    #: tribar -- `two-step`, на котором написана тема РЕД ОС, отсутствует.
+    #: Отдельного пакета с темами на DVD тоже нет. Поэтому облик задаётся один
+    #: раз в базовом классе, а семейство отвечает только за то, чем рисовать.
+    PLYMOUTH_PLUGIN = "script"
+
     EXTRA_TOOLS = ("debootstrap",)
 
     #: Чего не должно быть в базовой системе, хотя дистрибутив кладёт это сам.
@@ -597,6 +606,21 @@ class DebianInstallBackend(InstallBackend):
             # passphrase with scrypt and nothing else in a boot
             # environment can do that. The initramfs hook copies it in.
             "openssl",
+            # Экран загрузки. До 01.09.2026 его на Debian не было вовсе -- не
+            # «не собирался», а не из чего было собирать: plymouth в наборе не
+            # значился. Носитель спрашивал пароль консолью ядра, а она не
+            # знает кириллицы и показывает русский текст блоками.
+            "plymouth",
+            # label-pango.so, которым рисуется текст. Штатный хук plymouth
+            # копирует его в initramfs сам -- но только если пакет есть:
+            # иначе он честно пишет предупреждение и оставляет тему немой.
+            "plymouth-label",
+            # fc-match и fc-cache, которыми тот же хук выбирает и кладёт
+            # шрифт. Без fontconfig он не находит ничего, и текст рисуется
+            # прямоугольниками -- ровно то, на чём стоял РЕД ОС до 31.08.2026.
+            # Полагаться на то, что fontconfig придёт зависимостью Xorg,
+            # нельзя: экран загрузки нужен и консольному профилю, где Xorg нет.
+            "fontconfig",
             self.syslog_package,
         ]
 

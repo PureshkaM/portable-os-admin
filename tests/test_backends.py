@@ -714,3 +714,104 @@ def test_debian_excludes_them_at_bootstrap_time():
     assert excludes, "debootstrap зовётся без --exclude"
     named = excludes[0].split("=", 1)[1].split(",")
     assert "nano" in named and "vim-tiny" in named
+
+
+# ----------------------------------------------------------------------
+# Экран загрузки: облик один, рисуют его разные плагины
+# ----------------------------------------------------------------------
+def test_each_family_names_the_plugin_it_actually_has():
+    """Общего графического плагина у семейств нет, и это проверенный факт.
+
+    В plymouth 24.004.60 Debian 13 лежат details, script, text и tribar --
+    `two-step`, на котором написана тема РЕД ОС, отсутствует, отдельного
+    пакета с темами на DVD тоже нет. В образе РЕД ОС наоборот: есть
+    `two-step`, нет `script`. Собирать носитель из сети этот проект не умеет
+    принципиально, поэтому «доставить недостающий плагин» -- не выход.
+    """
+    from portable_os_admin.install.backends import get_backend
+
+    assert get_backend("redos").PLYMOUTH_PLUGIN == "two-step"
+    assert get_backend("debian").PLYMOUTH_PLUGIN == "script"
+
+
+def test_the_theme_names_the_plugin_of_its_family():
+    """Тема объявляет ModuleName тот, который в этом образе есть."""
+    from portable_os_admin.install.backends import get_backend
+
+    redos_theme = get_backend("redos")._plymouth_theme()
+    debian_theme = get_backend("debian")._plymouth_theme()
+
+    assert "ModuleName=two-step" in redos_theme
+    assert "[two-step]" in redos_theme
+    assert "ModuleName=script" in debian_theme
+    assert "ScriptFile=" in debian_theme
+    # У script-плагина ключей нет вовсе: всё, что two-step получает строками,
+    # он получает кодом. Ключи two-step в его теме -- признак копипасты.
+    assert "MessageBelowAnimation" not in debian_theme
+
+
+def test_the_script_theme_answers_every_question_the_medium_asks():
+    """Скрипт обязан отвечать на все четыре события, иначе экран нем.
+
+    Носитель разговаривает с человеком ровно четырьмя способами: сообщение,
+    запрос пароля, вопрос с видимым вводом (согласие занять слот, код
+    восстановления) и возврат к обычному экрану. Плагин `script` рисует
+    только то, для чего в теме есть обработчик: пропущенный -- это молчащий
+    экран в том самом месте, где человек ждёт ответа.
+    """
+    from portable_os_admin.install.backends import get_backend
+
+    script = get_backend("debian").plymouth_script()
+
+    for handler in (
+        "Plymouth.SetDisplayMessageFunction",
+        "Plymouth.SetHideMessageFunction",
+        "Plymouth.SetDisplayPasswordFunction",
+        "Plymouth.SetDisplayQuestionFunction",
+        "Plymouth.SetDisplayNormalFunction",
+    ):
+        assert handler in script, f"нет обработчика {handler}"
+
+    # Чёрный фон и белый текст -- то же, что у второго семейства.
+    assert "Window.SetBackgroundTopColor(0, 0, 0)" in script
+    assert "Image.Text(text, 1, 1, 1)" in script
+
+
+def test_the_script_file_travels_only_with_the_family_that_reads_it():
+    """Скрипт кладётся туда, где его читают, и никуда больше.
+
+    Файл рядом с темой `two-step` был бы безвреден, но лжив: при следующем
+    разборе он выглядел бы как рабочий.
+    """
+    from portable_os_admin.config import InstallConfig
+    from portable_os_admin.install.backends import get_backend
+    from portable_os_admin.install.disk import build_media_layout, plan_partitions
+
+    for target_os, expected in (("debian", True), ("redos", False)):
+        config = InstallConfig.create_default("stick", target_os)
+        layout = build_media_layout(
+            plan_partitions("/dev/sdz", config.disk),
+            mapper_name="poa-t",
+            mount_root="/mnt/t",
+        )
+        files = get_backend(target_os).config_files(config, layout)
+        has_script = any(name.endswith("poa.script") for name in files)
+        assert has_script is expected, f"{target_os}: скрипт темы там, где не нужен"
+
+
+def test_debian_carries_what_the_boot_screen_needs():
+    """Экрана не было не потому, что не собирался, а потому, что не из чего.
+
+    plymouth в наборе Debian не значился вовсе. Вместе с ним нужны
+    plymouth-label (label-pango.so, которым рисуется текст) и fontconfig:
+    штатный хук выбирает шрифт через `fc-match`, и без него текст идёт
+    прямоугольниками -- ровно то, на чём стоял РЕД ОС до 31.08.2026.
+    """
+    from portable_os_admin.config import InstallConfig
+    from portable_os_admin.install.backends import get_backend
+
+    config = InstallConfig.create_default("stick", "debian")
+    packages = get_backend("debian").boot_packages(config)
+
+    for name in ("plymouth", "plymouth-label", "fontconfig"):
+        assert name in packages, f"в загрузочном наборе нет {name}"
