@@ -760,7 +760,7 @@ class OSInstaller:
 
         self._progress.step("Опись загрузчика и initramfs")
         self._boot_manifest = self._collect_boot_manifest(layout, dry_run)
-        self._install_self_check(layout, plan, dry_run, confirm_device)
+        self._install_self_check(layout, backend, plan, dry_run, confirm_device)
 
         self._progress.step("Завершение записи и отключение носителя")
         run(["sync"])
@@ -1317,7 +1317,7 @@ class OSInstaller:
 
         self._progress.step("Опись загрузчика и initramfs")
         self._boot_manifest = self._collect_boot_manifest(layout, dry_run)
-        self._install_self_check(layout, plan, dry_run, confirm_device)
+        self._install_self_check(layout, backend, plan, dry_run, confirm_device)
 
         self._progress.step("Завершение записи и отключение носителя")
         if temporary_paths:
@@ -1629,7 +1629,7 @@ class OSInstaller:
             "esp": f"{layout.mount_root}/boot/efi",
         })
 
-    def _install_self_check(self, layout, plan, dry_run, confirm_device) -> None:
+    def _install_self_check(self, layout, backend, plan, dry_run, confirm_device) -> None:
         """Копия описи на зашифрованном корне и служба, которая её сверяет.
 
         Пишется после снятия описи и до размонтирования: корень ещё открыт, а
@@ -1655,6 +1655,22 @@ class OSInstaller:
             "ln", "-sf", "/etc/systemd/system/poa-boot-integrity.service",
             f"{wants}/poa-boot-integrity.service",
         ])
+
+        # Метки SELinux -- своими руками, потому что общий проход по /etc и
+        # /boot прошёл раньше: опись снимается в самом конце, когда
+        # незашифрованная часть окончательна, а перемечивание идёт до сборки
+        # initramfs.
+        #
+        # Найдено прогоном 01.09.2026: у `poa-boot-integrity` метка была `?`,
+        # тогда как у соседних poa-machine-key и poa-kiosk-apply -- `bin_t`.
+        # Служба при этом не запускается и молчит: в журнале носителя не
+        # оказалось ни строчки, хотя и файл, и ссылка на месте. Ровно этим
+        # однажды сломался SDDM, не сумевший прочитать собственную настройку.
+        relabel = backend.restore_labels_command(
+            layout.mount_root, ("/usr/local/sbin", "/etc/systemd", "/var/lib")
+        )
+        if relabel is not None:
+            run(relabel, timeout=BOOTSTRAP_TIMEOUT)
 
     def _install_recovery_module(
         self, layout: MediaLayout, media_id: str, recovery_salt: bytes, plan: CommandPlan, *, dry_run, confirm_device
@@ -1884,7 +1900,12 @@ class _Progress:
 
     #: Stages the pipeline reports. A constant so the first stage already shows
     #: a sensible total rather than counting up from one out of one.
-    EXPECTED_STAGES = 18
+    #:
+    #: 01.09.2026 к обоим путям добавился шаг описи загрузчика, и числа стали
+    #: на единицу меньше правды: на прогоне это выглядело как «[17/17] Опись»,
+    #: а следом «[18/18] Завершение». Тот же класс, что счётчик, показывавший
+    #: 14 вместо 17. Считать надо по коду, а не по памяти.
+    EXPECTED_STAGES = 19
     #: Building a distribution skips everything to do with a medium.
     BUILD_STAGES = 10
     #: Deploying one skips everything to do with packages.
@@ -1892,7 +1913,7 @@ class _Progress:
     #: один на проверку дистрибутива. Считать надо по коду, а не по памяти:
     #: занижённое число упирает полосу в край задолго до конца, и человек
     #: решает, что программа зависла.
-    DEPLOY_STAGES = 17
+    DEPLOY_STAGES = 18
 
     def __init__(self, callback, expected: int | None = None):
         self._callback = callback
