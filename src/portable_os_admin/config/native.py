@@ -31,7 +31,7 @@ from __future__ import annotations
 from .schema import InstallConfig
 
 #: Which native format each target family uses.
-NATIVE_FORMAT = {"debian": "preseed", "astra": "preseed", "redos": "kickstart"}
+NATIVE_FORMAT = {"debian": "preseed", "redos": "kickstart"}
 
 
 def render(config: InstallConfig) -> tuple[str, str]:
@@ -140,9 +140,8 @@ def to_preseed(config: InstallConfig) -> str:
 def _sudo_group(config: InstallConfig) -> str:
     """The group that grants administrative rights on the target family.
 
-    Astra Linux uses `astra-admin` rather than `sudo`; the RHEL family uses
-    `wheel`. Taken from the backend so this file and the installer cannot drift
-    apart.
+    Debian grants it through `sudo`, the RHEL family through `wheel`. Taken
+    from the backend so this file and the installer cannot drift apart.
     """
     from ..install.backends import get_backend
 

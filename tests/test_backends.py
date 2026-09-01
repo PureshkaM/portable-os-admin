@@ -1,6 +1,5 @@
 from portable_os_admin.config import InstallConfig
 from portable_os_admin.install.backends import get_backend
-from portable_os_admin.install.backends.astra import AstraInstallBackend
 from portable_os_admin.install.backends.debian import DebianInstallBackend
 from portable_os_admin.install.backends.redos import RedOSInstallBackend
 
@@ -8,7 +7,6 @@ from portable_os_admin.install.backends.redos import RedOSInstallBackend
 def test_get_backend_returns_expected_types():
     assert isinstance(get_backend("debian"), DebianInstallBackend)
     assert isinstance(get_backend("redos"), RedOSInstallBackend)
-    assert isinstance(get_backend("astra"), AstraInstallBackend)
 
 
 def _assert_debootstrap(argv, config):
@@ -67,23 +65,6 @@ def test_redos_uses_wheel_group_and_sshd_service():
     assert any("sshd" in c for c in commands)
 
 
-def test_astra_bootstrap_command_reuses_debootstrap():
-    config = InstallConfig.create_default("stick1", "astra")
-    backend = AstraInstallBackend()
-    _assert_debootstrap(backend.bootstrap_command("/mnt/poa", config, "file:///mnt/image", config.release), config)
-
-
-def test_astra_uses_astra_admin_group_not_sudo():
-    config = InstallConfig.create_default("stick1", "astra")
-    config.account.sudo = True
-
-    backend = AstraInstallBackend()
-    commands = backend.chroot_setup_commands("/mnt/poa", config)
-
-    assert any("astra-admin" in c for c in commands)
-    assert not any(c[-1] == "sudo" and "usermod" in c for c in commands)
-
-
 def test_debootstrap_skips_signature_check_for_a_local_image():
     """Installation images carry dists/<suite>/Release but no Release.gpg and
     no InRelease -- measured on debian-13.6.0-amd64-DVD-1.iso. Without
@@ -105,12 +86,6 @@ def test_debootstrap_keeps_signature_check_for_a_network_mirror():
         "/mnt/poa", config, "https://deb.debian.org/debian", config.release
     )
     assert "--no-check-gpg" not in argv
-
-
-def test_astra_inherits_the_local_image_signature_behaviour():
-    config = InstallConfig.create_default("stick1", "astra")
-    argv = AstraInstallBackend().bootstrap_command("/mnt/poa", config, "file:///mnt/image", config.release)
-    assert "--no-check-gpg" in argv
 
 
 def test_redos_leaves_the_distributions_own_repository_files_alone():
@@ -149,7 +124,6 @@ def test_signing_settings_come_from_the_image_and_default_to_honest_silence():
 
 def test_each_family_writes_its_sources_where_that_family_keeps_them():
     assert DebianInstallBackend().sources_path == "etc/apt/sources.list"
-    assert AstraInstallBackend().sources_path == "etc/apt/sources.list"
     assert RedOSInstallBackend().sources_path.startswith("etc/yum.repos.d/")
 
 
@@ -657,7 +631,7 @@ def test_graphical_boot_parameter_matches_the_family():
     остаётся текстовым и **без эха**, то есть человек за носителем не видит,
     набралось ли хоть что-нибудь.
     """
-    for target_os, expected in (("debian", "splash"), ("astra", "splash"), ("redos", "rhgb")):
+    for target_os, expected in (("debian", "splash"), ("redos", "rhgb")):
         config = InstallConfig.create_default("stick", target_os)
         config.boot.quiet = True
         cmdline = get_backend(target_os).kernel_cmdline(config)

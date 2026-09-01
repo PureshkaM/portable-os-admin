@@ -118,7 +118,7 @@ def missing_agent_message() -> str:
         process, deb, rpm = POLKIT_AGENTS[desktop]
         specific = (
             f"Рабочий стол определён как {desktop}, для него нужен агент {process}: "
-            f"пакет {deb} (Debian/Astra) или {rpm} (RedOS/RHEL)."
+            f"пакет {deb} (Debian) или {rpm} (RedOS/RHEL)."
         )
     else:
         specific = (
@@ -203,7 +203,7 @@ def build_privileged_argv(environment: dict[str, str] | None = None) -> list[str
 
 NO_PKEXEC = (
     "Не найдена программа pkexec, через которую запрашиваются права администратора.\n"
-    "Установите пакет pkexec (Debian/Astra) или polkit (RedOS/RHEL), либо запустите "
+    "Установите пакет pkexec (Debian) или polkit (RedOS/RHEL), либо запустите "
     "приложение напрямую от root."
 )
 

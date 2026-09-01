@@ -426,21 +426,6 @@ def test_autostart_application_must_be_one_of_the_allowed_ones():
     config = make_kiosk_config(allowed_apps=["mate-calc"], autostart_app="firefox-esr")
     assert any("автозапуска" in e for e in _errors(config))
 
-
-def test_kiosk_is_refused_for_a_family_that_has_no_support():
-    """Astra inherits the Debian backend but not this mode.
-
-    Its package names were checked against a Debian 13 image and Astra derives
-    from Debian 9, so inheriting the kiosk would mean an install that dies
-    partway with the medium already written.
-    """
-    config = make_kiosk_config("astra")
-    assert any("не поддерживается" in e for e in _errors(config))
-
-    assert get_backend("astra").desktop_packages(config) == []
-    assert get_backend("astra").display_manager_files(config) == {}
-
-
 def test_firejail_options_without_firejail_are_refused():
     config = make_kiosk_config(firejail=False, firejail_options="--net=none")
     assert any("песочница выключена" in e for e in _errors(config))

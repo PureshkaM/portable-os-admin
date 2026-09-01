@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 
-SUPPORTED_TARGET_OS = ("debian", "redos", "astra")
+SUPPORTED_TARGET_OS = ("debian", "redos")
 #: Accepted values for InstallConfig.arch. Both spellings of each architecture
 #: are allowed because the two families name them differently (Debian says
 #: amd64/arm64, RHEL says x86_64/aarch64) and users copy whichever they saw.
@@ -164,7 +164,6 @@ LUKS_KDFS = ("argon2id", "argon2i", "pbkdf2")
 KNOWN_RELEASES = {
     "debian": ("trixie", "bookworm", "bullseye"),
     "redos": ("8.0", "7.3"),
-    "astra": ("orel", "voronezh", "smolensk"),
 }
 
 
@@ -637,7 +636,7 @@ class InstallConfig:
         needs *a* configuration rely on it. What an administrator starts from
         in the interface is `create_baseline` below.
         """
-        release = {"debian": "bookworm", "redos": "8.0", "astra": "orel"}.get(target_os, "")
+        release = {"debian": "bookworm", "redos": "8.0"}.get(target_os, "")
         return cls(name=name, target_os=target_os, release=release)
 
     @classmethod

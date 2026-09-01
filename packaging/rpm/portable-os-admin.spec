@@ -48,7 +48,7 @@ Suggests:       qemu-user-static
 
 %description
 Creates and administers an encrypted admin container, builds install
-configurations, installs Debian/Astra Linux or RedOS onto an external
+configurations, installs Debian or RedOS onto an external
 LUKS-encrypted medium, and manages its logs, exchange partition and
 recovery codes afterwards. The interface is a guided Tkinter GUI.
 
@@ -59,7 +59,7 @@ install time and the package installs on a machine with no route to the
 internet -- which is the environment this tool is meant for.
 
 Note: this spec targets RedOS/RHEL-family *admin hosts*. If your install
-configurations target Debian or Astra Linux media, the admin host still
+configurations target Debian media, the admin host still
 needs debootstrap available -- RedOS's own repositories were not found to
 carry it, so that has to come from elsewhere (see docs/ARCHITECTURE.md
 "Known limitations" in the source tree).

@@ -6,8 +6,8 @@ filesystems -> base system -> kernel/bootloader -> service partitions ->
 save records.
 
 Every destructive step is dry-run by default (see command_runner.py). The
-Debian backend's real path has been executed against a real USB stick; the
-RedOS and Astra backends have not (see README, раздел «Архитектура»).
+Debian backend's real path has been executed against a real USB stick (see
+README, раздел «Архитектура»).
 """
 from __future__ import annotations
 
@@ -94,9 +94,8 @@ def recovery_env(config, media_id: str, luks_uuid: str) -> str:
 #: slot so a medium can be re-keyed later without guessing which one it is.
 ADMIN_KEYSLOT = 7
 
-#: Which image family can install which target. Astra Linux is a Debian
-#: derivative, so its images look like Debian images.
-IMAGE_FAMILY = {"debian": "debian", "astra": "debian", "redos": "redos"}
+#: Which image family can install which target.
+IMAGE_FAMILY = {"debian": "debian", "redos": "redos"}
 
 #: Directory on the (unencrypted) ESP holding the recovery module and the
 #: metadata that lets the admin tool recognise this medium later.
@@ -870,7 +869,7 @@ class OSInstaller:
     #: Расширение файла пакета для каждого семейства. Проверяется до начала
     #: работы: узнать через сорок минут, что .deb положили в сборку РЕД ОС, --
     #: ровно тот способ терять время, от которого эта программа и уходит.
-    PACKAGE_SUFFIX = {"debian": ".deb", "astra": ".deb", "redos": ".rpm"}
+    PACKAGE_SUFFIX = {"debian": ".deb", "redos": ".rpm"}
 
     def _check_extra_packages(self, paths: list[str], config: InstallConfig) -> list[str]:
         """Checks the supplied package files before anything long begins."""

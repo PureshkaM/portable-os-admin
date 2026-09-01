@@ -1,4 +1,3 @@
-from .astra import AstraInstallBackend
 from .base import InstallBackend
 from .debian import DebianInstallBackend
 from .redos import RedOSInstallBackend
@@ -6,7 +5,6 @@ from .redos import RedOSInstallBackend
 BACKENDS: dict[str, type[InstallBackend]] = {
     "debian": DebianInstallBackend,
     "redos": RedOSInstallBackend,
-    "astra": AstraInstallBackend,
 }
 
 
@@ -21,7 +19,6 @@ __all__ = [
     "InstallBackend",
     "DebianInstallBackend",
     "RedOSInstallBackend",
-    "AstraInstallBackend",
     "BACKENDS",
     "get_backend",
 ]

@@ -98,7 +98,6 @@ def test_dnf_package_source_missing_primary_data_raises(monkeypatch):
 
 def test_get_package_source_factory():
     assert isinstance(repo_browser.get_package_source("debian"), repo_browser.AptPackageSource)
-    assert isinstance(repo_browser.get_package_source("astra"), repo_browser.AptPackageSource)
     assert isinstance(repo_browser.get_package_source("redos"), repo_browser.DnfPackageSource)
     with pytest.raises(RepoBrowseError):
         repo_browser.get_package_source("basealt")

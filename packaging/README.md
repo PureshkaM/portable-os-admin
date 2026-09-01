@@ -20,7 +20,7 @@ PyPI**, то есть требовала интернет в момент уст
 1. **Текстовый интерфейс удалён** — им никто не пользуется для задач такой
    сложности. Вместе с ним исчезла и потребность в `textual`.
 2. Единственной оставшейся сторонней библиотекой оказалась `cryptography`, а
-   она есть штатным пакетом везде: `python3-cryptography` в Debian, Astra и
+   она есть штатным пакетом везде: `python3-cryptography` в Debian и
    RedOS. Нижняя граница версии в `pyproject.toml` намеренно занижена до 2.0 —
    `AESGCM` доступен с 2.0, `Scrypt` с 1.6, ничего новее код не использует, —
    чтобы дистрибутивных версий заведомо хватало.
@@ -67,7 +67,7 @@ not valid, ignoring` — группы `wheel` там нет, polkit её про�
 ## Известные ограничения
 
 - **Кросс-семейная установка не покрыта пакетными зависимостями.** `.deb`
-  тянет `debootstrap` (нужен для целей Debian/Astra) в `Depends`, но не
+  тянет `debootstrap` (нужен для целей Debian) в `Depends`, но не
   умеет тянуть `dnf` для целей RedOS с Debian-хоста (это часть базовой
   системы RHEL-семейства, а не отдельный пакет, который можно поставить на
   Debian). Симметрично: `.rpm` не объявляет `debootstrap` в `Requires`,
@@ -86,7 +86,7 @@ not valid, ignoring` — группы `wheel` там нет, polkit её про�
 ## Сборка
 
 ```sh
-# на Debian/Ubuntu/Astra Linux хосте
+# на Debian/Ubuntu хосте
 sudo apt-get install -y build-essential debhelper devscripts dh-python python3-all
 ./packaging/build-deb.sh
 

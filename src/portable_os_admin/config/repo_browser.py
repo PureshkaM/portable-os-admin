@@ -6,7 +6,7 @@ names from memory into `config.packages` blind. Two backends, matching the
 two package-metadata formats actually in use by the supported install
 targets (verified live against real mirrors, not guessed):
 
-- AptPackageSource (Debian, Astra Linux): apt's `Packages.gz` index at
+- AptPackageSource (Debian): apt's `Packages.gz` index at
   `<mirror>/dists/<release>/<component>/binary-<arch>/Packages.gz` --
   confirmed against deb.debian.org/debian/dists/bookworm.
 - DnfPackageSource (RedOS): rpm-md `repodata/repomd.xml` -> primary
@@ -86,7 +86,7 @@ class PackageSource(Protocol):
 
 
 class AptPackageSource:
-    """Debian/Astra Linux apt Packages index."""
+    """Debian apt Packages index."""
 
     def __init__(self, component: str = "main", arch: str = "amd64"):
         self.component = component
@@ -236,7 +236,7 @@ class DnfPackageSource:
 
 
 def get_package_source(target_os: str) -> PackageSource:
-    if target_os in ("debian", "astra"):
+    if target_os == "debian":
         return AptPackageSource()
     if target_os == "redos":
         return DnfPackageSource()

@@ -30,7 +30,7 @@ Recommends: eatmydata,
 Suggests: qemu-user-static, binfmt-support
 Description: Admin tool for portable LUKS-encrypted OS media
  Creates and administers an encrypted admin container, builds install
- configurations, installs Debian/Astra Linux or RedOS onto an external
+ configurations, installs Debian or RedOS onto an external
  LUKS-encrypted medium, and manages its logs, exchange partition and
  recovery codes afterwards. The interface is a guided Tkinter GUI.
  .

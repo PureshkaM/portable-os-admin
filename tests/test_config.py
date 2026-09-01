@@ -86,7 +86,6 @@ def test_configuration_is_checked_by_the_distributions_own_tool(make_config, mon
     from portable_os_admin.config.validator import NATIVE_VALIDATORS
 
     assert native.render(make_config("s", "debian"))[0] == "preseed"
-    assert native.render(make_config("s", "astra"))[0] == "preseed"
     assert native.render(make_config("s", "redos"))[0] == "kickstart"
 
     # The Debian tool reports a malformed file as a *warning* and still exits 0

@@ -12,7 +12,7 @@ license = { text = "MIT" }
 authors = [{ name = "Maksim Khripunov" }]
 # `cryptography` is the only third-party runtime dependency, and the floor is
 # deliberately low: it is satisfied by the distribution's own python3-cryptography
-# on every target (Debian, Astra, RedOS), which is what makes the package
+# on every target (Debian, RedOS), which is what makes the package
 # installable on a machine with no access to the internet. AESGCM has been
 # available since 2.0 and Scrypt since 1.6; nothing newer is used.
 dependencies = [

@@ -35,18 +35,15 @@ from ..widgets import KNOWN_ERRORS, WizardFrame, add_choice, add_field, run_in_b
 OS_LABELS = {
     "debian": "Debian (стандартный, debootstrap)",
     "redos": "RedOS (dnf --installroot)",
-    "astra": "Astra Linux Common Edition (патченный debootstrap)",
 }
 OS_DESCRIPTIONS = {
     "debian": "Проверено против deb.debian.org.",
     "redos": "Проверено против repo1.red-soft.ru (релизы 7.3 / 8.0).",
-    "astra": "Требует пакет debootstrap с патчем Astra на этом хосте; адрес зеркала не проверен вживую — укажите свой.",
 }
-DEFAULT_RELEASE = {"debian": "bookworm", "redos": "8.0", "astra": "orel"}
+DEFAULT_RELEASE = {"debian": "bookworm", "redos": "8.0"}
 DEFAULT_MIRROR = {
     "debian": "https://deb.debian.org/debian",
     "redos": "https://repo1.red-soft.ru/redos/8.0/x86_64/os",
-    "astra": "",
 }
 CATALOG_DISPLAY_LIMIT = 200
 

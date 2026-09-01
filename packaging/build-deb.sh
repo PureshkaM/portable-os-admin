@@ -1,7 +1,7 @@
 #!/bin/sh
 # Builds the portable-os-admin .deb from this checkout.
 #
-# Run on a real Debian/Ubuntu/Astra Linux host with:
+# Run on a real Debian/Ubuntu host with:
 #   sudo apt-get install -y build-essential debhelper devscripts
 #
 # dpkg-buildpackage always looks for ./debian at the repo root, so this

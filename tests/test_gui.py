@@ -1228,7 +1228,7 @@ def test_the_chosen_packages_reach_the_build(gui_app, tmp_path, monkeypatch):
     captured = {}
 
     class _FakeInstaller:
-        PACKAGE_SUFFIX = {"debian": ".deb", "astra": ".deb", "redos": ".rpm"}
+        PACKAGE_SUFFIX = {"debian": ".deb", "redos": ".rpm"}
 
         def __init__(self, session):
             pass
