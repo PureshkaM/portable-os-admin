@@ -308,3 +308,37 @@ def test_the_scripts_reach_the_root_with_an_execute_bit():
 
     assert files[mb.KEY_SCRIPT_PATH][1] == 0o755
     assert files[mb.REGISTER_SCRIPT_PATH][1] == 0o755
+
+
+def test_the_unlock_script_takes_down_its_own_progress_message():
+    """«Проверяю пароль…» снимается, как только пароль проверен.
+
+    plymouth держит сообщение, пока его не уберут. Хук разблокировки после
+    успешного открытия тома передаёт экран шагу регистрации, и тот рисует
+    свой вопрос в другом месте, — непогашенное «Проверяю пароль…» так и
+    висело сверху, поверх вопроса «занять место 1 из 2?», уже неверное:
+    пароль к этому моменту проверен. Снято на прогоне сброса слотов
+    31.08.2026; тот же класс, что и наложение сообщений 29.08.
+
+    Текст обязан быть один на показ и на снятие: plymouth снимает сообщение
+    по совпадению строки, и разойдись они хоть многоточием — hide-message не
+    убрал бы ничего, а тест бы этого не заметил.
+    """
+    config = make_config("redos")
+    config.machine_binding.slots = 2
+    script = mb.dracut_unlock_script(config, "poa-abc")
+
+    assert script.count('POA_CHECKING_MESSAGE="Проверяю пароль…"') == 1, (
+        "текст сообщения задан не в одном месте"
+    )
+    # Обе команды берут текст из переменной, а не пишут его заново.
+    assert 'display-message --text="Проверяю' not in script
+    assert 'display-message --text="$POA_CHECKING_MESSAGE"' in script
+    assert 'hide-message --text="$POA_CHECKING_MESSAGE"' in script
+
+    # Снимается на обоих исходах проверки: и когда том открылся -- дальше
+    # экран достаётся регистрации, -- и когда нет: дальше либо следующая
+    # попытка, либо модуль восстановления, и каждый говорит своё.
+    opened = script[script.index("cryptsetup luksOpen --key-slot \"$slot\""):]
+    assert "poa_checking_hide" in opened.split("exit 0")[0], "не снято перед передачей экрана"
+    assert opened.count("poa_checking_hide") >= 2, "не снято на пути отказа"

@@ -530,6 +530,31 @@ poa_registration_slot_alive() {{
         | grep -qE "^[[:space:]]+${{POA_USER_SLOT:-0}}: luks2"
 }}
 
+# «Проверяю пароль…» -- и снятие его, как только проверка закончилась.
+#
+# plymouth держит сообщение, пока его не уберут, а этот хук после успешного
+# открытия тома передаёт экран шагу регистрации. Тот показывает свой вопрос
+# в другом месте экрана, и непогашенное «Проверяю пароль…» так и висело
+# сверху -- поверх вопроса «занять место 1 из 2?», уже неверное: пароль к
+# этому моменту проверен. Замечено на прогоне сброса слотов 31.08.2026, это
+# тот же класс, что и наложение сообщений 29.08.
+#
+# Текст задаётся один раз: plymouth снимает сообщение по совпадению строки,
+# и разойдись эти две хоть многоточием -- hide-message не снял бы ничего.
+POA_CHECKING_MESSAGE="Проверяю пароль…"
+
+poa_checking_show() {{
+    if command -v plymouth >/dev/null 2>&1 && plymouth --ping >/dev/null 2>&1; then
+        plymouth display-message --text="$POA_CHECKING_MESSAGE"
+    fi
+}}
+
+poa_checking_hide() {{
+    if command -v plymouth >/dev/null 2>&1 && plymouth --ping >/dev/null 2>&1; then
+        plymouth hide-message --text="$POA_CHECKING_MESSAGE" 2>/dev/null || true
+    fi
+}}
+
 attempt=1
 while [ "$attempt" -le 3 ]; do
     passphrase=$(poa_ask_passphrase)
@@ -545,9 +570,7 @@ while [ "$attempt" -le 3 ]; do
         # Проверка ключа и открытие тома -- argon2id на 256 МиБ каждая, то
         # есть секунды на живой машине и минуты под эмуляцией. Без этой строки
         # экран после ввода пароля пустеет, и человек не знает, принят ли он.
-        if command -v plymouth >/dev/null 2>&1 && plymouth --ping >/dev/null 2>&1; then
-            plymouth display-message --text="Проверяю пароль…"
-        fi
+        poa_checking_show
         machine_key=$(poa_machine_key "$passphrase")
         slot=$(poa_machine_slot "$device" "$machine_key")
         if [ -n "$slot" ]; then
@@ -563,12 +586,14 @@ while [ "$attempt" -le 3 ]; do
         if cryptsetup luksOpen --key-slot "$slot" --key-file /run/poa-unlock.key \
                 "$device" "{mapper_name}" 2>/dev/null; then
             rm -f /run/poa-unlock.key
+            poa_checking_hide
             # Фразу оставляем шагу регистрации: он идёт следом, в этой же
             # загрузке, и второй запрос пароля выглядел бы как сбой.
             ( umask 077; printf '%s' "$passphrase" > /run/poa-passphrase )
             exit 0
         fi
         rm -f /run/poa-unlock.key
+        poa_checking_hide
     fi
     # Регистрационного слота нет -- повторять нечего и незачем. Носитель
     # занял все свои машинные места, и фраза, даже верная, не откроет его на
