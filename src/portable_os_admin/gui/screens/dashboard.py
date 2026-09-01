@@ -78,7 +78,12 @@ class DashboardFrame(ttk.Frame):
         ).pack(anchor="w")
         ttk.Label(
             header,
-            text="Носители, зарегистрированные в этом контейнере администратора.",
+            # Двойной щелчок сам себя не объясняет, и это тот случай, когда
+            # подпись несёт новое, а не пересказывает очевидное.
+            text=(
+                "Носители, зарегистрированные в этом контейнере администратора. "
+                "Двойной щелчок — проверка загрузчика и initramfs."
+            ),
             style="Window.TLabel",
             foreground=theme.TEXT_MUTED,
         ).pack(anchor="w", pady=(theme.SPACE_XS, 0))
@@ -103,6 +108,10 @@ class DashboardFrame(ttk.Frame):
         scroll = ttk.Scrollbar(card, orient="vertical", command=self.table.yview)
         self.table.configure(yscrollcommand=scroll.set)
         scroll.pack(side="right", fill="y")
+        # Проверка целостности относится к одному носителю, а не к контейнеру
+        # вообще, поэтому она открывается со строки, а не кнопкой: седьмая
+        # кнопка в ряд уже не помещается, и это ловит тест ширины.
+        self.table.bind("<Double-1>", self._open_selected_integrity)
 
         self._refresh_table()
         # Said plainly rather than left as an empty grid, which reads as a
@@ -120,6 +129,15 @@ class DashboardFrame(ttk.Frame):
             self.table.insert(
                 "", "end", values=(record.media_id, record.label, record.target_os, record.config_name, record.created_at)
             )
+
+    def _open_selected_integrity(self, _event=None) -> None:
+        from .integrity_check import IntegrityFrame
+
+        selection = self.table.selection()
+        if not selection:
+            return
+        media_id = self.table.item(selection[0], "values")[0]
+        self.app.show_frame(IntegrityFrame, media_id=media_id)
 
     def _check_leftovers(self) -> None:
         """Reports, and offers to clear, what an interrupted run left behind.

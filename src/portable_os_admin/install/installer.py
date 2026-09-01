@@ -37,6 +37,7 @@ from .backends.base import (
 )
 from .command_runner import BOOTSTRAP_TIMEOUT, CommandPlan, CommandResult, CommandRunner
 from . import distribution
+from . import integrity
 from .devices import BlockDevice, check_install_eligible
 from .disk import DiskManager, MediaLayout, build_media_layout, plan_partitions
 from .image_source import MountedImage, inspect_mounted
@@ -171,6 +172,11 @@ class OSInstaller:
         #: поколение графической оболочки: ограничения киоска у Plasma 5 и 6
         #: разные, а по выпуску дистрибутива поколение не выводится.
         self._image = None
+        #: Опись незашифрованной части носителя: путь -> sha256. Снимается в
+        #: самом конце записи, когда загрузчик уже стоит, а initramfs собран,
+        #: -- опись, снятая раньше, описывала бы не тот носитель, который
+        #: получит пользователь.
+        self._boot_manifest: dict[str, str] = {}
         #: Выданные коды восстановления этого прогона: (слот, код, соль).
         #: Заполняется при создании keyslot'ов и читается там, где собираются
         #: записи для контейнера администратора, -- иначе список пришлось бы
@@ -321,6 +327,12 @@ class OSInstaller:
             service_key_b64=base64.b64encode(service_key).decode("ascii"),
             logs_luks_uuid=layout.logs_luks_uuid,
             exchange_luks_uuid=layout.exchange_luks_uuid,
+            # Опись незашифрованной части и подпись к ней. Эталон живёт в
+            # контейнере: тот, кто подменит загрузчик, до него не дотянется.
+            boot_manifest=dict(self._boot_manifest),
+            boot_manifest_signature=integrity.sign(
+                self._boot_manifest, self.session.container.admin_secret
+            ),
         )
         recovery_records = [
             RecoveryRecord(
@@ -633,6 +645,12 @@ class OSInstaller:
             service_key_b64=base64.b64encode(service_key).decode("ascii"),
             logs_luks_uuid=layout.logs_luks_uuid,
             exchange_luks_uuid=layout.exchange_luks_uuid,
+            # Опись незашифрованной части и подпись к ней. Эталон живёт в
+            # контейнере: тот, кто подменит загрузчик, до него не дотянется.
+            boot_manifest=dict(self._boot_manifest),
+            boot_manifest_signature=integrity.sign(
+                self._boot_manifest, self.session.container.admin_secret
+            ),
         )
         recovery_records = [
             RecoveryRecord(
@@ -739,6 +757,10 @@ class OSInstaller:
         self._install_recovery_module(
             layout, media_id, recovery_salt, plan, dry_run=dry_run, confirm_device=confirm_device
         )
+
+        self._progress.step("Опись загрузчика и initramfs")
+        self._boot_manifest = self._collect_boot_manifest(layout, dry_run)
+        self._install_self_check(layout, plan, dry_run, confirm_device)
 
         self._progress.step("Завершение записи и отключение носителя")
         run(["sync"])
@@ -1293,6 +1315,10 @@ class OSInstaller:
             run(["mkdir", "-p", target.rsplit("/", 1)[0]])
             self._write_file(target, sources, plan, dry_run, confirm_device)
 
+        self._progress.step("Опись загрузчика и initramfs")
+        self._boot_manifest = self._collect_boot_manifest(layout, dry_run)
+        self._install_self_check(layout, plan, dry_run, confirm_device)
+
         self._progress.step("Завершение записи и отключение носителя")
         if temporary_paths:
             run(["rm", "-f", *temporary_paths])
@@ -1584,6 +1610,51 @@ class OSInstaller:
             path = f"{layout.mount_root}/{relative}"
             self._run(["mkdir", "-p", path.rsplit("/", 1)[0]], plan, dry_run, confirm_device)
             self._write_file(path, content, plan, dry_run, confirm_device, mode=mode)
+
+    def _collect_boot_manifest(self, layout, dry_run: bool) -> "dict[str, str]":
+        """Опись того, что исполняется до расшифровки корня.
+
+        Считается в самом конце: раньше её делать нельзя, потому что
+        initramfs собирается, а загрузчик ставится посреди развёртывания, и
+        опись, снятая до них, описывала бы не тот носитель, который получит
+        пользователь.
+
+        В сухом прогоне ничего не читается -- разделы не смонтированы, и
+        обходить нечего.
+        """
+        if dry_run:
+            return {}
+        return integrity.collect({
+            "boot": f"{layout.mount_root}/boot",
+            "esp": f"{layout.mount_root}/boot/efi",
+        })
+
+    def _install_self_check(self, layout, plan, dry_run, confirm_device) -> None:
+        """Копия описи на зашифрованном корне и служба, которая её сверяет.
+
+        Пишется после снятия описи и до размонтирования: корень ещё открыт, а
+        незашифрованная часть уже окончательна.
+
+        Пустая опись -- это сухой прогон, и класть на носитель пустой список
+        значило бы получить службу, которая при каждой загрузке рапортует,
+        что всё в порядке, ничего не проверив.
+        """
+        if not self._boot_manifest:
+            return
+        run = lambda argv, **kw: self._run(argv, plan, dry_run, confirm_device, **kw)  # noqa: E731
+        for relative, content in integrity.self_check_files(self._boot_manifest).items():
+            target = f"{layout.mount_root}/{relative}"
+            run(["mkdir", "-p", target.rsplit("/", 1)[0]])
+            self._write_file(target, content, plan, dry_run, confirm_device)
+        run(["chmod", "0755", f"{layout.mount_root}/{integrity.SELF_CHECK_SCRIPT}"])
+        # Служба включается ссылкой, а не `systemctl enable`: systemd целевой
+        # системы здесь не запущен, и enable в chroot делает ровно эту ссылку.
+        wants = f"{layout.mount_root}/etc/systemd/system/multi-user.target.wants"
+        run(["mkdir", "-p", wants])
+        run([
+            "ln", "-sf", "/etc/systemd/system/poa-boot-integrity.service",
+            f"{wants}/poa-boot-integrity.service",
+        ])
 
     def _install_recovery_module(
         self, layout: MediaLayout, media_id: str, recovery_salt: bytes, plan: CommandPlan, *, dry_run, confirm_device
