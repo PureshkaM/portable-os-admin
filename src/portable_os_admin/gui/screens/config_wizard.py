@@ -816,7 +816,14 @@ class ConfigWizardFrame(WizardFrame):
         entry_row = ttk.Frame(inner)
         entry_row.pack(fill="x")
         self.app_entry_var = tk.StringVar()
-        entry = ttk.Entry(entry_row, textvariable=self.app_entry_var, width=30)
+        # Combobox, а не Entry: прочитанные из образа записи попадают сюда
+        # списком, и имя приложения перестаёт быть тем, что надо помнить
+        # наизусть. Пока образ не прочитан, список пуст и поле ведёт себя как
+        # обычное поле ввода.
+        entry = ttk.Combobox(
+            entry_row, textvariable=self.app_entry_var, width=28, values=()
+        )
+        self.app_entry_combo = entry
         entry.pack(side="left")
         # Enter is how anyone types a list of short names; making them reach
         # for the mouse between each one is the difference between adding six
@@ -850,6 +857,9 @@ class ConfigWizardFrame(WizardFrame):
         )
         ttk.Button(
             list_actions, text="Подставить из пакетов", command=self._suggest_allowed_apps
+        ).pack(side="left", padx=(theme.SPACE_SM, 0))
+        ttk.Button(
+            list_actions, text="Прочитать из образа…", command=self._read_image_catalog
         ).pack(side="left", padx=(theme.SPACE_SM, 0))
 
         options = ttk.Frame(inner)
@@ -990,6 +1000,82 @@ class ConfigWizardFrame(WizardFrame):
             )
         else:
             self.message_bar.info("Нечего подставлять: пакеты не выбраны или уже добавлены.")
+
+    def _read_image_catalog(self) -> None:
+        """Читает из установочного образа то, что иначе вводится по памяти.
+
+        Записи приложений, локали, часовые пояса и раскладки лежат в самом
+        образе, и он единственный источник, который не устареет: список,
+        написанный в коде, разойдётся с дистрибутивом на следующем выпуске.
+
+        Образ монтируется на время чтения. Это требует прав, и приложение их
+        уже имеет -- оно запускается через polkit, -- но если монтирование не
+        удалось, надо сказать об этом, а не оставить пустой список: пустой
+        список выглядит как «в образе ничего нет».
+
+        Ничего не подставляется само. Прочитанное становится **предложением**:
+        имена приложений попадают в выпадающий список поля, локали, пояса и
+        раскладки -- в свои списки на шаге локализации. Выбор остаётся за
+        администратором.
+        """
+        from tkinter import filedialog
+
+        from ...install import image_catalog
+        from ...install.image_source import MountedImage
+
+        chosen = filedialog.askopenfilename(
+            parent=self,
+            title="Установочный образ, из которого читать",
+            filetypes=[("Образы", "*.iso *.img"), ("Все файлы", "*")],
+        )
+        if not chosen:
+            return
+
+        family = self.config.target_os
+        try:
+            with MountedImage(chosen) as image:
+                applications = image_catalog.desktop_applications(image.mountpoint, family)
+                locales = image_catalog.locales(image.mountpoint, family)
+                zones = image_catalog.timezones(image.mountpoint, family)
+                layouts = image_catalog.keyboard_layouts(image.mountpoint, family)
+        except Exception as exc:  # noqa: BLE001 -- показываем причину, а не молчим
+            self.message_bar.error(f"Не удалось прочитать образ: {exc}")
+            return
+
+        if applications:
+            self.app_entry_combo.configure(values=applications)
+        if locales and hasattr(self, "locale_combo"):
+            self.locale_combo.configure(values=locales)
+        if zones and hasattr(self, "timezone_combo"):
+            self.timezone_combo.configure(values=zones)
+        if layouts and hasattr(self, "keymap_combo"):
+            self.keymap_combo.configure(values=[code for code, _name in layouts])
+
+        parts = []
+        if applications:
+            parts.append(f"приложений: {len(applications)}")
+        if locales:
+            parts.append(f"локалей: {len(locales)}")
+        if zones:
+            parts.append(f"часовых поясов: {len(zones)}")
+        if layouts:
+            parts.append(f"раскладок: {len(layouts)}")
+        if not parts:
+            self.message_bar.error(
+                "В образе не нашлось ни списков, ни записей приложений. "
+                "Похоже, это не установочный образ поддерживаемого семейства."
+            )
+            return
+        note = "Прочитано из образа — " + ", ".join(parts) + "."
+        if not applications and family != "redos":
+            # Сказано прямо: иначе администратор будет искать, что сделал не
+            # так, а дело в самом образе.
+            note += (
+                " Записей приложений на установочном DVD Debian нет: в нём"
+                " отсутствует файл Contents, по которому их можно было бы"
+                " перечислить."
+            )
+        self.message_bar.info(note)
 
     def _save_step_profile(self) -> None:
         self.config.profile = self.profile_var.get()
