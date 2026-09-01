@@ -59,6 +59,12 @@ class RedOSInstallBackend(InstallBackend):
     #: RHEL-семейство слушает `rhgb`, а не `splash`.
     GRAPHICAL_BOOT_PARAMETER = "rhgb"
 
+    #: Кириллица, латиница, греческий и иврит в одном файле -- то, что в этом
+    #: семействе называется полным шрифтом консоли. Есть в kbd-misc образа
+    #: РЕД ОС 8 (`LatArCyrHeb-16.psfu.gz`), и dracut кладёт в initramfs именно
+    #: названный в vconsole.conf.
+    CONSOLE_FONT = "LatArCyrHeb-16"
+
     ARCH_NAMES = {
         "x86_64": "x86_64",
         "amd64": "x86_64",
@@ -101,6 +107,12 @@ class RedOSInstallBackend(InstallBackend):
         "NetworkManager",
         "sudo",
         "kbd",
+        # Сами шрифты консоли лежат отдельно от kbd: в собранном корне не было
+        # даже каталога /usr/share/kbd/consolefonts/, так что `setfont` (он в
+        # initramfs есть) кормить было нечем. Проверено осмотром собранного
+        # корня 01.09.2026; kbd-misc несёт 252 файла шрифтов, среди них
+        # кириллические.
+        "kbd-misc",
     )
 
     #: Checked name by name against redos-8's own repodata, not recalled. The

@@ -500,6 +500,20 @@ class InstallBackend(ABC):
     #: с кириллицей и то, какие вопросы носитель задаёт человеку.
     PLYMOUTH_PLUGIN = "two-step"
 
+    #: Шрифт консоли, знающий кириллицу. Имена у семейств разные.
+    #:
+    #: Это запасной путь, а не основной: с 31.08.2026 человек видит
+    #: графический экран plymouth, и там кириллица читается. Но plymouth
+    #: поднимается не всегда -- его выключают параметром ядра, он может не
+    #: встать на незнакомой видеокарте, а аварийный режим рисует консолью в
+    #: любом случае. Носитель, который в этот момент показывает вместо
+    #: объяснения сплошные блоки, бесполезен ровно тогда, когда нужен больше
+    #: всего.
+    #:
+    #: Шрифт консоли по умолчанию кириллицы не знает: он собран под латиницу,
+    #: и русский текст идёт прямоугольниками. Найдено прогоном 28.08.2026.
+    CONSOLE_FONT = ""
+
     #: Строки `/etc/default/grub`, специфичные для семейства.
     GRUB_EXTRA_DEFAULTS: tuple[str, ...] = ()
 
@@ -640,6 +654,28 @@ class InstallBackend(ABC):
     # ------------------------------------------------------------------
     # Files written directly into the mounted target tree
     # ------------------------------------------------------------------
+    def console_font_files(self, config: InstallConfig) -> dict[str, str]:
+        """Что ещё нужно семейству, чтобы шрифт попал в initramfs.
+
+        У RHEL не нужно ничего: dracut читает `vconsole.conf` и кладёт
+        названный там шрифт сам. У Debian свой путь -- см. переопределение.
+        """
+        return {}
+
+    def _vconsole_conf(self, config: InstallConfig) -> str:
+        """Раскладка и шрифт консоли.
+
+        Шрифт называется только если семейство знает, какой у него есть:
+        пустая строка `FONT=` заставила бы systemd-vconsole-setup искать
+        несуществующее и оставить консоль как есть, а это ровно тот отказ,
+        который не виден до загрузки.
+        """
+        loc = config.localisation
+        lines = [f"KEYMAP={loc.keymap}"]
+        if self.CONSOLE_FONT:
+            lines.append(f"FONT={self.CONSOLE_FONT}")
+        return "\n".join(lines) + "\n"
+
     def _plymouth_theme(self) -> str:
         """Экран, которым носитель разговаривает с человеком до загрузки.
 
@@ -836,7 +872,15 @@ class InstallBackend(ABC):
             # система ставилась с en_US.UTF-8 и UTC независимо от того, что
             # написано в конфигурации.
             "etc/locale.conf": f"LANG={loc.locale}\n",
-            "etc/vconsole.conf": f"KEYMAP={loc.keymap}\n",
+            # KEYMAP и FONT вместе: раскладка и то, чем она рисуется.
+            #
+            # Шрифт называется здесь не только ради системы -- dracut кладёт в
+            # initramfs ровно тот шрифт, что назван в этом файле, и без строки
+            # FONT образ остаётся без шрифта вовсе. Файл пишется до сборки
+            # initramfs (см. installer: config_files идут раньше
+            # initramfs_command), иначе называть было бы нечего.
+            "etc/vconsole.conf": self._vconsole_conf(config),
+            **self.console_font_files(config),
             "etc/X11/xorg.conf.d/00-poa-keyboard.conf": self._keyboard_conf(config),
             "etc/fstab": self._fstab(layout, config),
             "etc/crypttab": self._crypttab(layout, config),

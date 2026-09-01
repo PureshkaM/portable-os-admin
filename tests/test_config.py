@@ -162,7 +162,11 @@ def test_localisation_reaches_both_the_native_file_and_the_medium():
     )
     files = backend.config_files(config, layout)
     assert files["etc/locale.conf"] == "LANG=ru_RU.UTF-8\n"
-    assert files["etc/vconsole.conf"] == "KEYMAP=ru\n"
+    # Раскладка и шрифт: FONT появился 01.09.2026, потому что dracut кладёт в
+    # initramfs ровно тот шрифт, что назван здесь, а консольный по умолчанию
+    # кириллицы не знает.
+    assert "KEYMAP=ru" in files["etc/vconsole.conf"]
+    assert "FONT=LatArCyrHeb-16" in files["etc/vconsole.conf"]
     assert files["etc/hostname"] == "kiosk-07\n"
     assert "kiosk-07" in files["etc/hosts"]
     keyboard = files["etc/X11/xorg.conf.d/00-poa-keyboard.conf"]

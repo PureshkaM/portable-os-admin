@@ -815,3 +815,97 @@ def test_debian_carries_what_the_boot_screen_needs():
 
     for name in ("plymouth", "plymouth-label", "fontconfig"):
         assert name in packages, f"в загрузочном наборе нет {name}"
+
+
+# ----------------------------------------------------------------------
+# Консоль загрузки говорит по-русски
+# ----------------------------------------------------------------------
+def _console_files(target_os):
+    from portable_os_admin.config import InstallConfig
+    from portable_os_admin.install.backends import get_backend
+    from portable_os_admin.install.disk import build_media_layout, plan_partitions
+
+    config = InstallConfig.create_default("stick", target_os)
+    config.localisation.keymap = "ru"
+    layout = build_media_layout(
+        plan_partitions("/dev/sdz", config.disk), mapper_name="poa-t", mount_root="/mnt/t"
+    )
+    return get_backend(target_os).config_files(config, layout)
+
+
+def test_both_families_name_a_console_font_that_knows_cyrillic():
+    """Шрифт консоли по умолчанию кириллицы не знает.
+
+    Все сообщения носителя при вводе пароля написаны по-русски, а на экране
+    шли сплошными блоками -- найдено прогоном 28.08.2026. Русская система
+    обязана говорить по-русски с тем, кто по-английски не читает, поэтому
+    перевести сообщения на английский -- не решение.
+
+    Это запасной путь: с 31.08.2026 человек видит графический экран plymouth,
+    где кириллица читается. Но plymouth выключают параметром ядра, он может не
+    встать на незнакомой видеокарте, а аварийный режим рисует консолью в любом
+    случае.
+    """
+    from portable_os_admin.install.backends import get_backend
+
+    assert get_backend("redos").CONSOLE_FONT == "LatArCyrHeb-16"
+    assert get_backend("debian").CONSOLE_FONT == "CyrSlav-Terminus16"
+
+    for target_os in ("redos", "debian"):
+        vconsole = _console_files(target_os)["etc/vconsole.conf"]
+        assert "KEYMAP=ru" in vconsole
+        assert "FONT=" in vconsole, f"{target_os}: шрифт не назван"
+
+
+def test_redos_carries_the_font_files_themselves():
+    """Назвать шрифт мало: в собранном корне его не было вовсе.
+
+    Проверено осмотром 01.09.2026: каталога /usr/share/kbd/consolefonts/ в
+    системе не существовало, то есть `setfont` (он в initramfs есть) кормить
+    было нечем. Файлы шрифтов лежат в kbd-misc, отдельно от kbd.
+    """
+    from portable_os_admin.config import InstallConfig
+    from portable_os_admin.install.backends import get_backend
+
+    config = InstallConfig.create_default("stick", "redos")
+    names = get_backend("redos").core_package_names()
+    assert "kbd-misc" in names, "шрифтов консоли нет в наборе"
+
+
+def test_debian_puts_the_font_into_the_initramfs_its_own_way():
+    """У Debian шрифт кладёт не dracut, а хук keymap -- и только по условиям.
+
+    Хук выходит первой же строкой, если в настройках initramfs-tools не задано
+    `KEYMAP=y`, и второй -- если нет `setupcon` («setupcon is missing. Please
+    install the 'console-setup' package»). Прочитано в самом хуке
+    initramfs-tools 0.148.4, а не предположено.
+
+    `setupcon` берёт, что класть, из /etc/default/console-setup: имя шрифта
+    там не пишется целиком, оно складывается из набора символов, гарнитуры и
+    размера.
+    """
+    from portable_os_admin.config import InstallConfig
+    from portable_os_admin.install.backends import get_backend
+
+    files = _console_files("debian")
+    assert "KEYMAP=y" in files["etc/initramfs-tools/conf.d/poa-console"]
+
+    console_setup = files["etc/default/console-setup"]
+    assert 'CODESET="CyrSlav"' in console_setup
+    assert 'FONTFACE="Terminus"' in console_setup
+    assert 'FONTSIZE="16"' in console_setup
+
+    config = InstallConfig.create_default("stick", "debian")
+    assert "console-setup" in get_backend("debian").boot_packages(config)
+
+
+def test_redos_needs_no_extra_console_files():
+    """dracut читает vconsole.conf сам -- лишние файлы были бы обманом.
+
+    Файл, который никто не читает, при следующем разборе выглядит как рабочий.
+    """
+    from portable_os_admin.config import InstallConfig
+    from portable_os_admin.install.backends import get_backend
+
+    config = InstallConfig.create_default("stick", "redos")
+    assert get_backend("redos").console_font_files(config) == {}
