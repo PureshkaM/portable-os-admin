@@ -1411,3 +1411,55 @@ def test_the_keyboard_section_follows_the_generation():
 
     assert "settings-hardware-input" in five and "settings-hardware" in five
     assert "settings-hardware-keyboard" in six
+
+
+# ----------------------------------------------------------------------
+# Plasma 6: чем шестое поколение отличается от пятого
+# ----------------------------------------------------------------------
+def test_favourites_are_written_where_each_generation_keeps_them():
+    """Избранное Kickoff живёт в двух местах, и писать надо в оба.
+
+    В конфигурации плазмоида org.kde.plasma.kickoff 6.3.6 есть и `favorites`
+    (список самого апплета), и `favoritesPortedToKAstats` -- признак того, что
+    список перенесён в KActivitiesStats. Какое из двух мест окажется главным,
+    зависит от поколения и от истории профиля, поэтому пишутся оба: лишняя
+    правка ничего не ломает, а пропущенная оставила бы пользователю чужое
+    избранное. На РЕД ОС оно ставило «Параметры системы» в один клик от того,
+    кому туда нельзя.
+    """
+    from portable_os_admin.install.kiosk.environments import kde
+
+    config = make_kiosk_config(allowed_apps=["mate-calc"])
+    config.kiosk.desktop_environment = "kde"
+
+    for paths in (kde.KDE5_PATHS, kde.KDE6_PATHS):
+        script = kde.plasma_layout_script(config, paths)
+        assert "favorites=$FAVOURITES" in script, "не задано избранное самого апплета"
+        assert "ordering=$FAVOURITES" in script, "не задано избранное KAStats"
+
+
+def test_only_plasma_5_has_applet_service_files_to_delete():
+    """Удалить плазмоид в пятом поколении мало: рядом лежит его `.desktop`.
+
+    В Plasma 6 таких записей нет вовсе -- метаданные переехали в
+    `metadata.json` внутрь самого плазмоида. Проверено по
+    plasma-workspace-data 6.3.6 и plasma-desktop-data 6.3.6 Debian 13: ни
+    одной записи в kservices.
+
+    Разница важна не ради экономии одной команды: `rm -f` на отсутствующий
+    файл молчит, и без этого поля «удалили» было бы неотличимо от «искали не
+    там».
+    """
+    from portable_os_admin.install.kiosk.environments import kde
+
+    config = make_kiosk_config(allowed_apps=["mate-calc"])
+    config.kiosk.desktop_environment = "kde"
+
+    five = kde.plasma_layout_script(config, kde.KDE5_PATHS)
+    six = kde.plasma_layout_script(config, kde.KDE6_PATHS)
+
+    assert "plasma-applet-$plasmoid.desktop" in five
+    assert "kservices5" in five
+    assert "plasma-applet-" not in six, "шестое поколение ищет то, чего у него нет"
+    # Сам плазмоид удаляется в обоих: каталог у поколений один и тот же.
+    assert "/usr/share/plasma/plasmoids/$plasmoid" in six

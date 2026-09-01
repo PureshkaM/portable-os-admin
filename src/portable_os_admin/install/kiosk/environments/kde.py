@@ -55,6 +55,18 @@ class KdePaths:
     #: собственный подраздел. Ошибиться здесь -- значит либо оставить
     #: пользователю пустой видимый раздел, либо спрятать разрешённое.
     settings_categories: "dict[str, tuple[str, ...]]"
+    #: Есть ли у плазмоидов служебная запись `plasma-applet-*.desktop`.
+    #:
+    #: В Plasma 5 удалить плазмоид мало -- рядом лежит его `.desktop` в
+    #: kservices5, и по нему апплет остаётся видимым. В Plasma 6 таких записей
+    #: нет вовсе: метаданные переехали в `metadata.json` внутрь самого
+    #: плазмоида. Проверено по plasma-workspace-data 6.3.6 и
+    #: plasma-desktop-data 6.3.6 Debian 13 -- ни одной записи в kservices.
+    #:
+    #: Поле нужно затем, чтобы скрипт не искал несуществующее: команда
+    #: `rm -f` на отсутствующий файл молчит, и разница между «удалили» и
+    #: «искали не там» пропала бы вместе с ней.
+    has_applet_services: bool = True
 
     @property
     def services_glob(self) -> str:
@@ -124,6 +136,7 @@ KDE6_PATHS = KdePaths(
     ),
     sycoca_tools="kbuildsycoca6",
     settings_categories=KDE6_SETTINGS_CATEGORIES,
+    has_applet_services=False,
 )
 
 
@@ -321,6 +334,11 @@ def plasma_layout_script(config: InstallConfig, paths: "KdePaths | None" = None)
         apps.append("systemsettings")
     launchers = ",".join(f"applications:{a}.desktop" for a in apps)
     favourites = ",".join(f"{a}.desktop" for a in apps)
+    applet_service_removal = (
+        f'    rm -f "{paths.services_dir}/plasma-applet-$plasmoid.desktop"\n'
+        if paths.has_applet_services
+        else ""
+    )
     return f"""
 # Панель, избранное и запертые виджеты.
 APPLETSRC_LAUNCHERS="{launchers}"
@@ -334,6 +352,17 @@ for home in /etc/skel /home/*; do
         -e "s|^launchers=.*|launchers=$APPLETSRC_LAUNCHERS|" \
         -e "s|^immutability=1$|immutability=2|" \
         "$f"
+    # Избранное Kickoff лежит в двух местах, и какое из них главное —
+    # зависит от поколения и от того, переносил ли Plasma список в KAStats
+    # (`favoritesPortedToKAstats` в конфигурации апплета). Пишем в оба: лишняя
+    # правка ничего не ломает, а пропущенная оставила бы пользователю чужое
+    # избранное — на РЕД ОС оно ставило «Параметры системы» в один клик от
+    # того, кому туда нельзя.
+    #
+    # `favorites=` — конфигурация самого апплета в appletsrc, проверено по
+    # main.xml плазмоида org.kde.plasma.kickoff 6.3.6; `ordering=` — список
+    # KAStats, которым пользуется пятое поколение.
+    sed -i "s|^favorites=.*|favorites=$FAVOURITES|" "$f"
     stats="$home/.config/kactivitymanagerd-statsrc"
     [ -f "$stats" ] && sed -i "s|^ordering=.*|ordering=$FAVOURITES|" "$stats"
     # База избранного KAstats хранит прежний набор помимо ordering.
@@ -346,8 +375,7 @@ echo "poa-kiosk: панель и избранное: $APPLETSRC_LAUNCHERS"
 # Плазмоиды, которых в киоске быть не должно.
 for plasmoid in {" ".join(REMOVED_PLASMOIDS)}; do
     rm -rf "/usr/share/plasma/plasmoids/$plasmoid"
-    rm -f "{paths.services_dir}/plasma-applet-$plasmoid.desktop"
-    echo "poa-kiosk: плазмоид удалён: $plasmoid"
+{applet_service_removal}    echo "poa-kiosk: плазмоид удалён: $plasmoid"
 done
 """
 
