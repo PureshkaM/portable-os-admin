@@ -1496,3 +1496,30 @@ def test_only_plasma_5_has_applet_service_files_to_delete():
     assert "plasma-applet-" not in six, "шестое поколение ищет то, чего у него нет"
     # Сам плазмоид удаляется в обоих: каталог у поколений один и тот же.
     assert "/usr/share/plasma/plasmoids/$plasmoid" in six
+
+
+def test_mate_gets_its_gsettings_schemas():
+    """Без схем сеанс MATE не поднимается вовсе.
+
+    Прогон 02.09.2026: `mate-session` падал в первом же `g_object_new` с
+    «GLib-GIO-ERROR: Settings schema 'org.mate.interface' is not installed»,
+    SDDM возвращался к экрану входа и запускал сеанс снова -- и так по кругу.
+    Снаружи это выглядело как чёрный экран без единого сообщения, и найти
+    причину удалось только по коредампу в журнале носителя.
+
+    Схемы лежат отдельно от библиотеки: mate-panel требует
+    `libmate-desktop-2.so.17` (её несёт mate-desktop-libs), а файлы
+    `org.mate.*.gschema.xml` -- в mate-desktop-gschemas у РЕД ОС и
+    mate-desktop-common у Debian. Тянет их `mate-desktop`.
+
+    До этого в коде стояло обратное утверждение -- что нужное сеансу придёт
+    зависимостью mate-panel. Библиотека приходила, схемы нет, и разницу было
+    видно только на живой загрузке.
+    """
+    for target_os in ("debian", "redos"):
+        config = make_kiosk_config(target_os, allowed_apps=["mate-calc"])
+        config.kiosk.desktop_environment = "mate"
+        packages = get_backend(target_os).desktop_packages(config)
+        assert "mate-desktop" in packages, (
+            f"{target_os}: нет пакета со схемами GSettings -- сеанс не запустится"
+        )

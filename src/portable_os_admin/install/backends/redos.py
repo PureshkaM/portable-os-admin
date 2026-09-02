@@ -185,6 +185,26 @@ class RedOSInstallBackend(InstallBackend):
         "sddm",
         # MATE, the same desktop RED OS's own kiosk mode is built on.
         "mate-session-manager",
+        # mate-desktop -- ради схем GSettings, а не ради утилит.
+        #
+        # Найдено прогоном 02.09.2026, и это была причина, по которой сеанс
+        # MATE не поднимался вовсе: `mate-session` падал в первом же
+        # `g_object_new` с «GLib-GIO-ERROR: Settings schema
+        # 'org.mate.interface' is not installed», SDDM возвращался к экрану
+        # входа, снова запускал сеанс -- и так по кругу. Снаружи это выглядело
+        # как чёрный экран без единого сообщения.
+        #
+        # Схемы лежат отдельно от библиотеки: `mate-panel` требует
+        # `libmate-desktop-2.so.17`, её приносит mate-desktop-libs, и на этом
+        # зависимости кончаются. Файлы `org.mate.*.gschema.xml` живут в
+        # mate-desktop-gschemas (РЕД ОС) и mate-desktop-common (Debian), а их
+        # тянет `mate-desktop` -- потому он и назван, хотя сам по себе почти
+        # ничего не делает.
+        #
+        # В коде до этого стояло обратное утверждение: «библиотека, которая
+        # нужна сеансу, приходит зависимостью mate-panel». Библиотека -- да.
+        # Схемы -- нет, и разницу между ними видно только на живой загрузке.
+        "mate-desktop",
         "mate-panel",
         "marco",
         # Caja -- компонент среды, а не приложение. См. debian.py.
