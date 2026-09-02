@@ -58,6 +58,22 @@ class RedOSInstallBackend(InstallBackend):
     #: `rpm -ql` печатает содержимое установленного пакета -- то, чем в этом
     #: семействе отвечают на вопрос «какие запускатели принёс этот пакет».
     PACKAGE_FILES_COMMAND = ("rpm", "-ql")
+
+    TITLE = "РЕД ОС (dnf --installroot)"
+    PROVENANCE = "Проверено против repo1.red-soft.ru (выпуски 7.3 и 8.0)."
+    RELEASES = ("8.0", "7.3")
+    DEFAULT_RELEASE = "8.0"
+
+    def default_mirror(self, release: str = "", arch: str = "") -> str:
+        """Адрес РЕД ОС включает и выпуск, и архитектуру.
+
+        Раскладка репозитория -- `<выпуск>/<арх>/os`, проверена на 7.3 и 8.0.
+        Пустые аргументы заменяются умолчаниями, чтобы вызов без них давал
+        рабочий адрес, а не обрубок пути.
+        """
+        release = release or self.DEFAULT_RELEASE
+        arch = self.ARCH_NAMES.get(arch or "amd64", "x86_64")
+        return f"https://repo1.red-soft.ru/redos/{release}/{arch}/os"
     firewall_service = "firewalld"
     bootloader_comes_from_packages = True
     #: RHEL-семейство слушает `rhgb`, а не `splash`.

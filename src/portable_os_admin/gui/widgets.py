@@ -18,7 +18,7 @@ from typing import Callable
 
 from ..config.validator import ConfigValidationUnavailableError
 from ..errors import PortableOSAdminError
-from . import theme
+from . import preferences, theme
 
 # Every exception type any backend call in this project is documented to
 # raise on an expected failure (bad password, device not eligible, repo
@@ -404,6 +404,18 @@ class _StepRail(ttk.Frame):
         # content column shifts sideways as the user moves between steps.
         self.pack_propagate(False)
         self._rows: list[tuple[tk.Frame, tk.Label, tk.Label]] = []
+        self.set_titles(step_titles)
+
+    def set_titles(self, step_titles: list[str]) -> None:
+        """Перерисовывает список шагов.
+
+        Нужно затем, что переключатель режима меняет сам состав шагов: в
+        упрощённом их меньше. Рельс, оставшийся от прежнего режима, показывал
+        бы шаги, которых больше нет.
+        """
+        for row, _marker, _label in self._rows:
+            row.destroy()
+        self._rows = []
 
         for index, title in enumerate(step_titles):
             row = tk.Frame(self, background=theme.BACKGROUND)
@@ -468,6 +480,13 @@ class WizardFrame(ttk.Frame):
     single-page forms.
     """
 
+    #: Умеет ли этот мастер два объёма вопросов. Подклассу достаточно
+    #: поставить True и переопределить `step_plan()`.
+    supports_modes = False
+
+    #: Под каким именем режим запоминается между запусками.
+    mode_preference_key = "wizard_expert_mode"
+
     def __init__(
         self,
         parent: tk.Widget,
@@ -482,6 +501,10 @@ class WizardFrame(ttk.Frame):
         self.step_hints = step_hints or [""] * len(step_titles)
         self.finish_label = finish_label
         self.step_index = 0
+        # Режим запоминается: тот, кто работает в экспертном, работает в нём
+        # постоянно, и переключать его при каждом запуске означало бы не давать
+        # выбора, а требовать его заново.
+        self.expert_mode = bool(preferences.get(self.mode_preference_key, False))
 
         # Layout, outermost first:
         #
@@ -530,7 +553,22 @@ class WizardFrame(ttk.Frame):
         header = ttk.Frame(card, style="Card.TFrame")
         header.pack(side="top", fill="x", padx=theme.SPACE_LG, pady=(theme.SPACE_LG, theme.SPACE_SM))
         self.step_title_var = tk.StringVar()
-        ttk.Label(header, textvariable=self.step_title_var, style="Title.TLabel").pack(anchor="w")
+        title_row = ttk.Frame(header, style="Card.TFrame")
+        title_row.pack(fill="x")
+        ttk.Label(title_row, textvariable=self.step_title_var, style="Title.TLabel").pack(side="left")
+        if self.supports_modes:
+            # Переключатель стоит в шапке шага, а не в отдельном окне
+            # настроек: он меняет то, что видно прямо сейчас, и место рядом с
+            # заголовком говорит об этом без подписи.
+            self._mode_var = tk.BooleanVar(value=self.expert_mode)
+            self._mode_toggle = ttk.Checkbutton(
+                title_row,
+                text="Экспертный режим",
+                variable=self._mode_var,
+                style="Card.TCheckbutton",
+                command=self._on_mode_toggled,
+            )
+            self._mode_toggle.pack(side="right")
         self.hint_var = tk.StringVar()
         ttk.Label(
             header,
@@ -547,6 +585,9 @@ class WizardFrame(ttk.Frame):
         )
         self.body = self._scroller.content
 
+        self.step_keys = [str(i) for i in range(len(self.step_titles))]
+        if self.supports_modes:
+            self._apply_step_plan()
         self._render_step()
 
     # -- subclasses implement these ---------------------------------
@@ -589,6 +630,48 @@ class WizardFrame(ttk.Frame):
         self.back_btn.configure(state=("normal" if self.step_index > 0 else "disabled"))
         is_last = self.step_index == total - 1
         self.next_btn.configure(text=(self.finish_label if is_last else "Далее"))
+
+    def _on_mode_toggled(self) -> None:
+        """Переключение объёма вопросов без потери введённого.
+
+        Значения текущего шага сохраняются перед пересборкой -- иначе
+        переключатель стирал бы то, что администратор только что набрал, и
+        пользоваться им было бы страшно.
+
+        Шаг после пересборки остаётся тем же по смыслу, а не по номеру: в
+        упрощённом режиме шагов меньше, и номер указывал бы уже на другой.
+        """
+        self.save_step(self.step_index)
+        current_key = self.step_keys[self.step_index] if self.step_keys else ""
+        self.expert_mode = bool(self._mode_var.get())
+        preferences.set_value(self.mode_preference_key, self.expert_mode)
+        self._apply_step_plan()
+        if current_key in self.step_keys:
+            self.step_index = self.step_keys.index(current_key)
+        else:
+            # Шаг был экспертным и исчез: возвращаемся на предыдущий по
+            # порядку, а не на первый -- начинать сначала из-за переключателя
+            # никто не просил.
+            self.step_index = min(self.step_index, len(self.step_keys) - 1)
+        self._render_step()
+
+    def _apply_step_plan(self) -> None:
+        """Пересобирает список шагов под текущий режим."""
+        plan = self.step_plan()
+        if not plan:
+            return
+        self.step_keys = [key for key, _title, _hint in plan]
+        self.step_titles = [title for _key, title, _hint in plan]
+        self.step_hints = [hint for _key, _title, hint in plan]
+        self._rail.set_titles(self.step_titles)
+
+    def step_plan(self) -> "list[tuple[str, str, str]]":
+        """(ключ, заголовок, подсказка) для каждого шага текущего режима.
+
+        Пустой список означает «мастер не умеет режимов»: тогда работают
+        `step_titles`, переданные в конструктор.
+        """
+        return []
 
     def _go_back(self) -> None:
         if self.step_index == 0:

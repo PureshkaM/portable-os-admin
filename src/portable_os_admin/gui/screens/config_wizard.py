@@ -19,10 +19,8 @@ import json
 
 from ...config.repo_browser import RepoPackage, get_package_source
 from ...config.schema import (
-    KNOWN_RELEASES,
     LUKS_CIPHERS,
     LUKS_KDFS,
-    SUPPORTED_TARGET_OS,
     InstallConfig,
 )
 from ...config.validator import ConfigValidationUnavailableError
@@ -32,19 +30,43 @@ from ...install.emulation import probe as probe_emulation
 from .. import theme
 from ..widgets import KNOWN_ERRORS, WizardFrame, add_choice, add_field, run_in_background
 
-OS_LABELS = {
-    "debian": "Debian (стандартный, debootstrap)",
-    "redos": "RedOS (dnf --installroot)",
-}
-OS_DESCRIPTIONS = {
-    "debian": "Проверено против deb.debian.org.",
-    "redos": "Проверено против repo1.red-soft.ru (релизы 7.3 / 8.0).",
-}
-DEFAULT_RELEASE = {"debian": "bookworm", "redos": "8.0"}
-DEFAULT_MIRROR = {
-    "debian": "https://deb.debian.org/debian",
-    "redos": "https://repo1.red-soft.ru/redos/8.0/x86_64/os",
-}
+def _distributions() -> "dict[str, type]":
+    """Семейства, которые умеет ставить программа, из реестра бэкендов.
+
+    Экран больше не хранит про них ничего своего. До 02.09.2026 здесь лежали
+    четыре словаря -- подписи, происхождение, выпуски и зеркала, -- и третий
+    дистрибутив потребовал бы правки в мастере, хотя знает про себя только
+    бэкенд. Теперь добавление семейства -- это один класс, а список в мастере
+    складывается сам.
+    """
+    from ...install.backends import BACKENDS
+
+    return {name: cls for name, cls in BACKENDS.items() if cls.TITLE}
+
+
+def _os_label(target_os: str) -> str:
+    cls = _distributions().get(target_os)
+    return cls.TITLE if cls else target_os
+
+
+def _os_description(target_os: str) -> str:
+    cls = _distributions().get(target_os)
+    return cls.PROVENANCE if cls else ""
+
+
+def _releases_of(target_os: str) -> "tuple[str, ...]":
+    cls = _distributions().get(target_os)
+    return cls.RELEASES if cls else ()
+
+
+def _default_release(target_os: str) -> str:
+    cls = _distributions().get(target_os)
+    return cls.DEFAULT_RELEASE if cls else ""
+
+
+def _default_mirror(target_os: str, release: str = "", arch: str = "") -> str:
+    cls = _distributions().get(target_os)
+    return cls().default_mirror(release, arch) if cls else ""
 CATALOG_DISPLAY_LIMIT = 200
 
 #: Shown instead of an empty architecture field, which is what "same as this
@@ -68,14 +90,15 @@ class ConfigWizardFrame(WizardFrame):
             # blank system. What the wizard opens on is a statement about what
             # this tool builds, and every later step is the administrator
             # opening something on purpose.
+            # Зеркало приходит вместе с базовой конфигурацией: его знает
+            # семейство, а не этот экран.
             self.config = InstallConfig.create_baseline(name="", target_os="debian")
-            self.config.mirror = DEFAULT_MIRROR["debian"]
         # Kept for the change list on the last step: what the administrator
         # started from, so "what did I actually alter?" has an answer.
         self._baseline = InstallConfig.create_baseline(
             name=self.config.name, target_os=self.config.target_os
         )
-        self._baseline.mirror = DEFAULT_MIRROR.get(self.config.target_os, "")
+
         self._catalog: list[RepoPackage] = []
         self._catalog_view: list[RepoPackage] = []
         self._sort_descending: dict[str, bool] = {}
@@ -83,26 +106,66 @@ class ConfigWizardFrame(WizardFrame):
         super().__init__(
             parent,
             app,
-            step_titles=[
-                "Имя и целевая ОС",
-                "Учётная запись пользователя",
-                "Диск и шифрование",
-                "Удалённый доступ",
-                "Пакеты для предустановки",
-                "Режим системы и обновления",
-                "Проверка и сохранение",
-            ],
-            step_hints=[
-                "",
-                "",
-                "",
-                "Необязательно.",
-                "Необязательно.",
-                "",
-                "",
-            ],
+            # Заголовки всё равно пересобираются по плану шагов сразу после
+            # конструктора; здесь -- полный набор, чтобы каркас знал их число
+            # до первой отрисовки.
+            step_titles=[title for _key, title, _hint in self._expert_plan()],
+            step_hints=[hint for _key, _title, hint in self._expert_plan()],
             finish_label="Сохранить конфигурацию",
         )
+
+    supports_modes = True
+    mode_preference_key = "config_wizard_expert"
+
+    #: Полный набор шагов -- то, что видно в экспертном режиме.
+    @staticmethod
+    def _expert_plan() -> "list[tuple[str, str, str]]":
+        return [
+            ("basics", "Имя и целевая ОС", ""),
+            ("account", "Учётная запись пользователя", ""),
+            ("disk", "Диск и шифрование", ""),
+            ("remote", "Удалённый доступ", "Необязательно."),
+            ("packages", "Пакеты для предустановки", "Необязательно."),
+            ("profile", "Режим системы и обновления", ""),
+            ("review", "Проверка и сохранение", ""),
+        ]
+
+    def step_plan(self) -> "list[tuple[str, str, str]]":
+        """Какие шаги показывать в текущем режиме.
+
+        Упрощённый режим -- не «мастер попроще», а ответ на вопрос, от чего
+        действительно зависит судьба собираемого образа. Программа начинает с
+        минимальной защищённой системы и сама знает, каким должен быть шифр,
+        как разбит диск и что удалённый доступ выключен; спрашивать об этом
+        того, кому нужен обычный киоск, значит требовать решения там, где
+        решение уже принято и обосновано.
+
+        Поэтому здесь исчезает целый шаг -- удалённый доступ, выключенный по
+        умолчанию, -- а внутри оставшихся показывается только то, что меняет
+        результат: какая система, на каком языке, с какими приложениями, для
+        скольких машин и с какой средой.
+
+        Экспертный режим ничего не переставляет, а добавляет: NN/g советует
+        ровно один уровень раскрытия, а не лестницу, -- поэтому шаги и поля
+        стоят на прежних местах, просто их становится больше.
+        """
+        plan = self._expert_plan()
+        if self.expert_mode:
+            return plan
+        return [step for step in plan if step[0] != "remote"]
+
+    def _expert_block(self, parent, title: str) -> "ttk.Frame | None":
+        """Рамка для полей, которые видны только в экспертном режиме.
+
+        Возвращает None в упрощённом -- вызывающему достаточно проверить
+        результат, и ни одного `if self.expert_mode` в теле шага не появится.
+        """
+        if not self.expert_mode:
+            return None
+        block = ttk.Frame(parent)
+        if title:
+            ttk.Label(block, text=title, font=theme.FONT_SECTION).pack(anchor="w", pady=(theme.SPACE_MD, theme.SPACE_XS))
+        return block
 
     # -- step 0: name + target OS ---------------------------------------
     def _build_step_basics(self, body: ttk.Frame) -> None:
@@ -117,11 +180,11 @@ class ConfigWizardFrame(WizardFrame):
         os_frame = ttk.Frame(form)
         os_frame.grid(row=row, column=1, sticky="w", pady=(10, 4))
         self.target_os_var = tk.StringVar(value=self.config.target_os)
-        self.os_description_var = tk.StringVar(value=OS_DESCRIPTIONS.get(self.config.target_os, ""))
-        for target_os in SUPPORTED_TARGET_OS:
+        self.os_description_var = tk.StringVar(value=_os_description(self.config.target_os))
+        for target_os in _distributions():
             ttk.Radiobutton(
                 os_frame,
-                text=OS_LABELS[target_os],
+                text=_os_label(target_os),
                 value=target_os,
                 variable=self.target_os_var,
                 command=self._on_target_os_changed,
@@ -132,7 +195,7 @@ class ConfigWizardFrame(WizardFrame):
         )
         row += 1
 
-        self.release_var = tk.StringVar(value=self.config.release or DEFAULT_RELEASE[self.config.target_os])
+        self.release_var = tk.StringVar(value=self.config.release or _default_release(self.config.target_os))
         # Editable rather than a closed list: the list covers the releases this
         # project has actually checked against real repositories, but a site can
         # run an internal mirror of something else, and the UI should not make
@@ -142,20 +205,24 @@ class ConfigWizardFrame(WizardFrame):
             row,
             "Релиз/версия:",
             self.release_var,
-            KNOWN_RELEASES.get(self.config.target_os, ()),
+            _releases_of(self.config.target_os),
             hint="выберите из списка проверенных выпусков или впишите свой",
             width=22,
             editable=True,
         )
         self.mirror_var = tk.StringVar(value=self.config.mirror)
-        _, row = add_field(
-            form,
-            row,
-            "Зеркало репозитория:",
-            self.mirror_var,
-            hint="используется и для установки, и для просмотра пакетов на шаге 5",
-            width=48,
-        )
+        if self.expert_mode:
+            # Адрес репозитория знает само семейство, и по умолчанию он верный.
+            # Спрашивать его у того, кто собирает обычный носитель, значит
+            # предлагать испортить рабочее умолчание.
+            _, row = add_field(
+                form,
+                row,
+                "Зеркало репозитория:",
+                self.mirror_var,
+                hint="используется и для установки, и для просмотра пакетов на шаге «Пакеты»",
+                width=48,
+            )
 
         # Architecture is a first-class choice, not a field only reachable by
         # editing the JSON. An administrator on an arm64 laptop building sticks
@@ -188,11 +255,12 @@ class ConfigWizardFrame(WizardFrame):
         row += 1
 
         self.hostname_var = tk.StringVar(value=self.config.hostname)
-        _, row = add_field(
-            form, row, "Имя в сети:", self.hostname_var,
-            hint="у всех носителей организации оно не должно быть одинаковым",
-            width=24,
-        )
+        if self.expert_mode:
+            _, row = add_field(
+                form, row, "Имя в сети:", self.hostname_var,
+                hint="у всех носителей организации оно не должно быть одинаковым",
+                width=24,
+            )
 
         loc = self.config.localisation
         self.locale_var = tk.StringVar(value=loc.locale)
@@ -201,10 +269,14 @@ class ConfigWizardFrame(WizardFrame):
             ("ru_RU.UTF-8", "en_US.UTF-8"), width=22, editable=True,
         )
         self.keymap_var = tk.StringVar(value=loc.keymap)
-        self.keymap_combo, row = add_choice(
-            form, row, "Раскладка консоли:", self.keymap_var,
-            ("us", "ru"), width=22, editable=True,
-        )
+        if self.expert_mode:
+            # Консоли у пользователя нет: текстовые входы замаскированы, а
+            # переключение на них запрещено. Раскладка консоли остаётся
+            # осмысленной только для того, кто собирает консольную систему.
+            self.keymap_combo, row = add_choice(
+                form, row, "Раскладка консоли:", self.keymap_var,
+                ("us", "ru"), width=22, editable=True,
+            )
         self.x11_layouts_var = tk.StringVar(value=loc.x11_layouts)
         _, row = add_field(
             form, row, "Раскладки рабочего стола:", self.x11_layouts_var,
@@ -212,11 +284,12 @@ class ConfigWizardFrame(WizardFrame):
             width=22,
         )
         self.kernel_params_var = tk.StringVar(value=self.config.boot.kernel_parameters)
-        _, row = add_field(
-            form, row, "Параметры ядра:", self.kernel_params_var,
-            hint="добавляются к тем, что задаёт программа; nomodeset отключает KMS — сеанс не запустится",
-            width=36,
-        )
+        if self.expert_mode:
+            _, row = add_field(
+                form, row, "Параметры ядра:", self.kernel_params_var,
+                hint="добавляются к тем, что задаёт программа; nomodeset отключает KMS — сеанс не запустится",
+                width=36,
+            )
         self.timezone_var = tk.StringVar(value=loc.timezone)
         self.timezone_combo, row = add_choice(
             form, row, "Часовой пояс:", self.timezone_var,
@@ -260,19 +333,26 @@ class ConfigWizardFrame(WizardFrame):
 
     def _on_target_os_changed(self) -> None:
         target_os = self.target_os_var.get()
-        self.os_description_var.set(OS_DESCRIPTIONS.get(target_os, ""))
+        self.os_description_var.set(_os_description(target_os))
         # The release list belongs to the chosen OS: leaving Debian suite names
         # on offer after picking RedOS would invite exactly the mistake the list
         # exists to prevent.
-        releases = KNOWN_RELEASES.get(target_os, ())
+        releases = _releases_of(target_os)
         self.release_combo.configure(values=list(releases))
         # Only replace release/mirror if they still hold another OS's default
         # (or are empty) -- never clobber something the user already typed.
-        known_defaults = {r for group in KNOWN_RELEASES.values() for r in group}
+        distributions = _distributions()
+        known_defaults = {r for cls in distributions.values() for r in cls.RELEASES}
         if self.release_var.get() in ("", *known_defaults):
-            self.release_var.set(DEFAULT_RELEASE.get(target_os, ""))
-        if self.mirror_var.get() in ("", *DEFAULT_MIRROR.values()):
-            self.mirror_var.set(DEFAULT_MIRROR.get(target_os, ""))
+            self.release_var.set(_default_release(target_os))
+        known_mirrors = {cls().default_mirror() for cls in distributions.values()}
+        known_mirrors |= {
+            cls().default_mirror(release)
+            for cls in distributions.values()
+            for release in cls.RELEASES
+        }
+        if self.mirror_var.get() in ("", *known_mirrors):
+            self.mirror_var.set(_default_mirror(target_os, self.release_var.get()))
 
     def _save_step_basics(self) -> None:
         self.config.name = self.name_var.get().strip()
@@ -313,12 +393,29 @@ class ConfigWizardFrame(WizardFrame):
             hint="строчные латинские буквы/цифры/подчёркивание/дефис, не начинается с цифры",
         )
         self.full_name_var = tk.StringVar(value=account.full_name)
-        _, row = add_field(form, 2, "Полное имя (необязательно):", self.full_name_var)
         self.shell_var = tk.StringVar(value=account.shell)
-        _, row = add_field(form, row, "Оболочка входа:", self.shell_var)
         self.min_password_var = tk.StringVar(value=str(account.min_password_length))
-        _, row = add_field(form, row, "Мин. длина пароля пользователя:", self.min_password_var, width=6)
         self.sudo_var = tk.BooleanVar(value=account.sudo)
+        if not self.expert_mode:
+            # В упрощённом режиме учётная запись -- это только её имя.
+            #
+            # Пароль ей всё равно заперт (вход автоматический), оболочка не
+            # используется -- текстовые входы замаскированы, -- а полное имя
+            # никто не увидит. Права администратора в минимальной защищённой
+            # системе не выдаются вовсе: это ровно та дверь, ради закрытия
+            # которой всё и строится.
+            ttk.Label(
+                form,
+                text="Пароль этой записи заперт, вход в сеанс автоматический, "
+                "прав администратора у неё нет.",
+                style="Hint.TLabel",
+                wraplength=theme.TEXT_WRAP,
+                justify="left",
+            ).grid(row=2, column=1, sticky="w", pady=(theme.SPACE_SM, 0))
+            return
+        _, row = add_field(form, 2, "Полное имя (необязательно):", self.full_name_var)
+        _, row = add_field(form, row, "Оболочка входа:", self.shell_var)
+        _, row = add_field(form, row, "Мин. длина пароля пользователя:", self.min_password_var, width=6)
         ttk.Checkbutton(form, text="Разрешить администрирование (sudo)", variable=self.sudo_var).grid(
             row=row, column=1, sticky="w", pady=4
         )
@@ -353,70 +450,91 @@ class ConfigWizardFrame(WizardFrame):
         disk = self.config.disk
         luks = self.config.luks
         self.esp_mb_var = tk.StringVar(value=str(disk.esp_partition_mb))
-        _, row = add_field(
-            form, 0, "EFI-раздел (МБ):", self.esp_mb_var, hint="не менее 128 МБ; сюда ставится загрузчик", width=10
-        )
         self.boot_mb_var = tk.StringVar(value=str(disk.boot_partition_mb))
-        _, row = add_field(
-            form,
-            row,
-            "Раздел /boot (МБ):",
-            self.boot_mb_var,
-            hint="не менее 512 МБ; незашифрованный, хранит ядро и initramfs",
-            width=10,
-        )
         self.log_mb_var = tk.StringVar(value=str(disk.log_partition_mb))
-        _, row = add_field(form, row, "Раздел логов (МБ):", self.log_mb_var, hint="не менее 64 МБ", width=10)
+        row = 0
+        if self.expert_mode:
+            # Размеры служебных разделов -- решение, которое программа уже
+            # приняла и обосновала: загрузчику хватает 512 МБ, ядру с initramfs
+            # -- гигабайта, журналам -- 512 МБ. Менять их осмысленно разве что
+            # под очень маленький носитель, и тогда это делает тот, кто знает
+            # зачем.
+            _, row = add_field(
+                form, 0, "EFI-раздел (МБ):", self.esp_mb_var,
+                hint="не менее 128 МБ; сюда ставится загрузчик", width=10,
+            )
+            _, row = add_field(
+                form,
+                row,
+                "Раздел /boot (МБ):",
+                self.boot_mb_var,
+                hint="не менее 512 МБ; незашифрованный, хранит ядро и initramfs",
+                width=10,
+            )
+            _, row = add_field(
+                form, row, "Раздел логов (МБ):", self.log_mb_var, hint="не менее 64 МБ", width=10
+            )
         self.exchange_mb_var = tk.StringVar(value=str(disk.exchange_partition_mb))
         _, row = add_field(
-            form, row, "Раздел обмена (МБ):", self.exchange_mb_var, hint="не менее 64 МБ", width=10
-        )
-        ttk.Separator(form, orient="horizontal").grid(row=row, column=0, columnspan=2, sticky="ew", pady=8)
-        row += 1
-        self.cipher_var = tk.StringVar(value=luks.cipher)
-        self.cipher_combo, row = add_choice(
-            form,
-            row,
-            "Шифр LUKS:",
-            self.cipher_var,
-            LUKS_CIPHERS.keys(),
-            hint="aes-xts-plain64 — то, что используют штатные установщики Debian и RHEL",
-            width=24,
-            on_change=self._on_cipher_changed,
-        )
-        self.key_size_var = tk.StringVar(value=str(luks.key_size_bits))
-        self.key_size_combo, row = add_choice(
-            form,
-            row,
-            "Размер ключа (бит):",
-            self.key_size_var,
-            [str(s) for s in LUKS_CIPHERS.get(luks.cipher, (512, 256))],
-            hint=(
-                "Список зависит от выбранного шифра — другие значения cryptsetup не примет. "
-                "В режиме XTS ключ делится пополам, поэтому 512 бит — это AES-256, "
-                "самый стойкий вариант AES; более длинного ключа для AES не существует. "
-                "Стойкость к подбору пароля задаётся не этим полем, а функцией ниже."
-            ),
+            form, row, "Раздел обмена (МБ):", self.exchange_mb_var,
+            hint="через него администратор передаёт пользователю файлы и настройки "
+            "доустановленных программ; не менее 64 МБ",
             width=10,
-            editable=True,
         )
+        self.cipher_var = tk.StringVar(value=luks.cipher)
+        self.key_size_var = tk.StringVar(value=str(luks.key_size_bits))
         self.kdf_var = tk.StringVar(value=luks.kdf)
-        self.kdf_combo, row = add_choice(
-            form,
-            row,
-            "Формирование ключа:",
-            self.kdf_var,
-            LUKS_KDFS,
-            hint=(
-                "argon2id требует много памяти на каждую попытку и потому резко удорожает "
-                "перебор пароля; pbkdf2 слабее и нужен только для совместимости"
-            ),
-            width=12,
-        )
         self.attempts_var = tk.StringVar(value=str(luks.failed_attempts_limit))
-        _, row = add_field(
-            form, row, "Лимит попыток пароля:", self.attempts_var, hint="от 1 до 10", width=6
-        )
+        if self.expert_mode:
+            # Шифр, длина ключа и функция формирования ключа -- то, за что
+            # отвечает программа. Умолчания (aes-xts-plain64, 512 бит,
+            # argon2id) -- это то, что ставят штатные установщики Debian и
+            # RHEL, и менять их без причины значит только ослаблять носитель.
+            ttk.Separator(form, orient="horizontal").grid(
+                row=row, column=0, columnspan=2, sticky="ew", pady=8
+            )
+            row += 1
+            self.cipher_combo, row = add_choice(
+                form,
+                row,
+                "Шифр LUKS:",
+                self.cipher_var,
+                LUKS_CIPHERS.keys(),
+                hint="aes-xts-plain64 — то, что используют штатные установщики Debian и RHEL",
+                width=24,
+                on_change=self._on_cipher_changed,
+            )
+            self.key_size_combo, row = add_choice(
+                form,
+                row,
+                "Размер ключа (бит):",
+                self.key_size_var,
+                [str(size) for size in LUKS_CIPHERS.get(luks.cipher, (512, 256))],
+                hint=(
+                    "Список зависит от выбранного шифра — другие значения cryptsetup не примет. "
+                    "В режиме XTS ключ делится пополам, поэтому 512 бит — это AES-256, "
+                    "самый стойкий вариант AES; более длинного ключа для AES не существует. "
+                    "Стойкость к подбору пароля задаётся не этим полем, а функцией ниже."
+                ),
+                width=10,
+                editable=True,
+            )
+            self.kdf_combo, row = add_choice(
+                form,
+                row,
+                "Формирование ключа:",
+                self.kdf_var,
+                LUKS_KDFS,
+                hint=(
+                    "argon2id требует много памяти на каждую попытку и потому резко удорожает "
+                    "перебор пароля; pbkdf2 слабее и нужен только для совместимости"
+                ),
+                width=12,
+            )
+            _, row = add_field(
+                form, row, "Лимит попыток пароля:", self.attempts_var,
+                hint="от 1 до 10", width=6,
+            )
         self.binding_slots_var = tk.StringVar(value=str(self.config.machine_binding.slots))
         add_field(
             form,
@@ -732,28 +850,37 @@ class ConfigWizardFrame(WizardFrame):
         """
         kiosk = self.config.kiosk
 
-        mode = ttk.LabelFrame(body, text="Режим работы установленной системы", padding=theme.SPACE_SM)
-        mode.pack(fill="x", pady=(0, theme.SPACE_MD))
         self.profile_var = tk.StringVar(value=self.config.profile)
-        ttk.Radiobutton(
-            mode,
-            text="Консольная система — текстовый вход, без графики (как было раньше)",
-            value="console",
-            variable=self.profile_var,
-            command=self._on_profile_changed,
-        ).pack(anchor="w", pady=(theme.SPACE_XS, 0))
-        ttk.Radiobutton(
-            mode,
-            text="Режим киоска — урезанный рабочий стол только с разрешёнными приложениями",
-            value="kiosk",
-            variable=self.profile_var,
-            command=self._on_profile_changed,
-        ).pack(anchor="w", pady=(0, theme.SPACE_XS))
+        if self.expert_mode:
+            mode = ttk.LabelFrame(
+                body, text="Режим работы установленной системы", padding=theme.SPACE_SM
+            )
+            mode.pack(fill="x", pady=(0, theme.SPACE_MD))
+            ttk.Radiobutton(
+                mode,
+                text="Консольная система — текстовый вход, без графики (как было раньше)",
+                value="console",
+                variable=self.profile_var,
+                command=self._on_profile_changed,
+            ).pack(anchor="w", pady=(theme.SPACE_XS, 0))
+            ttk.Radiobutton(
+                mode,
+                text="Режим киоска — урезанный рабочий стол только с разрешёнными приложениями",
+                value="kiosk",
+                variable=self.profile_var,
+                command=self._on_profile_changed,
+            ).pack(anchor="w", pady=(0, theme.SPACE_XS))
+        else:
+            # Упрощённый режим строит киоск и только киоск: минимальная
+            # защищённая система -- это то, ради чего программа существует, а
+            # консольная сборка осталась от её прошлой жизни и нужна тому, кто
+            # придёт за ней сознательно.
+            self.profile_var.set("kiosk")
 
         backend_supported = self.config.target_os in ("debian", "redos")
         if not backend_supported:
             ttk.Label(
-                mode,
+                body,
                 text=f"Режим киоска недоступен для {self.config.target_os}: "
                 "реализован и проверен только для debian и redos.",
                 style="Warning.TLabel",
@@ -786,23 +913,30 @@ class ConfigWizardFrame(WizardFrame):
         ).pack(anchor="w", pady=(0, theme.SPACE_SM))
 
         self.session_var = tk.StringVar(value=kiosk.session_type or "x11")
-        session_row = ttk.Frame(inner)
-        session_row.pack(fill="x")
-        ttk.Label(session_row, text="Графический протокол:").pack(
-            side="left", padx=(0, theme.SPACE_MD)
-        )
-        ttk.Radiobutton(session_row, text="X11", value="x11", variable=self.session_var).pack(
-            side="left"
-        )
-        ttk.Radiobutton(
-            session_row, text="Wayland (только KDE)", value="wayland", variable=self.session_var
-        ).pack(side="left", padx=(theme.SPACE_MD, 0))
-        ttk.Label(
-            inner,
-            text="В образе РЕД ОС Wayland-сеанса Plasma нет — только X11.",
-            style="Hint.TLabel",
-            wraplength=theme.TEXT_WRAP,
-        ).pack(anchor="w", pady=(0, theme.SPACE_SM))
+        if self.expert_mode:
+            # X11 -- то, на чём проверены все четыре комбинации; Wayland есть
+            # только у Plasma и только в Debian. Выбор осмысленный, но не для
+            # того, кто собирает обычный носитель.
+            session_row = ttk.Frame(inner)
+            session_row.pack(fill="x")
+            ttk.Label(session_row, text="Графический протокол:").pack(
+                side="left", padx=(0, theme.SPACE_MD)
+            )
+            ttk.Radiobutton(
+                session_row, text="X11", value="x11", variable=self.session_var
+            ).pack(side="left")
+            ttk.Radiobutton(
+                session_row,
+                text="Wayland (только KDE)",
+                value="wayland",
+                variable=self.session_var,
+            ).pack(side="left", padx=(theme.SPACE_MD, 0))
+            ttk.Label(
+                inner,
+                text="В образе РЕД ОС Wayland-сеанса Plasma нет — только X11.",
+                style="Hint.TLabel",
+                wraplength=theme.TEXT_WRAP,
+            ).pack(anchor="w", pady=(0, theme.SPACE_SM))
 
         ttk.Label(
             inner,
@@ -834,12 +968,20 @@ class ConfigWizardFrame(WizardFrame):
         options = ttk.Frame(inner)
         options.pack(fill="x", pady=(theme.SPACE_SM, 0))
         self.autostart_var = tk.StringVar(value=kiosk.autostart_app)
-        add_field(options, 0, "Запускать при входе:", self.autostart_var, width=26,
-                  hint="Необязательно. Имя запускателя, который не снят выше.")
         self.blank_var = tk.StringVar(value=str(kiosk.screen_blank_minutes))
+        self.allow_media_var = tk.BooleanVar(value=kiosk.allow_removable_media)
+        self.firejail_var = tk.BooleanVar(value=kiosk.firejail)
+        self.firejail_opts_var = tk.StringVar(value=kiosk.firejail_options)
+        blank_row = 0
+        if self.expert_mode:
+            add_field(
+                options, 0, "Запускать при входе:", self.autostart_var, width=26,
+                hint="Необязательно. Имя запускателя, который не снят выше.",
+            )
+            blank_row = 2
         add_field(
             options,
-            2,
+            blank_row,
             "Гасить экран через, мин:",
             self.blank_var,
             width=8,
@@ -853,59 +995,62 @@ class ConfigWizardFrame(WizardFrame):
             text="Разрешить выключение и перезагрузку машины",
             variable=self.allow_shutdown_var,
         ).pack(anchor="w", pady=(theme.SPACE_SM, 0))
-        self.allow_media_var = tk.BooleanVar(value=kiosk.allow_removable_media)
-        ttk.Checkbutton(
-            inner,
-            text="Разрешить подключение съёмных носителей",
-            variable=self.allow_media_var,
-        ).pack(anchor="w")
-        self.firejail_var = tk.BooleanVar(value=kiosk.firejail)
-        ttk.Checkbutton(
-            inner,
-            text="Запускать приложения в песочнице firejail, если она есть в образе",
-            variable=self.firejail_var,
-        ).pack(anchor="w")
-        # Directly under the checkbox it belongs to. In the grid above it sat
-        # three rows away from its own switch.
-        firejail_row = ttk.Frame(inner)
-        firejail_row.pack(fill="x", padx=(theme.SPACE_LG, 0))
-        self.firejail_opts_var = tk.StringVar(value=kiosk.firejail_options)
-        add_field(firejail_row, 0, "Параметры firejail:", self.firejail_opts_var, width=26)
+        if self.expert_mode:
+            # Съёмные носители закрыты в минимальной системе намеренно:
+            # принесённая флешка обходит раздел обмена с его `noexec`.
+            # Открывать эту дверь -- решение, а не настройка по умолчанию.
+            ttk.Checkbutton(
+                inner,
+                text="Разрешить подключение съёмных носителей",
+                variable=self.allow_media_var,
+            ).pack(anchor="w")
+            ttk.Checkbutton(
+                inner,
+                text="Запускать приложения в песочнице firejail, если она есть в образе",
+                variable=self.firejail_var,
+            ).pack(anchor="w")
+            firejail_row = ttk.Frame(inner)
+            firejail_row.pack(fill="x", padx=(theme.SPACE_LG, 0))
+            add_field(firejail_row, 0, "Параметры firejail:", self.firejail_opts_var, width=26)
 
-        updates = ttk.LabelFrame(body, text="Автоматические обновления", padding=theme.SPACE_SM)
-        updates.pack(fill="x")
         settings = self.config.auto_update
         self.update_enabled_var = tk.BooleanVar(value=settings.enabled)
-        ttk.Checkbutton(
-            updates,
-            text="Обновлять систему при каждой загрузке носителя",
-            variable=self.update_enabled_var,
-        ).pack(anchor="w")
-        ttk.Label(
-            updates,
-            text="Обновления берутся из репозитория, указанного на шаге 1. Без него "
-            "обновляться неоткуда: установочный образ на носителе недоступен.",
-            style="Hint.TLabel",
-            wraplength=theme.TEXT_WRAP,
-        ).pack(anchor="w", padx=(theme.SPACE_LG, 0))
         self.update_kernel_var = tk.BooleanVar(value=settings.include_kernel)
-        ttk.Checkbutton(
-            updates,
-            text="Обновлять ядро и загрузчик",
-            variable=self.update_kernel_var,
-        ).pack(anchor="w", pady=(theme.SPACE_XS, 0))
-        update_opts = ttk.Frame(updates)
-        update_opts.pack(anchor="w", pady=(theme.SPACE_XS, 0))
         self.update_delay_var = tk.StringVar(value=str(settings.delay_minutes))
-        add_field(
-            update_opts,
-            0,
-            "Начинать через, мин:",
-            self.update_delay_var,
-            width=8,
-            hint="Пауза после загрузки, чтобы обновление не соперничало с рабочим столом "
-            "за ту же флешку.",
-        )
+        if self.expert_mode:
+            # Обновление на носителе -- отдельное решение со своей ценой:
+            # оно требует сети, времени на загрузке и рабочего репозитория.
+            # В минимальной системе выключено.
+            updates = ttk.LabelFrame(body, text="Автоматические обновления", padding=theme.SPACE_SM)
+            updates.pack(fill="x")
+            ttk.Checkbutton(
+                updates,
+                text="Обновлять систему при каждой загрузке носителя",
+                variable=self.update_enabled_var,
+            ).pack(anchor="w")
+            ttk.Label(
+                updates,
+                text="Обновления берутся из репозитория, указанного на шаге 1. Без него "
+                "обновляться неоткуда: установочный образ на носителе недоступен.",
+                style="Hint.TLabel",
+                wraplength=theme.TEXT_WRAP,
+            ).pack(anchor="w", padx=(theme.SPACE_LG, 0))
+            ttk.Checkbutton(
+                updates,
+                text="Обновлять ядро и загрузчик",
+                variable=self.update_kernel_var,
+            ).pack(anchor="w", pady=(theme.SPACE_XS, 0))
+            update_opts = ttk.Frame(updates)
+            update_opts.pack(anchor="w", pady=(theme.SPACE_XS, 0))
+            add_field(
+                update_opts,
+                0,
+                "Начинать через, мин:",
+                self.update_delay_var,
+                width=8,
+                hint="Пауза после загрузки, чтобы обновление не соперничало с рабочим столом "
+                "за ту же флешку.",
+            )
 
         self._on_profile_changed()
 
@@ -1148,6 +1293,12 @@ class ConfigWizardFrame(WizardFrame):
         return True
 
     # -- step 5: review + edit + save --------------------------------------
+    def _validation_status_text(self) -> str:
+        return {
+            "valid": "Конфигурация проверена: ошибок нет.",
+            "invalid": "Конфигурация не прошла проверку — см. сообщение ниже.",
+        }.get(self.config.validation_status, "Конфигурация ещё не проверена.")
+
     def _build_step_review(self, body: ttk.Frame) -> None:
         """The whole configuration, editable.
 
@@ -1158,6 +1309,32 @@ class ConfigWizardFrame(WizardFrame):
         shell commands into a list box.
         """
         self._build_change_list(body)
+
+        if not self.expert_mode:
+            # Текст конфигурации в упрощённом режиме не показывается, и это не
+            # утаивание, а ответ на вопрос «что я собрал»: список изменений
+            # выше отвечает на него по-русски, а шестьдесят полей JSON --
+            # только тому, кто и так знает, что ищет. Ничего не теряется:
+            # переключатель наверху открывает и редактор, и всё прочее.
+            ttk.Label(
+                body,
+                text="Остальное — размеры разделов, шифрование, обновления, удалённый "
+                "доступ — программа задала сама. Экспертный режим наверху показывает "
+                "и их, и текст конфигурации целиком.",
+                style="Hint.TLabel",
+                wraplength=theme.TEXT_WRAP,
+                justify="left",
+            ).pack(anchor="w", pady=(theme.SPACE_MD, theme.SPACE_SM))
+            buttons = ttk.Frame(body)
+            buttons.pack(anchor="w")
+            ttk.Button(
+                buttons, text="Проверить конфигурацию", command=self._run_validation
+            ).pack(side="left")
+            self.validation_var = tk.StringVar(value=self._validation_status_text())
+            ttk.Label(
+                body, textvariable=self.validation_var, style="Hint.TLabel"
+            ).pack(anchor="w", pady=(theme.SPACE_SM, 0))
+            return
 
         ttk.Label(
             body,
@@ -1273,7 +1450,7 @@ class ConfigWizardFrame(WizardFrame):
         # through.
         self.config.validation_status = "unchecked"
         self.config.validation_errors = []
-        self.validation_status_var.set("Статус проверки: не проверена (после правки)")
+        self._set_validation_status("Статус проверки: не проверена (после правки)")
         self.message_bar.success("Правки применены. Нажмите «Проверить конфигурацию».")
 
     def _has_unapplied_edits(self) -> bool:
@@ -1291,6 +1468,18 @@ class ConfigWizardFrame(WizardFrame):
         self.config_text.insert("1.0", self._config_as_text())
         self.message_bar.info("Текст возвращён к сохранённому состоянию.")
 
+    def _set_validation_status(self, text: str) -> None:
+        """Пишет вердикт туда, где он показан в текущем режиме.
+
+        В экспертном это строка под редактором, в упрощённом -- строка под
+        кнопкой; общий метод избавляет от `if` в каждом месте вызова и от
+        падения, когда переменной другого режима просто нет.
+        """
+        for name in ("validation_status_var", "validation_var"):
+            variable = getattr(self, name, None)
+            if variable is not None:
+                variable.set(text)
+
     def _run_validation(self) -> None:
         try:
             self.app.config_manager.validate(self.config)
@@ -1302,7 +1491,7 @@ class ConfigWizardFrame(WizardFrame):
         # would overstate what was verified.
         note = getattr(self.app.config_manager, "native_validation_note", "")
         if self.config.validation_status == "valid":
-            self.validation_status_var.set(
+            self._set_validation_status(
                 "Статус проверки: корректна" + (f"\n{note}" if note else "")
             )
             if note:
@@ -1313,52 +1502,24 @@ class ConfigWizardFrame(WizardFrame):
                     "средство проверки дистрибутива."
                 )
         else:
-            self.validation_status_var.set("Статус проверки: содержит ошибки: " + "; ".join(self.config.validation_errors))
+            self._set_validation_status("Статус проверки: содержит ошибки: " + "; ".join(self.config.validation_errors))
             self.message_bar.error("Конфигурация содержит ошибки, см. выше.")
 
     def _save_step_review(self) -> None:
         return
 
     # -- WizardFrame hooks ------------------------------------------------
-    _STEP_BUILDERS = [
-        _build_step_basics,
-        _build_step_account,
-        _build_step_disk,
-        _build_step_remote,
-        _build_step_packages,
-        _build_step_profile,
-        _build_step_review,
-    ]
-    _STEP_SAVERS = [
-        _save_step_basics,
-        _save_step_account,
-        _save_step_disk,
-        _save_step_remote,
-        _save_step_packages,
-        _save_step_profile,
-        _save_step_review,
-    ]
-    _STEP_VALIDATORS = [
-        _validate_step_basics,
-        _validate_step_account,
-        _validate_step_disk,
-        _validate_step_remote,
-        None,
-        _validate_step_profile,
-        None,
-    ]
-
     def build_step(self, index: int, body: ttk.Frame) -> None:
-        self._STEP_BUILDERS[index](self, body)
+        getattr(self, f"_build_step_{self.step_keys[index]}")(body)
 
     def save_step(self, index: int) -> None:
-        self._STEP_SAVERS[index](self)
+        saver = getattr(self, f"_save_step_{self.step_keys[index]}", None)
+        if saver is not None:
+            saver()
 
     def validate_step(self, index: int) -> bool:
-        validator = self._STEP_VALIDATORS[index]
-        if validator is None:
-            return True
-        return validator(self)
+        validator = getattr(self, f"_validate_step_{self.step_keys[index]}", None)
+        return True if validator is None else validator()
 
     def on_finish(self) -> None:
         # Text typed into the editor but never applied would otherwise be

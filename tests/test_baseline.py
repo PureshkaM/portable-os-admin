@@ -118,3 +118,47 @@ def test_a_field_with_no_label_still_appears():
 
     assert changes == [("brand_new_field", "1", "2")]
     assert "brand_new_field" not in FIELD_LABELS
+
+def test_a_configuration_written_by_the_previous_version_still_opens():
+    """Конфигурации живут дольше кода, и правка схемы не должна их хоронить.
+
+    Проверено 02.09.2026 живым приложением: после переименования одного поля
+    список конфигураций упал с `TypeError: unexpected keyword argument
+    'allowed_apps'`, и экран остался пустым -- у администратора при этом лежало
+    рядом пять готовых файлов.
+    """
+    old = InstallConfig.create_baseline("stick", "debian").to_dict()
+    old["kiosk"]["allowed_apps"] = ["mate-calc", "atril"]
+    old["packages"] = []
+
+    config = InstallConfig.from_dict(old)
+
+    # Имена не выбрасываются: администратор перечислял приложения, которые
+    # хотел дать пользователю, и теперь это ровно то, что ставится пакетами.
+    assert config.packages == ["mate-calc", "atril"]
+    # И конфигурация помечена непроверенной: она изменилась, подтверждать её
+    # надо заново.
+    assert config.validation_status == "unchecked"
+
+
+def test_a_configuration_from_a_newer_version_opens_too():
+    """Незнакомый ключ -- повод не понять его, а не повод не открыться."""
+    data = InstallConfig.create_baseline("stick", "debian").to_dict()
+    data["ещё_не_придумано"] = {"какое-то": "значение"}
+    data["kiosk"]["будущий_ключ"] = True
+
+    config = InstallConfig.from_dict(data)
+
+    assert config.name == "stick"
+    assert config.kiosk.enabled is True
+
+
+def test_migration_does_not_overwrite_packages_that_are_already_there():
+    """Если пакеты заданы, старое поле не должно их подменять."""
+    old = InstallConfig.create_baseline("stick", "debian").to_dict()
+    old["kiosk"]["allowed_apps"] = ["atril"]
+    old["packages"] = ["mate-calc"]
+
+    config = InstallConfig.from_dict(old)
+
+    assert config.packages == ["mate-calc"]

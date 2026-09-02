@@ -25,7 +25,7 @@ from .schema import (
     SUPPORTED_ARCH,
     SUPPORTED_DESKTOPS,
     SUPPORTED_SESSION_TYPES,
-    SUPPORTED_TARGET_OS,
+    supported_target_os,
     InstallConfig,
 )
 
@@ -77,10 +77,10 @@ class BuiltinConfigValidator:
     def validate(self, config: InstallConfig) -> ValidationResult:
         errors: list[str] = []
 
-        if config.target_os not in SUPPORTED_TARGET_OS:
+        if config.target_os not in supported_target_os():
             errors.append(
                 f"неподдерживаемая целевая ОС: {config.target_os!r} "
-                f"(ожидается одно из {SUPPORTED_TARGET_OS})"
+                f"(ожидается одно из {supported_target_os()})"
             )
 
         if not config.release:

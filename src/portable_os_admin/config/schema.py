@@ -6,9 +6,18 @@ boot/recovery attempt limit.
 """
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 
-SUPPORTED_TARGET_OS = ("debian", "redos")
+def supported_target_os() -> "tuple[str, ...]":
+    """Семейства, которые программа умеет ставить, -- по реестру бэкендов.
+
+    Список выводится, а не записывается: добавить дистрибутив должно быть
+    можно одним классом бэкенда, не разыскивая по коду места, где семейства
+    перечислены ещё раз. Импорт локальный -- бэкенды сами читают схему.
+    """
+    from ..install.backends import BACKENDS
+
+    return tuple(BACKENDS)
 #: Accepted values for InstallConfig.arch. Both spellings of each architecture
 #: are allowed because the two families name them differently (Debian says
 #: amd64/arm64, RHEL says x86_64/aarch64) and users copy whichever they saw.
@@ -158,13 +167,21 @@ LUKS_CIPHERS = {
 #: that cannot read argon2 headers (notably GRUB's cryptodisk).
 LUKS_KDFS = ("argon2id", "argon2i", "pbkdf2")
 
-#: Distribution releases each backend can install, newest first. Kept here so
-#: the UI can offer a list instead of asking an administrator to recall a suite
-#: name, and so a typo becomes a validation error rather than a failed install.
-KNOWN_RELEASES = {
-    "debian": ("trixie", "bookworm", "bullseye"),
-    "redos": ("8.0", "7.3"),
-}
+def known_releases() -> "dict[str, tuple[str, ...]]":
+    """Выпуски, которые умеет ставить каждое семейство, новейший первым.
+
+    Ответ даёт сам бэкенд, а не таблица рядом со схемой: про свои выпуски
+    знает он. До 02.09.2026 то же самое было записано здесь и ещё раз в
+    мастере конфигурации, и добавление третьего семейства означало правку в
+    трёх местах, из которых интерфейс -- самое неожиданное.
+    """
+    from ..install.backends import BACKENDS
+
+    return {name: cls.RELEASES for name, cls in BACKENDS.items() if cls.RELEASES}
+
+
+def _known_releases_of(target_os: str) -> "tuple[str, ...]":
+    return known_releases().get(target_os, ())
 
 
 #: Profiles the installed system can be built as. "console" is what this
@@ -548,6 +565,61 @@ class RemoteAccessConfig:
     params: dict = field(default_factory=dict)
 
 
+def _migrated(data: dict) -> dict:
+    """Приводит конфигурацию, написанную прежней версией, к нынешним полям.
+
+    Конфигурации живут дольше кода: у администратора их несколько, они лежат
+    файлами рядом с контейнером, и правка схемы не должна означать, что
+    вчерашняя работа перестала открываться. Проверено 02.09.2026 -- ровно это и
+    случилось: после переименования одного поля список конфигураций упал с
+    `TypeError: unexpected keyword argument 'allowed_apps'`, и экран остался
+    пустым.
+
+    Здесь же -- терпимость к незнакомым ключам вообще. Конфигурация, созданная
+    более новой версией программы, должна открываться в старой хотя бы тем, что
+    в ней понятно; падать на первом же неизвестном имени -- худший из способов
+    сообщить о разнице версий.
+    """
+    kiosk = dict(data.get("kiosk") or {})
+
+    # `allowed_apps` -> `packages`. Смысл поля изменился 02.09.2026: доступное
+    # пользователю больше не перечисляется, а выводится из установленных
+    # пакетов. Имена оттуда -- лучшее, что известно о намерениях
+    # администратора: он перечислял приложения, которые хотел дать. Переносим
+    # их в пакеты, если пакеты не заданы, и сбрасываем отметку проверки --
+    # конфигурация изменилась, и подтверждать её надо заново.
+    legacy_apps = kiosk.pop("allowed_apps", None)
+    if legacy_apps and not data.get("packages"):
+        data["packages"] = list(legacy_apps)
+        data["validation_status"] = "unchecked"
+        data["validation_errors"] = []
+
+    known_kiosk = {f.name for f in fields(KioskConfig)}
+    data["kiosk"] = {key: value for key, value in kiosk.items() if key in known_kiosk}
+
+    for section, section_cls in (
+        ("disk", DiskLayoutConfig),
+        ("luks", LuksConfig),
+        ("machine_binding", MachineBindingConfig),
+        ("account", UserAccountConfig),
+        ("remote_access", RemoteAccessConfig),
+        ("auto_update", AutoUpdateConfig),
+        ("localisation", LocalisationConfig),
+        ("boot", BootConfig),
+        ("network", NetworkConfig),
+        ("firewall", FirewallConfig),
+        ("package_sets", PackageSetsConfig),
+        ("services", ServicesConfig),
+    ):
+        values = data.get(section)
+        if isinstance(values, dict):
+            known = {f.name for f in fields(section_cls)}
+            data[section] = {key: value for key, value in values.items() if key in known}
+
+    known_top = {f.name for f in fields(InstallConfig)}
+    return {key: value for key, value in data.items() if key in known_top}
+
+
 @dataclass
 class InstallConfig:
     name: str
@@ -613,7 +685,7 @@ class InstallConfig:
 
     @classmethod
     def from_dict(cls, data: dict) -> "InstallConfig":
-        data = dict(data)
+        data = _migrated(dict(data))
         disk = DiskLayoutConfig(**data.pop("disk", {}))
         luks = LuksConfig(**data.pop("luks", {}))
         machine_binding = MachineBindingConfig(**data.pop("machine_binding", {}))
@@ -656,7 +728,10 @@ class InstallConfig:
         needs *a* configuration rely on it. What an administrator starts from
         in the interface is `create_baseline` below.
         """
-        release = {"debian": "bookworm", "redos": "8.0"}.get(target_os, "")
+        from ..install.backends import BACKENDS
+
+        backend = BACKENDS.get(target_os)
+        release = backend.DEFAULT_RELEASE if backend else ""
         return cls(name=name, target_os=target_os, release=release)
 
     @classmethod
@@ -706,6 +781,16 @@ class InstallConfig:
         config.auto_update = AutoUpdateConfig(enabled=False)
         config.packages = []
         config.system_tasks = []
+        # Зеркало -- часть минимальной конфигурации, а не поле, которое
+        # администратор обязан заполнить руками. Адрес знает семейство: у
+        # Debian он один на все выпуски, у РЕД ОС включает выпуск и
+        # архитектуру. Раньше оба адреса лежали в мастере конфигурации, и
+        # конфигурация, созданная не через мастер, оставалась без зеркала.
+        from ..install.backends import BACKENDS
+
+        backend_cls = BACKENDS.get(target_os)
+        if backend_cls is not None:
+            config.mirror = backend_cls().default_mirror(config.release, config.arch)
         return config
 
     def diff_from(self, other: "InstallConfig") -> list[tuple[str, str, str]]:

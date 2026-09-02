@@ -1307,3 +1307,69 @@ def test_a_successful_choice_takes_down_the_previous_refusal(gui_app, tmp_path):
     app.update()
 
     assert "Нужен .rpm" not in _visible_text(frame), "отказ пережил удачный выбор"
+
+def test_the_wizard_offers_two_volumes_of_questions():
+    """Упрощённый режим -- не «мастер попроще», а ответ на вопрос, от чего
+    действительно зависит судьба собираемого образа.
+
+    Программа начинает с минимальной защищённой системы и сама знает, каким
+    должен быть шифр, как разбит диск и что удалённый доступ выключен.
+    Спрашивать об этом того, кому нужен обычный киоск, значит требовать
+    решения там, где оно уже принято и обосновано.
+    """
+    from portable_os_admin.gui.screens.config_wizard import ConfigWizardFrame
+
+    expert = [key for key, _title, _hint in ConfigWizardFrame._expert_plan()]
+    assert "remote" in expert, "в экспертном режиме удалённый доступ настраивается"
+    assert expert[0] == "basics" and expert[-1] == "review"
+
+
+def test_the_simple_mode_drops_only_what_the_program_decides_itself():
+    """Шаги упрощённого режима -- подмножество экспертных, без перестановок.
+
+    NN/g советует ровно один уровень раскрытия, а не лестницу: экспертный
+    режим добавляет, но не переставляет -- иначе переключатель заставлял бы
+    заново искать то, что уже было найдено.
+    """
+    from portable_os_admin.gui.screens.config_wizard import ConfigWizardFrame
+
+    expert = [key for key, _title, _hint in ConfigWizardFrame._expert_plan()]
+
+    # step_plan() -- метод экземпляра, но зависит только от self.expert_mode,
+    # поэтому проверяется без построения окна: тесты идут и там, где нет X.
+    simple = [
+        step
+        for step in ConfigWizardFrame.step_plan(
+            type("Fake", (), {"expert_mode": False, "_expert_plan": staticmethod(
+                ConfigWizardFrame._expert_plan)})()
+        )
+    ]
+    simple_keys = [key for key, _title, _hint in simple]
+
+    assert simple_keys == [key for key in expert if key in simple_keys], "порядок шагов сохранён"
+    assert "remote" not in simple_keys, "удалённый доступ выключен по умолчанию"
+    for required in ("basics", "packages", "profile", "review"):
+        assert required in simple_keys, f"без шага {required} носитель не собрать"
+
+
+def test_the_chosen_mode_survives_a_restart(tmp_path, monkeypatch):
+    """Режим, сбрасывающийся при каждом запуске, -- не выбор, а требование."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    from portable_os_admin.gui import preferences
+
+    assert preferences.get("config_wizard_expert", False) is False
+    preferences.set_value("config_wizard_expert", True)
+    assert preferences.get("config_wizard_expert") is True
+
+
+def test_interface_preferences_survive_a_broken_file(tmp_path, monkeypatch):
+    """Испорченный файл настроек не должен мешать программе открыться."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    from portable_os_admin.gui import preferences
+
+    path = tmp_path / "portable-os-admin" / "interface.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{это не json", encoding="utf-8")
+
+    assert preferences.load() == {}
+    assert preferences.get("config_wizard_expert", False) is False

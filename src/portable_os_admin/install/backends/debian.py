@@ -23,6 +23,18 @@ class DebianInstallBackend(InstallBackend):
     #: `dpkg -L` -- тот же вопрос к менеджеру пакетов Debian: что лежит в
     #: установленном пакете.
     PACKAGE_FILES_COMMAND = ("dpkg", "-L")
+
+    TITLE = "Debian (стандартный, debootstrap)"
+    PROVENANCE = "Проверено против deb.debian.org."
+    #: Новейший первым. `trixie` -- то, на чём этот бэкенд прогонялся
+    #: полностью, от сборки до рабочего стола.
+    RELEASES = ("trixie", "bookworm", "bullseye")
+    DEFAULT_RELEASE = "trixie"
+
+    def default_mirror(self, release: str = "", arch: str = "") -> str:
+        # Один адрес на все выпуски и архитектуры: suite и arch Debian
+        # выбирает внутри репозитория сам.
+        return "https://deb.debian.org/debian"
     ssh_package = "openssh-server"
     ssh_service = "ssh"
     sudo_group = "sudo"
