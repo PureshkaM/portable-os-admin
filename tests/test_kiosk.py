@@ -1405,6 +1405,117 @@ def test_what_else_is_closed_around_caja():
 
 
 
+def test_the_panel_is_built_from_our_layout_not_the_distribution_one():
+    """Мера четвёртая, и она закрывает дверь мимо всех предыдущих.
+
+    Прогон 02.09.2026: сеанс MATE поднялся, меню оказалось пустым, значков на
+    столе не было -- а на панели стоял запускатель Caja, и щелчок по нему
+    открыл полный обзор файловой системы, с деревом «File System» и «Browse
+    Network». Запускатель панели -- собственный объект панели, а не запись
+    меню, поэтому ни NoDisplay, ни запреты lockdown его не касались.
+
+    Пришёл он из раскладки, которую РЕД ОС считает своей: умолчание ключа
+    `default-layout` там 'ventanaXP', а в ней три запускателя -- caja-browser,
+    mate-terminal и chromium-browser.
+    """
+    from portable_os_admin.install.kiosk.environments import mate
+
+    config = make_kiosk_config(allowed_apps=["mate-calc"])
+    config.kiosk.desktop_environment = "mate"
+
+    keyfile = mate.dconf_keyfile(config)
+    assert f"default-layout='{mate.PANEL_LAYOUT_NAME}'" in keyfile
+    # Незапертый ключ -- это умолчание, а не решение.
+    assert "/org/mate/panel/general/default-layout" in mate.dconf_locks(config)
+
+    files = mate.MateEnvironment().files(config)
+    layout, _mode = files[mate.PANEL_LAYOUT_PATH]
+    assert "object-type=launcher" not in layout, "на панели киоска запускателей быть не должно"
+    for forbidden in ("caja", "terminal", "chromium", "firefox"):
+        assert forbidden not in layout, f"в раскладке остался {forbidden}"
+
+
+def test_the_panel_still_shows_what_a_kiosk_needs():
+    """Убрать лишнее -- не то же самое, что убрать всё.
+
+    Панель без списка окон и часов не запрёт киоск сильнее, а работать в нём
+    станет нельзя: свёрнутое окно будет некуда вернуть.
+    """
+    from portable_os_admin.install.kiosk.environments import mate
+
+    config = make_kiosk_config(allowed_apps=["mate-calc"])
+    config.kiosk.desktop_environment = "mate"
+    layout, _mode = mate.MateEnvironment().files(config)[mate.PANEL_LAYOUT_PATH]
+
+    for applet in (
+        "WnckletFactory::WindowListApplet",
+        "WnckletFactory::ShowDesktopApplet",
+        "NotificationAreaAppletFactory::NotificationArea",
+        "ClockAppletFactory::ClockApplet",
+    ):
+        assert applet in layout, f"панель осталась без {applet}"
+
+    # И ни один объект нельзя утащить с панели или удалить.
+    assert layout.count("locked=true") >= 4
+
+
+def test_logging_out_is_offered_only_where_it_leads_somewhere():
+    """Кнопка выхода следует тому же ключу lockdown, что и сам выход.
+
+    При запрете выключения `disable-log-out` закрывает выход из сеанса, и
+    кнопка на панели осталась бы обманом: нажимается и ничего не делает.
+    """
+    from portable_os_admin.install.kiosk.environments import mate
+
+    config = make_kiosk_config(allowed_apps=["mate-calc"])
+    config.kiosk.desktop_environment = "mate"
+
+    config.kiosk.allow_shutdown = True
+    assert "action-type=logout" in mate.panel_layout(config)
+
+    config.kiosk.allow_shutdown = False
+    assert "action-type=logout" not in mate.panel_layout(config)
+
+
+def test_the_menu_is_added_only_where_the_applet_exists():
+    """Меню Brisk есть в РЕД ОС и нет в Debian -- проверяет это сама система.
+
+    Объект панели со ссылкой на отсутствующий апплет обернулся бы диалогом
+    ошибки при каждом входе. Поэтому в раскладке меню нет вовсе, а фрагмент,
+    выполняемый в собранной системе, дописывает его, если файл апплета на
+    месте.
+    """
+    from portable_os_admin.install.kiosk.environments import mate
+
+    config = make_kiosk_config(allowed_apps=["mate-calc"])
+    config.kiosk.desktop_environment = "mate"
+
+    layout, _mode = mate.MateEnvironment().files(config)[mate.PANEL_LAYOUT_PATH]
+    assert "BriskMenu" not in layout
+
+    fragment = mate.MateEnvironment().apply_fragment(config)
+    assert mate.BRISK_APPLET_FILE in fragment
+    assert "BriskMenuFactory::BriskMenu" in fragment
+    assert f"/{mate.PANEL_LAYOUT_PATH}" in fragment
+
+
+def test_the_menu_pins_no_settings_shortcut():
+    """Схема Brisk по умолчанию закрепляет Центр управления MATE.
+
+    Прогон 02.09.2026 показал кнопку «Control Center» в боковой панели меню
+    при пустом `allowed_settings` -- умолчание ключа `pinned-shortcuts` там
+    ['matecc.desktop']. Открыть его щелчком не удалось, но предлагать
+    настройки в запертом киоске не должно и меню.
+    """
+    from portable_os_admin.install.kiosk.environments import mate
+
+    config = make_kiosk_config(allowed_apps=["mate-calc"])
+    config.kiosk.desktop_environment = "mate"
+
+    assert "pinned-shortcuts=[]" in mate.dconf_keyfile(config)
+    assert "/com/solus-project/brisk-menu/pinned-shortcuts" in mate.dconf_locks(config)
+
+
 def test_the_generations_do_not_share_a_settings_tree():
     """Разделы у Plasma 5 и 6 разные, и перепутать их дорого.
 
