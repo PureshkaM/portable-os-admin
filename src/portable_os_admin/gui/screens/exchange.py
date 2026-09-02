@@ -89,7 +89,6 @@ class ExchangeFrame(ttk.Frame):
 
         back_row = ttk.Frame(self)
         back_row.pack(anchor="w", padx=16, pady=(4, 8))
-        ttk.Button(back_row, text="Назад", command=self._go_back).pack(side="left")
 
         self.message_bar = MessageBar(self)
         self.message_bar.pack(fill="x", padx=16)
@@ -101,7 +100,15 @@ class ExchangeFrame(ttk.Frame):
     # Medium selection and connection
     # ------------------------------------------------------------------
     def _refresh_media(self) -> None:
-        self._records = list(getattr(self.app.session.container, "media_records", []))
+        # `container.data.media_records`, а не `container.media_records`.
+        #
+        # Найдено 02.09.2026 сразу после того, как разделы переехали в боковую
+        # навигацию: экран журналов сообщал «в контейнере нет ни одного
+        # носителя», когда их было восемь. Записи лежат в `data`, а `getattr`
+        # с умолчанием превращал промах в пустой список -- ошибка выглядела
+        # как честный ответ, и заметить её можно было только зная, что
+        # носители есть.
+        self._records = list(self.app.session.container.data.media_records)
         self.media_box["values"] = [f"{r.media_id} — {r.label} ({r.config_name})" for r in self._records]
         if self._records and not self.media_var.get():
             self.media_box.current(0)

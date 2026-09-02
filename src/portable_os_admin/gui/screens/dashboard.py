@@ -2,9 +2,8 @@
 from __future__ import annotations
 
 import tkinter as tk
-from tkinter import messagebox, ttk
+from tkinter import ttk
 
-from ...install import leftovers
 from .. import theme
 from ..widgets import MessageBar
 
@@ -19,32 +18,22 @@ class DashboardFrame(ttk.Frame):
         self.message_bar = MessageBar(self)
         self.message_bar.pack(side="bottom", fill="x", padx=theme.SPACE_LG, pady=(0, theme.SPACE_MD))
 
-        # Два ряда, а не один. В один ряд кнопки перестали помещаться, когда их
-        # стало семь: «Восстановление» обрезалось по краю окна, «Состояние» не
-        # было видно вовсе, а прижатая вправо «Закрыть сеанс» наезжала на них.
-        # Тот же дефект уже правили однажды; лечить его шириной окна нельзя —
-        # окно меняет размер пользователь.
-        secondary = ttk.Frame(self, style="Window.TFrame")
-        secondary.pack(side="bottom", fill="x", padx=theme.SPACE_LG, pady=(theme.SPACE_SM, 0))
-
+        # Ряд действий, и только действий.
+        #
+        # Разделы («Журналы», «Обмен», «Восстановление», «Обслуживание») ушли
+        # в боковую навигацию: кнопка отвечает на вопрос «что сделать», раздел
+        # -- на вопрос «где я», и в одном ряду они не отвечали ни на один. Тот
+        # ряд к тому же дважды не помещался в окно.
         actions = ttk.Frame(self, style="Window.TFrame")
         actions.pack(side="bottom", fill="x", padx=theme.SPACE_LG, pady=(theme.SPACE_MD, 0))
-        # Packed before the left-hand buttons on purpose: Tk's packer serves
-        # whoever asks first, so a right-aligned widget added last gets only
-        # what the others left over -- which on this row meant it was clipped
-        # by the window edge.
-        ttk.Button(
-            actions, text="Закрыть сеанс", style="Quiet.TButton", command=self.app.close_session
-        ).pack(side="right")
 
-        # Installing is what this application is for; everything else supports
-        # it. One accented button says so without a word of explanation.
+        # Установка -- то, ради чего программу открывают; одна акцентная
+        # кнопка говорит об этом без единого слова пояснения.
         ttk.Button(
             actions, text="Установка ОС", style="Accent.TButton", command=self._open_install
         ).pack(side="left")
-        # Верхний ряд — то, ради чего программу открывают: разовая установка и
-        # две половины разделённой. Порядок повторяет порядок работы: сначала
-        # собрать дистрибутив, потом разворачивать его на носители.
+        # Порядок повторяет порядок работы: сначала собрать дистрибутив, потом
+        # разворачивать его на носители -- по одному или тиражом.
         for text, command in (
             ("Собрать дистрибутив", self._open_build),
             ("Развернуть дистрибутив", self._open_deploy),
@@ -52,27 +41,15 @@ class DashboardFrame(ttk.Frame):
             ttk.Button(actions, text=text, command=command).pack(
                 side="left", padx=(theme.SPACE_SM, 0)
             )
-        for text, command in (
-            ("Конфигурации", self._open_configs),
-            ("Журналы", self._open_logs),
-            ("Обмен", self._open_exchange),
-            ("Восстановление", self._open_recovery),
-            ("Состояние", self._check_leftovers),
-            # «Пароль», а не «Пароль контейнера»: в ряду из шести кнопок
-            # длинная подпись не помещается в окно минимальной ширины, и это
-            # тот же дефект, который здесь правили дважды. Другого пароля на
-            # этом экране нет, так что короткое имя ничего не теряет.
-            ("Пароль", self._open_password),
-        ):
-            ttk.Button(secondary, text=text, command=command).pack(
-                side="left", padx=(0, theme.SPACE_SM)
-            )
 
         header = ttk.Frame(self, style="Window.TFrame")
         header.pack(side="top", fill="x", padx=theme.SPACE_LG, pady=(theme.SPACE_LG, theme.SPACE_SM))
+        # Заголовок раздела, а не программы: имя программы уже стоит над
+        # списком разделов слева, и повторять его здесь значит занимать
+        # строку тем, что читатель только что прочитал.
         ttk.Label(
             header,
-            text="Переносные системы",
+            text="Носители",
             style="Window.TLabel",
             font=theme.FONT_TITLE,
         ).pack(anchor="w")
@@ -86,6 +63,10 @@ class DashboardFrame(ttk.Frame):
             ),
             style="Window.TLabel",
             foreground=theme.TEXT_MUTED,
+            # Перенос, а не обрезание: без него строка уходила за правый край
+            # окна и обрывалась на полуслове.
+            wraplength=theme.TEXT_WRAP,
+            justify="left",
         ).pack(anchor="w", pady=(theme.SPACE_XS, 0))
 
         card = ttk.Frame(self, style="Card.TFrame", padding=theme.SPACE_MD)
@@ -99,7 +80,10 @@ class DashboardFrame(ttk.Frame):
             "config": "Конфигурация",
             "created": "Создан",
         }
-        widths = {"media_id": 220, "label": 200, "os": 100, "config": 180, "created": 180}
+        # Сумма ширин влезает в область содержимого при окне минимальной
+        # ширины: до 02.09.2026 она была больше, и колонка «Создан» уходила за
+        # край -- дата создания носителя не читалась вовсе.
+        widths = {"media_id": 150, "label": 130, "os": 80, "config": 150, "created": 180}
         self.table = ttk.Treeview(card, columns=columns, show="headings", height=10)
         for col in columns:
             self.table.heading(col, text=headings[col])
@@ -112,6 +96,18 @@ class DashboardFrame(ttk.Frame):
         # вообще, поэтому она открывается со строки, а не кнопкой: седьмая
         # кнопка в ряд уже не помещается, и это ловит тест ширины.
         self.table.bind("<Double-1>", self._open_selected_integrity)
+
+        # Действия над конкретным носителем стоят под таблицей, а не в общем
+        # ряду: они относятся к выбранной строке, и место рядом с ней говорит
+        # об этом лучше любой подписи.
+        row_actions = ttk.Frame(self, style="Window.TFrame")
+        row_actions.pack(side="top", fill="x", padx=theme.SPACE_LG, pady=(theme.SPACE_SM, 0))
+        ttk.Button(
+            row_actions, text="Проверить целостность", command=self._open_selected_integrity
+        ).pack(side="left")
+        ttk.Button(
+            row_actions, text="Журналы носителя", command=self._open_selected_logs
+        ).pack(side="left", padx=(theme.SPACE_SM, 0))
 
         self._refresh_table()
         # Said plainly rather than left as an empty grid, which reads as a
@@ -139,34 +135,15 @@ class DashboardFrame(ttk.Frame):
         media_id = self.table.item(selection[0], "values")[0]
         self.app.show_frame(IntegrityFrame, media_id=media_id)
 
-    def _check_leftovers(self) -> None:
-        """Reports, and offers to clear, what an interrupted run left behind.
+    def _open_selected_logs(self) -> None:
+        """Журналы того носителя, который выбран в таблице.
 
-        An install that was killed leaves the medium mounted, its encrypted
-        volume open and its bootstrap process orphaned and still writing. The
-        program cannot notice that by itself after the fact, so this is where an
-        administrator can look and put it right.
+        Раздел «Журналы» спрашивает носитель сам; отсюда ответ уже есть, и
+        спрашивать второй раз незачем.
         """
-        found = leftovers.find()
-        if not found:
-            self.message_bar.success("Незавершённых установок нет, носители не заняты.")
-            return
-        if not messagebox.askyesno(
-            "Найдена незавершённая установка",
-            "От прерванной установки остались занятые ресурсы:\n\n"
-            + found.describe()
-            + "\n\nОсвободить их? Носитель после этого придётся размечать заново — "
-            "установка, которую прервали, всё равно не может быть продолжена.",
-            icon="warning",
-            parent=self,
-        ):
-            self.message_bar.info("Ресурсы оставлены как есть.")
-            return
-        remaining = leftovers.clear()
-        if remaining:
-            self.message_bar.error("Освободить удалось не всё:\n" + remaining.describe())
-        else:
-            self.message_bar.success("Всё освобождено, носитель можно извлекать или размечать заново.")
+        selection = self.table.selection()
+        media_id = self.table.item(selection[0], "values")[0] if selection else ""
+        self.app.show_section("logs", media_id=media_id)
 
     def _open_build(self) -> None:
         from .build_wizard import BuildWizardFrame
@@ -178,32 +155,8 @@ class DashboardFrame(ttk.Frame):
 
         self.app.show_frame(DeployWizardFrame)
 
-    def _open_configs(self) -> None:
-        from .configs_list import ConfigsListFrame
-
-        self.app.show_frame(ConfigsListFrame)
-
     def _open_install(self) -> None:
         from .install_wizard import InstallWizardFrame
 
         self.app.show_frame(InstallWizardFrame)
 
-    def _open_logs(self) -> None:
-        from .logs import LogsFrame
-
-        self.app.show_frame(LogsFrame)
-
-    def _open_exchange(self) -> None:
-        from .exchange import ExchangeFrame
-
-        self.app.show_frame(ExchangeFrame)
-
-    def _open_password(self) -> None:
-        from .password import PasswordFrame
-
-        self.app.show_frame(PasswordFrame)
-
-    def _open_recovery(self) -> None:
-        from .recovery import RecoveryFrame
-
-        self.app.show_frame(RecoveryFrame)

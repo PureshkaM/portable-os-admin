@@ -53,6 +53,10 @@ class PortableOSAdminGUI(tk.Tk):
         self._content = ttk.Frame(self)
         self._content.pack(fill="both", expand=True)
         self._current_frame: ttk.Frame | None = None
+        #: Оболочка с боковой навигацией. Живёт, пока открыт сеанс: разделы
+        #: сменяются внутри неё, а мастера занимают окно целиком и убирают её.
+        self._shell = None
+        self._status: tk.StringVar | None = None
 
         self.protocol("WM_DELETE_WINDOW", self._on_close_window)
         self.show_startup()
@@ -63,6 +67,51 @@ class PortableOSAdminGUI(tk.Tk):
         return base / "configs"
 
     def show_frame(self, frame_cls, **kwargs) -> None:
+        """Экран во весь размер окна: начальный экран и мастера.
+
+        Мастер занимает окно целиком намеренно: у него свой список шагов
+        слева, и вторая навигация рядом предлагала бы уйти из середины работы,
+        которую нельзя бросить на полпути.
+        """
+        self._teardown_current()
+        if self._shell is not None:
+            self._shell.destroy()
+            self._shell = None
+        self._current_frame = frame_cls(self._content, self, **kwargs)
+        self._current_frame.pack(fill="both", expand=True)
+
+    def show_section(self, key: str, **kwargs) -> None:
+        """Раздел внутри оболочки с боковой навигацией.
+
+        Разделы -- это «где я нахожусь»: список носителей, конфигурации,
+        журналы, обмен, восстановление, обслуживание. Оболочка при переходе не
+        пересоздаётся, поэтому список слева не мигает и не теряет прокрутку.
+        """
+        from .shell import NavigationShell
+
+        screens = {
+            "media": ("dashboard", "DashboardFrame"),
+            "configs": ("configs_list", "ConfigsListFrame"),
+            "logs": ("logs", "LogsFrame"),
+            "exchange": ("exchange", "ExchangeFrame"),
+            "recovery": ("recovery", "RecoveryFrame"),
+            "maintenance": ("maintenance", "MaintenanceFrame"),
+        }
+        module_name, class_name = screens[key]
+        module = __import__(
+            f"portable_os_admin.gui.screens.{module_name}", fromlist=[class_name]
+        )
+        frame_cls = getattr(module, class_name)
+
+        self._teardown_current()
+        if self._shell is None:
+            self._shell = NavigationShell(self._content, self)
+            self._shell.pack(fill="both", expand=True)
+        self._current_frame = frame_cls(self._shell.content, self, **kwargs)
+        self._current_frame.pack(fill="both", expand=True)
+        self._shell.mark_active(key)
+
+    def _teardown_current(self) -> None:
         if self._current_frame is not None:
             self._current_frame.destroy()
             # On the UI thread, deliberately: a screen leaves tk.Variable
@@ -70,8 +119,16 @@ class PortableOSAdminGUI(tk.Tk):
             # Tcl from the wrong thread and hangs that thread for good. See
             # gui/widgets.py run_in_background.
             gc.collect()
-        self._current_frame = frame_cls(self._content, self, **kwargs)
-        self._current_frame.pack(fill="both", expand=True)
+            self._current_frame = None
+
+    def set_status(self, text: str) -> None:
+        """Строка пояснения к разделу, на который наведён курсор.
+
+        Пусто -- законное значение: убрать пояснение так же важно, как
+        показать, иначе оно останется от раздела, который уже не под курсором.
+        """
+        if self._status is not None:
+            self._status.set(text)
 
     def show_startup(self) -> None:
         from .screens.startup import StartupFrame
@@ -79,9 +136,8 @@ class PortableOSAdminGUI(tk.Tk):
         self.show_frame(StartupFrame)
 
     def show_dashboard(self) -> None:
-        from .screens.dashboard import DashboardFrame
-
-        self.show_frame(DashboardFrame)
+        """Список носителей -- он же раздел, с которого начинается работа."""
+        self.show_section("media")
 
     def open_session(self, container: AdminContainer, path: Path) -> None:
         self.session = AdminSession(container)
@@ -98,7 +154,7 @@ class PortableOSAdminGUI(tk.Tk):
             self.session.close()
         self.session = None
         self.container_path = None
-        self.show_startup()
+        self.show_startup()  # он же уберёт оболочку с навигацией
 
     def _on_close_window(self) -> None:
         # Closing mid-install is how the medium ends up mounted, its volume

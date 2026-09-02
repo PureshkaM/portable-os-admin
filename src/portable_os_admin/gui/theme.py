@@ -53,6 +53,11 @@ TEXT_ON_ACCENT = "#ffffff"
 #: Disabled controls.
 TEXT_DISABLED = "#9aa1ab"
 
+#: Боковая навигация: своя поверхность, чуть темнее содержимого.
+SIDEBAR = "#e2e5ea"
+#: Раздел, в котором администратор сейчас находится.
+SIDEBAR_ACTIVE = "#2c5fb8"
+
 #: Used on exactly one control per screen: the one that continues the work.
 ACCENT = "#2c5fb8"
 ACCENT_ACTIVE = "#24509d"
@@ -132,6 +137,27 @@ def apply(root: tk.Misc) -> ttk.Style:
     # footer holding the navigation buttons.
     style.configure("Window.TFrame", background=BACKGROUND)
     style.configure("Window.TLabel", background=BACKGROUND, foreground=TEXT)
+
+    # -- боковая навигация --------------------------------------------
+    #
+    # Своя поверхность, темнее содержимого: так видно, где кончается «где я» и
+    # начинается «над чем я работаю», без единой разделительной линии. Активный
+    # раздел отмечен не цветом текста, а заливкой -- цвет текста в списке уже
+    # занят различием «раздел» и «выход из сеанса».
+    style.configure("Sidebar.TFrame", background=SIDEBAR)
+    style.configure(
+        "SidebarTitle.TLabel", background=SIDEBAR, foreground=TEXT, font=FONT_SECTION
+    )
+    style.configure("SidebarItem.TLabel", background=SIDEBAR, foreground=TEXT, font=FONT_BODY)
+    style.configure(
+        "SidebarItemActive.TLabel",
+        background=SIDEBAR_ACTIVE,
+        foreground=TEXT_ON_ACCENT,
+        font=FONT_BODY,
+    )
+    style.configure(
+        "SidebarQuiet.TLabel", background=SIDEBAR, foreground=TEXT_MUTED, font=FONT_BODY
+    )
 
     # -- surfaces ------------------------------------------------------
     for suffix, colour in (("Card", SURFACE), ("Sunken", SURFACE_SUNKEN)):
