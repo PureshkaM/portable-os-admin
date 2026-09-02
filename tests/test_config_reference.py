@@ -28,7 +28,7 @@ def _reference_text() -> str:
 
 
 def _fields(cls, prefix: str = "") -> list[str]:
-    """Все поля конфигурации точечными именами: `kiosk.allowed_apps`."""
+    """Все поля конфигурации точечными именами: `kiosk.hidden_launchers`."""
     names: list[str] = []
     for field in dataclasses.fields(cls):
         default = None

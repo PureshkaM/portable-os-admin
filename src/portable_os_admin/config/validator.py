@@ -230,26 +230,31 @@ class BuiltinConfigValidator:
                     "для РЕД ОС выберите X11"
                 )
 
-        if not kiosk.allowed_apps:
+        # Пакеты, а не список имён: что администратор поставил, то пользователю
+        # и доступно. Носитель без единого пакета -- это рабочий стол, с
+        # которого нечего запустить, и сказать об этом надо до сборки, а не
+        # после выдачи.
+        if not config.packages:
             errors.append(
-                "в режиме киоска должно быть разрешено хотя бы одно приложение: "
-                "иначе пользователь получит рабочий стол, с которого нечего запустить"
+                "в режиме киоска нужно выбрать хотя бы один пакет с приложением: "
+                "система собирается минимальной, и без них пользователю нечего "
+                "будет запустить"
             )
 
-        # A desktop-entry name, not a package name and not a path. The same
-        # spelling RED OS's kiosk-mode-on takes.
-        bad = [a for a in kiosk.allowed_apps if not _DESKTOP_ENTRY_RE.match(a)]
+        # Имя desktop-записи, а не пакета и не путь -- та же запись, что и в
+        # /usr/share/applications, без «.desktop».
+        bad = [a for a in kiosk.hidden_launchers if not _DESKTOP_ENTRY_RE.match(a)]
         if bad:
             errors.append(
-                "недопустимые имена разрешённых приложений: "
+                "недопустимые имена скрытых запускателей: "
                 f"{', '.join(repr(a) for a in bad)} — ожидается имя desktop-записи "
-                "без «.desktop» и без пути, например 'mate-calc'"
+                "без «.desktop» и без пути, например 'libreoffice-startcenter'"
             )
 
-        if kiosk.autostart_app and kiosk.autostart_app not in kiosk.allowed_apps:
+        if kiosk.autostart_app and kiosk.autostart_app in kiosk.hidden_launchers:
             errors.append(
-                f"приложение автозапуска {kiosk.autostart_app!r} не входит в список "
-                "разрешённых: оно было бы скрыто сразу после установки"
+                f"приложение автозапуска {kiosk.autostart_app!r} снято из показа: "
+                "оно запускалось бы, но его нельзя было бы открыть заново"
             )
 
         if kiosk.screen_blank_minutes < 0:

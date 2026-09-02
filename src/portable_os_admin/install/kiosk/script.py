@@ -36,12 +36,37 @@ def apply_script(config: InstallConfig, image=None) -> str:
     NoDisplay=true means "it exists, just keep it out of the menu", which is
     what was wanted all along.
 
-    The allowed list is baked into the script instead of passed as arguments --
-    a desktop-entry name is administrator input, and text that never crosses a
-    shell command line cannot be quoted wrong.
+    Список разрешённого не задаётся, а **выводится из пакетов** администратора,
+    и это решение 02.09.2026, меняющее смысл настройки.
+
+    Наше дело -- собрать минимальную систему, в которой пользователю не
+    доступно ни одного приложения; администратор ставит поверх неё то, с чем
+    пользователь работает. Значит «разрешённые приложения» -- не отдельный
+    список, а следствие выбора пакетов: что поставлено, то и доступно.
+
+    Раньше здесь стоял список имён, введённый руками, и он давал ошибку,
+    которую нечем поймать: прогон 02.09.2026 разрешил `atril`, пакет с ним не
+    поставил -- и меню оказалось пустым, а узнал бы об этом администратор
+    только от пользователя. Имя пакета и имя его desktop-записи совпадают
+    далеко не всегда, и один пакет нередко ставит несколько запускателей.
+
+    Поэтому список собирает сама целевая система: спрашивает менеджер пакетов,
+    какие `.desktop` принесли пакеты администратора, и разрешает ровно их.
+    Снятое администратором (`kiosk.hidden_launchers`) вычитается -- один пакет
+    вроде LibreOffice приносит шесть запускателей, и лишние надо уметь убрать.
+
+    Имена пакетов и снятых запускателей вписаны в текст скрипта, а не переданы
+    аргументами: то, что никогда не попадает в командную строку, нельзя
+    закавычить неправильно.
     """
     kiosk = config.kiosk
-    allowed = " ".join(sorted(set(kiosk.allowed_apps)))
+    packages = " ".join(sorted(set(config.packages)))
+    hidden = " ".join(sorted(set(getattr(kiosk, "hidden_launchers", ()))))
+    # Импорт локальный: бэкенды сами читают этот модуль, и на уровне файла
+    # получилось бы кольцо.
+    from ..backends import get_backend
+
+    files_command = " ".join(get_backend(config.target_os).PACKAGE_FILES_COMMAND)
     firejail_opts = kiosk.firejail_options.strip()
     use_firejail = "1" if kiosk.firejail else ""
     desktop = desktop_of(config)
@@ -54,7 +79,9 @@ def apply_script(config: InstallConfig, image=None) -> str:
 # Применяет список разрешённых приложений режима киоска.
 set -eu
 
-ALLOWED="{allowed}"
+POA_PACKAGES="{packages}"
+POA_HIDDEN="{hidden}"
+PKG_FILES="{files_command}"
 DESKTOP="{desktop}"
 USE_FIREJAIL="{use_firejail}"
 FIREJAIL_OPTS="{firejail_opts}"
@@ -62,6 +89,44 @@ DESKTOP_SHORTCUTS="{shortcuts}"
 OVERRIDE_DIR=/{OVERRIDE_DIR}
 
 mkdir -p "$OVERRIDE_DIR"
+
+is_hidden() {{
+    for h in $POA_HIDDEN; do
+        [ "$h" = "$1" ] && return 0
+    done
+    return 1
+}}
+
+# Что поставил администратор, то пользователю и доступно.
+#
+# Спрашиваем менеджер пакетов, а не гадаем по именам: имя пакета и имя его
+# desktop-записи совпадают далеко не всегда (`libreoffice-writer` ставит
+# `libreoffice-startcenter` в придачу), а пакет без единого запускателя --
+# обычное дело, это библиотека или шрифт.
+ALLOWED=""
+found_packages=0
+for pkg in $POA_PACKAGES; do
+    entries=$($PKG_FILES "$pkg" 2>/dev/null \
+        | sed -n 's|^/usr/share/applications/\\([^/]*\\)\\.desktop$|\\1|p')
+    [ -n "$entries" ] && found_packages=$((found_packages + 1))
+    for name in $entries; do
+        if is_hidden "$name"; then
+            echo "poa-kiosk: запускатель '$name' из пакета '$pkg' скрыт по решению администратора"
+            continue
+        fi
+        ALLOWED="$ALLOWED $name"
+    done
+done
+
+if [ -z "$ALLOWED" ]; then
+    # Не ошибка установки, но носитель, на котором пользователю нечего
+    # открыть. Сказать об этом надо здесь: снаружи это выглядит как пустое
+    # меню, и разбираться придётся уже после выдачи носителя.
+    echo "poa-kiosk: ВНИМАНИЕ: ни один из выбранных пакетов не принёс" \
+         "ни одного приложения, пользователю нечего будет запустить" >&2
+else
+    echo "poa-kiosk: пользователю доступны приложения:$ALLOWED"
+fi
 
 is_allowed() {{
     for a in $ALLOWED; do
@@ -103,12 +168,12 @@ for f in /usr/share/applications/*.desktop; do
 done
 echo "poa-kiosk: скрыто записей приложений: $hidden"
 
-# Проверить, что каждое разрешённое приложение действительно установлено.
-# Молча разрешённая, но отсутствующая запись — это пустое место в меню, о
-# котором администратор узнал бы только от пользователя.
-for a in $ALLOWED; do
-    if [ ! -f "/usr/share/applications/$a.desktop" ]; then
-        echo "poa-kiosk: ВНИМАНИЕ: разрешено '$a', но записи /usr/share/applications/$a.desktop нет" >&2
+# Снятый запускатель, которого не оказалось ни в одном пакете, -- след
+# устаревшей конфигурации: администратор снял галочку, а пакет с тех пор
+# сменил состав. Молчать об этом нельзя: выглядит это как исправная настройка.
+for h in $POA_HIDDEN; do
+    if [ ! -f "/usr/share/applications/$h.desktop" ]; then
+        echo "poa-kiosk: ВНИМАНИЕ: скрыт запускатель '$h', но такого в системе нет" >&2
     fi
 done
 

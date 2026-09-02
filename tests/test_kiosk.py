@@ -30,8 +30,16 @@ from portable_os_admin.install.disk import build_media_layout, plan_partitions
 
 
 def make_kiosk_config(target_os: str = "debian", **kiosk_kwargs) -> InstallConfig:
+    """Киоск с парой прикладных пакетов.
+
+    Пакеты, а не список разрешённых имён: с 02.09.2026 доступное пользователю
+    выводится из того, что поставил администратор. `allowed_apps` в вызовах
+    ещё встречается -- он принимается и превращается в пакеты, чтобы старые
+    тесты продолжали проверять то, ради чего писались, а не форму вызова.
+    """
     config = InstallConfig.create_default("kiosk-stick", target_os)
-    kiosk_kwargs.setdefault("allowed_apps", ["mate-calc", "firefox-esr"])
+    packages = kiosk_kwargs.pop("allowed_apps", None)
+    config.packages = list(packages) if packages is not None else ["mate-calc", "firefox-esr"]
     config.kiosk = KioskConfig(enabled=True, **kiosk_kwargs)
     config.profile = "kiosk"
     return config
@@ -87,7 +95,8 @@ def test_kiosk_configuration_survives_a_round_trip():
     restored = InstallConfig.from_dict(config.to_dict())
 
     assert restored.kiosk.enabled is True
-    assert restored.kiosk.allowed_apps == ["mate-calc", "firefox-esr"]
+    assert restored.packages == ["mate-calc", "firefox-esr"]
+    assert restored.kiosk.hidden_launchers == []
     assert restored.kiosk.autostart_app == "firefox-esr"
     assert restored.kiosk.screen_blank_minutes == 10
 
@@ -335,10 +344,50 @@ def test_scripts_are_written_executable(layout):
         assert files[path][1] == 0o755, f"{path} записан без права на запуск"
 
 
-def test_allowed_applications_reach_the_apply_script():
-    script = kiosk.apply_script(make_kiosk_config(allowed_apps=["mate-calc", "atril"]))
+def test_the_script_asks_the_package_manager_instead_of_being_told():
+    """Список доступного собирает сама система, а не мы при сборке.
 
-    assert 'ALLOWED="atril mate-calc"' in script
+    Разница не косметическая. Раньше имена вписывались в скрипт руками, и
+    разойтись с действительностью им ничего не мешало: прогон 02.09.2026
+    разрешил «atril», пакета с ним не поставил, и меню оказалось пустым --
+    ошибка, неотличимая от исправной настройки. Теперь в скрипт едут имена
+    пакетов, а запускатели он выясняет у менеджера пакетов на месте.
+    """
+    config = make_kiosk_config(allowed_apps=["mate-calc", "atril"])
+    script = kiosk.apply_script(config)
+
+    assert 'POA_PACKAGES="atril mate-calc"' in script
+    assert 'PKG_FILES="dpkg -L"' in script, "Debian спрашивает dpkg"
+    assert "/usr/share/applications/" in script, "ищутся именно запускатели"
+
+    redos_script = kiosk.apply_script(make_kiosk_config("redos", allowed_apps=["mate-calc"]))
+    assert 'PKG_FILES="rpm -ql"' in redos_script, "РЕД ОС спрашивает rpm"
+
+
+def test_launchers_the_administrator_unchecked_are_subtracted():
+    """Единственная ручная правка списка -- вычитание.
+
+    Один пакет нередко ставит несколько запускателей: LibreOffice -- шесть.
+    Снять лишние администратор может, добавить несуществующее -- нет.
+    """
+    config = make_kiosk_config(allowed_apps=["libreoffice-writer"])
+    config.kiosk.hidden_launchers = ["libreoffice-startcenter"]
+    script = kiosk.apply_script(config)
+
+    assert 'POA_HIDDEN="libreoffice-startcenter"' in script
+    assert "is_hidden" in script
+
+
+def test_a_medium_where_nothing_can_be_started_says_so_at_install_time():
+    """Пустое меню -- это то, о чём администратор узнаёт от пользователя.
+
+    Поэтому система говорит об этом сама, в журнале установки, пока носитель
+    ещё в руках у того, кто его собирает.
+    """
+    script = kiosk.apply_script(make_kiosk_config())
+
+    assert "ни одного приложения" in script
+    assert "пользователю доступны приложения" in script
 
 
 def test_firejail_is_only_wired_in_when_asked_for():
@@ -501,25 +550,41 @@ def _errors(config) -> list[str]:
     return BuiltinConfigValidator().validate(config).errors
 
 
-def test_a_kiosk_with_no_allowed_application_is_refused():
+def test_a_kiosk_with_no_application_packages_is_refused():
+    """Система собирается минимальной, и без прикладных пакетов в ней пусто.
+
+    Это единственное решение, которое администратор обязан принять сам: какие
+    программы нужны конкретному киоску, за него не угадать.
+    """
     config = make_kiosk_config(allowed_apps=[])
-    assert any("хотя бы одно приложение" in e for e in _errors(config))
+    assert any("хотя бы один пакет" in e for e in _errors(config))
 
 
-def test_application_names_must_be_desktop_entry_names():
-    """Not paths, not package names -- and not shell.
+def test_hidden_launcher_names_must_be_desktop_entry_names():
+    """Не путь, не имя пакета -- и не команда оболочки.
 
-    The names are interpolated into a script that runs inside the target, so a
-    name that cannot hold a slash or a quote cannot break out of it.
+    Имена попадают в скрипт, который выполняется внутри целевой системы, и
+    имя, которое не может нести косую черту или кавычку, из него не вырвется.
     """
     for bad in ("/usr/bin/sh", "a; rm -rf /", "app.desktop; echo", "../../etc/passwd"):
-        assert _errors(make_kiosk_config(allowed_apps=[bad])), f"{bad!r} принято как имя"
+        config = make_kiosk_config()
+        config.kiosk.hidden_launchers = [bad]
+        assert _errors(config), f"{bad!r} принято как имя"
 
-    assert not _errors(make_kiosk_config(allowed_apps=["mate-calc", "libreoffice-writer"]))
+    config = make_kiosk_config()
+    config.kiosk.hidden_launchers = ["libreoffice-startcenter"]
+    assert not _errors(config)
 
 
-def test_autostart_application_must_be_one_of_the_allowed_ones():
-    config = make_kiosk_config(allowed_apps=["mate-calc"], autostart_app="firefox-esr")
+def test_autostart_application_cannot_be_one_that_was_hidden():
+    """Иначе приложение запускалось бы, но открыть его заново было бы нечем.
+
+    Проверить автозапуск против списка доступного здесь больше нельзя: список
+    складывается уже в собранной системе. Несуществующее имя ловит установка и
+    называет его в журнале -- эта проверка ловит противоречие, видное сразу.
+    """
+    config = make_kiosk_config(allowed_apps=["mate-calc"], autostart_app="mate-calc")
+    config.kiosk.hidden_launchers = ["mate-calc"]
     assert any("автозапуска" in e for e in _errors(config))
 
 def test_firejail_options_without_firejail_are_refused():
@@ -1146,8 +1211,11 @@ def test_the_panel_carries_the_allowed_applications_and_locks_itself():
         make_kiosk_config(desktop_environment="kde", allowed_apps=["mate-calc", "atril"])
     )
 
-    assert ('APPLETSRC_LAUNCHERS="applications:atril.desktop,'
-            'applications:mate-calc.desktop"') in script
+    # Список собирается на целевой системе из $ALLOWED -- того, что она сама
+    # вычислила по пакетам. Раньше имена вписывались сюда при сборке, и панель
+    # могла показывать не то, что установлено.
+    assert "for a in $ALLOWED" in script
+    assert "applications:$a.desktop" in script
     assert "systemsettings" not in script, "настройки не разрешены -- нечего выносить"
     assert "ordering=" in script, "иначе в избранном останется набор дистрибутива"
     # immutability=2 -- SystemImmutable: пользователь не разблокирует виджеты.
@@ -1160,7 +1228,13 @@ def test_settings_reach_the_panel_only_when_something_is_allowed():
         make_kiosk_config(desktop_environment="kde", allowed_apps=["mate-calc"],
                           allowed_settings=["network"])
     )
-    assert "applications:systemsettings.desktop" in with_settings
+    # Имя дописывается к тому же списку: разрешив настройки, администратор
+    # должен дать чем до них дойти.
+    assert "$ALLOWED systemsettings" in with_settings
+    without = kiosk.plasma_layout_script(
+        make_kiosk_config(desktop_environment="kde", allowed_apps=["mate-calc"])
+    )
+    assert "systemsettings" not in without
 
 
 def test_the_device_notifier_is_removed_rather_than_hidden():

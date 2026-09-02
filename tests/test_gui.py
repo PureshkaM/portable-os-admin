@@ -880,7 +880,8 @@ def _write_distribution(directory, **overrides):
     config = InstallConfig.create_baseline("kiosk-stick", "redos")
     config.release = "8.0"
     config.arch = "amd64"
-    config.kiosk = KioskConfig(enabled=True, desktop_environment="kde", allowed_apps=["mate-calc"])
+    config.packages = ["mate-calc"]
+    config.kiosk = KioskConfig(enabled=True, desktop_environment="kde")
     archive = directory / distribution.ARCHIVE_NAME
     archive.write_bytes(b"not a real archive, only its name matters here")
     metadata = distribution.DistributionMetadata.for_config(

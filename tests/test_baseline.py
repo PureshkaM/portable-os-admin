@@ -38,19 +38,20 @@ def test_shutdown_is_granted_because_the_alternative_is_worse():
 
 
 def test_the_baseline_asks_for_the_one_thing_it_cannot_guess():
-    """No applications, and validation refuses a kiosk without any.
+    """Ни одного прикладного пакета, и киоск без них не проходит проверку.
 
-    That is the point: there is no sensible default for which programs a
-    particular kiosk should offer, so it is the single decision the
-    administrator is forced to make rather than one they might miss.
+    В этом и смысл: какие программы нужны конкретному киоску, за
+    администратора не угадать, и это единственное решение, которое он обязан
+    принять сам. С 02.09.2026 оно принимается выбором пакетов -- система
+    собирается минимальной, и что поставлено, то пользователю и доступно.
     """
     config = InstallConfig.create_baseline("stick", "debian")
-    assert config.kiosk.allowed_apps == []
+    assert config.kiosk.hidden_launchers == []
 
     errors = BuiltinConfigValidator().validate(config).errors
-    assert any("хотя бы одно приложение" in e for e in errors)
+    assert any("хотя бы один пакет" in e for e in errors)
 
-    config.kiosk.allowed_apps = ["mate-calc"]
+    config.packages = ["mate-calc"]
     assert BuiltinConfigValidator().validate(config).errors == []
 
 
@@ -86,12 +87,12 @@ def test_changes_are_reported_in_the_words_the_interface_uses():
 def test_lists_and_empty_values_are_readable():
     baseline = InstallConfig.create_baseline("stick", "debian")
     config = InstallConfig.create_baseline("stick", "debian")
-    config.kiosk.allowed_apps = ["mate-calc", "atril"]
+    config.packages = ["mate-calc", "atril"]
     config.arch = "amd64"
 
     changes = dict((label, (before, after)) for label, before, after in config.diff_from(baseline))
 
-    assert changes["Разрешённые приложения"] == ("(пусто)", "mate-calc, atril")
+    assert changes["Предустановленные пакеты"] == ("(пусто)", "mate-calc, atril")
     assert changes["Архитектура носителя"] == ("(пусто)", "amd64")
 
 

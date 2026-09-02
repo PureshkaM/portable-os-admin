@@ -31,7 +31,8 @@ def session(tmp_path):
 def kiosk_config():
     config = InstallConfig.create_baseline("kiosk-stick", "debian")
     config.release = "trixie"
-    config.kiosk = KioskConfig(enabled=True, allowed_apps=["mate-calc"])
+    config.packages = ["mate-calc"]
+    config.kiosk = KioskConfig(enabled=True)
     ConfigManager().validate(config)
     return config
 
@@ -264,7 +265,7 @@ def test_the_metadata_describes_what_was_built(session, kiosk_config, tmp_path):
     assert result.metadata.target_os == "debian"
     # The configuration travels whole, so deployment writes fstab and the
     # account exactly as the build intended.
-    assert result.metadata.config["kiosk"]["allowed_apps"] == ["mate-calc"]
+    assert result.metadata.config["packages"] == ["mate-calc"]
 
 
 def test_the_image_keeps_ownership_and_extended_attributes():

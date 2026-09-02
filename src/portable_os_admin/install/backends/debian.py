@@ -19,6 +19,10 @@ from .base import RECOVERY_DIR, RECOVERY_INITRAMFS_DIR, InstallBackend, maybe_ea
 
 class DebianInstallBackend(InstallBackend):
     name = "debian"
+
+    #: `dpkg -L` -- тот же вопрос к менеджеру пакетов Debian: что лежит в
+    #: установленном пакете.
+    PACKAGE_FILES_COMMAND = ("dpkg", "-L")
     ssh_package = "openssh-server"
     ssh_service = "ssh"
     sudo_group = "sudo"

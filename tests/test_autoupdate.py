@@ -164,7 +164,8 @@ def test_it_works_alongside_the_kiosk(layout):
     from portable_os_admin.config.schema import KioskConfig
 
     config = make_config()
-    config.kiosk = KioskConfig(enabled=True, allowed_apps=["mate-calc"])
+    config.packages = ["mate-calc"]
+    config.kiosk = KioskConfig(enabled=True)
     files = get_backend("debian").scripted_files(config, layout)
     flat = [" ".join(a) for a in get_backend("debian").chroot_setup_commands("/mnt/t", config)]
 

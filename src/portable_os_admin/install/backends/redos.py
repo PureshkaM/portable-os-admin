@@ -54,6 +54,10 @@ class RedOSInstallBackend(InstallBackend):
     display_manager_service = "sddm"
 
     EXTRA_TOOLS = ("dnf",)
+
+    #: `rpm -ql` печатает содержимое установленного пакета -- то, чем в этом
+    #: семействе отвечают на вопрос «какие запускатели принёс этот пакет».
+    PACKAGE_FILES_COMMAND = ("rpm", "-ql")
     firewall_service = "firewalld"
     bootloader_comes_from_packages = True
     #: RHEL-семейство слушает `rhgb`, а не `splash`.

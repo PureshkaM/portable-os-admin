@@ -177,6 +177,112 @@ def desktop_applications(mountpoint: str, family: str) -> "list[str]":
     return sorted(names)
 
 
+def launchers_by_package(
+    mountpoint: str, family: str, packages: "list[str] | tuple[str, ...]"
+) -> "dict[str, list[str]]":
+    """Какие запускатели принесёт каждый из названных пакетов.
+
+    Нужно затем, что доступное пользователю с 02.09.2026 выводится из пакетов
+    администратора, а не задаётся списком имён. Имя пакета и имя его
+    desktop-записи совпадают далеко не всегда, и один пакет нередко ставит
+    несколько запускателей сразу -- их и надо показать администратору, чтобы
+    лишние он мог снять до сборки, а не после выдачи носителя.
+
+    Для РЕД ОС ответ есть в `filelists.xml.gz`: там перечислены файлы каждого
+    пакета, и привязка к пакету -- ровно то, чего не даёт `desktop_applications`
+    с её плоским списком.
+
+    У Debian индекса файлов на образе нет -- `Contents` на установочный DVD не
+    кладут, -- но сами пакеты там есть, в `pool/`. Состав `.deb` читается
+    напрямую, `dpkg-deb -c`, без распаковки: список содержимого архива и есть
+    ответ на вопрос. Так обе системы отвечают на него из образа, а не из сети.
+    """
+    wanted = set(packages)
+    if not wanted:
+        return {}
+    if family != "redos":
+        return _deb_launchers(mountpoint, wanted)
+    path = _find(os.path.join(mountpoint, "repodata"), r"filelists\.xml\.gz$")
+    if not path:
+        return {}
+
+    package_line = re.compile(r'<package[^>]*\bname="([^"]+)"')
+    file_line = re.compile(r"<file>([^<]+)</file>")
+    found: dict[str, list[str]] = {}
+    current = ""
+    with gzip.open(path, "rt", encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            if "<package" in line:
+                match = package_line.search(line)
+                current = match.group(1) if match else ""
+                continue
+            if not current or current not in wanted or "<file>" not in line:
+                continue
+            match = file_line.search(line)
+            if not match:
+                continue
+            file_path = match.group(1)
+            if not file_path.endswith(".desktop") or "/applications/" not in file_path:
+                continue
+            name = file_path.rsplit("/", 1)[-1][: -len(".desktop")]
+            found.setdefault(current, [])
+            if name not in found[current]:
+                found[current].append(name)
+    return {package: sorted(names) for package, names in found.items()}
+
+
+def _deb_launchers(mountpoint: str, packages: "set[str]") -> "dict[str, list[str]]":
+    """Запускатели пакетов Debian -- из самих `.deb` образа.
+
+    `dpkg-deb -c` печатает оглавление архива, ничего не распаковывая: для
+    вопроса «какие тут .desktop» этого достаточно, а на пакет уходят
+    миллисекунды вместо распаковки в сотни мегабайт.
+
+    Пакет ищется одним обходом `pool/`, а не по угаданному пути. Раскладка
+    Debian ведёт по имени **исходного** пакета, которое у бинарного бывает
+    другим, да ещё и с исключением для имён на «lib»: `libreoffice-writer`
+    лежит не в `pool/main/l/`, а в `pool/main/libr/libreoffice/`. Проверено на
+    образе Debian 13: поиск по первой букве этот пакет не находил вовсе.
+    Обход же не зависит ни от одного из этих правил.
+    """
+    remaining = set(packages)
+    found: dict[str, list[str]] = {}
+    archives: dict[str, str] = {}
+    root = os.path.join(mountpoint, "pool")
+    for directory, _dirs, files in os.walk(root):
+        if not remaining:
+            break
+        for name in files:
+            if not name.endswith(".deb"):
+                continue
+            package = name.split("_", 1)[0]
+            if package in remaining:
+                archives[package] = os.path.join(directory, name)
+                remaining.discard(package)
+
+    for package, archive in sorted(archives.items()):
+        try:
+            listing = subprocess.run(
+                ["dpkg-deb", "-c", archive],
+                capture_output=True, text=True, timeout=UNPACK_TIMEOUT,
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if listing.returncode != 0:
+            continue
+        names: list[str] = []
+        for line in listing.stdout.splitlines():
+            path = line.rsplit(" ", 1)[-1].lstrip(".")
+            if not path.endswith(".desktop") or "/applications/" not in path:
+                continue
+            name = path.rsplit("/", 1)[-1][: -len(".desktop")]
+            if name not in names:
+                names.append(name)
+        if names:
+            found[package] = sorted(names)
+    return found
+
+
 def _package_file(
     mountpoint: str,
     family: str,

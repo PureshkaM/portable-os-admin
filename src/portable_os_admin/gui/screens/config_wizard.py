@@ -806,67 +806,36 @@ class ConfigWizardFrame(WizardFrame):
 
         ttk.Label(
             inner,
-            text="Имена desktop-записей без «.desktop»: mate-calc, firefox-esr.",
+            text="Доступно пользователю ровно то, что установлено пакетами на шаге 5. "
+            "Здесь можно снять лишние запускатели: один пакет нередко ставит несколько.",
             style="Hint.TLabel",
             wraplength=theme.TEXT_WRAP,
         ).pack(anchor="w", pady=(0, theme.SPACE_SM))
 
-        # Field first, its actions directly beneath it. Four controls on one
-        # line ran past the edge of the card and clipped the last button.
-        entry_row = ttk.Frame(inner)
-        entry_row.pack(fill="x")
-        self.app_entry_var = tk.StringVar()
-        # Combobox, а не Entry: прочитанные из образа записи попадают сюда
-        # списком, и имя приложения перестаёт быть тем, что надо помнить
-        # наизусть. Пока образ не прочитан, список пуст и поле ведёт себя как
-        # обычное поле ввода.
-        entry = ttk.Combobox(
-            entry_row, textvariable=self.app_entry_var, width=28, values=()
-        )
-        self.app_entry_combo = entry
-        entry.pack(side="left")
-        # Enter is how anyone types a list of short names; making them reach
-        # for the mouse between each one is the difference between adding six
-        # applications and adding two.
-        entry.bind("<Return>", lambda _event: self._add_allowed_app())
-        ttk.Button(entry_row, text="Добавить", command=self._add_allowed_app).pack(
-            side="left", padx=(theme.SPACE_SM, 0)
-        )
-
-        self.allowed_list = tk.Listbox(
-            inner,
-            height=5,
-            selectmode="extended",
-            exportselection=False,
-            background=theme.SURFACE,
-            foreground=theme.TEXT,
-            highlightthickness=1,
-            highlightbackground=theme.BORDER,
-            selectbackground=theme.ACCENT,
-            selectforeground=theme.TEXT_ON_ACCENT,
-            borderwidth=0,
-        )
-        self.allowed_list.pack(fill="both", expand=True, pady=(theme.SPACE_SM, theme.SPACE_XS))
-        for name in kiosk.allowed_apps:
-            self.allowed_list.insert("end", name)
+        # Галочки, а не список имён.
+        #
+        # До 02.09.2026 здесь вводились имена desktop-записей руками, и ошибку
+        # это давало неотличимую от исправной настройки: прогон того же дня
+        # разрешил «atril», пакета с ним не поставил, и меню оказалось пустым.
+        # Теперь список приходит из пакетов, а рукам оставлено обратное
+        # действие -- снять лишнее.
+        self.launcher_vars: dict[str, tk.BooleanVar] = {}
+        self.launcher_box = ttk.Frame(inner)
+        self.launcher_box.pack(fill="both", expand=True, pady=(0, theme.SPACE_SM))
 
         list_actions = ttk.Frame(inner)
         list_actions.pack(fill="x", pady=(0, theme.SPACE_SM))
-        ttk.Button(list_actions, text="Удалить выбранное", command=self._remove_allowed_app).pack(
-            side="left"
-        )
-        ttk.Button(
-            list_actions, text="Подставить из пакетов", command=self._suggest_allowed_apps
-        ).pack(side="left", padx=(theme.SPACE_SM, 0))
         ttk.Button(
             list_actions, text="Прочитать из образа…", command=self._read_image_catalog
-        ).pack(side="left", padx=(theme.SPACE_SM, 0))
+        ).pack(side="left")
+
+        self._refresh_launchers()
 
         options = ttk.Frame(inner)
         options.pack(fill="x", pady=(theme.SPACE_SM, 0))
         self.autostart_var = tk.StringVar(value=kiosk.autostart_app)
         add_field(options, 0, "Запускать при входе:", self.autostart_var, width=26,
-                  hint="Необязательно. Должно быть в списке выше.")
+                  hint="Необязательно. Имя запускателя, который не снят выше.")
         self.blank_var = tk.StringVar(value=str(kiosk.screen_blank_minutes))
         add_field(
             options,
@@ -958,48 +927,55 @@ class ConfigWizardFrame(WizardFrame):
             found += self._all_children(child)
         return found
 
-    def _add_allowed_app(self) -> None:
-        name = self.app_entry_var.get().strip()
-        if not name:
-            return
-        # Typing the filename rather than the entry name is the obvious slip,
-        # and it is silently wrong -- so it is corrected here instead of being
-        # reported as a validation error three steps later.
-        if name.endswith(".desktop"):
-            name = name[: -len(".desktop")]
-        if name in self.allowed_list.get(0, "end"):
-            self.message_bar.error(f"Приложение «{name}» уже разрешено.")
-            return
-        self.allowed_list.insert("end", name)
-        self.app_entry_var.set("")
+    def _refresh_launchers(self) -> None:
+        """Перерисовывает галочки по выбранным пакетам.
 
-    def _remove_allowed_app(self) -> None:
-        for index in reversed(self.allowed_list.curselection()):
-            self.allowed_list.delete(index)
-
-    def _suggest_allowed_apps(self) -> None:
-        """Offers the selected packages as candidate entry names.
-
-        A guess, and said to be one: a package usually installs a desktop entry
-        of the same name, but not always, and one package can install several.
-        The install writes a warning into the medium's log for any allowed name
-        that turns out to have no entry, so a wrong guess is visible rather
-        than silent.
+        Источник -- каталог образа: он единственный не устареет вместе с
+        дистрибутивом. Для Debian состав пакета из установочного DVD узнать
+        нельзя вовсе -- файла `Contents` там нет, -- и об этом сказано прямо,
+        а не изображено пустым списком: администратор увидит найденные
+        запускатели в журнале установки и сможет снять лишние следующей
+        сборкой.
         """
-        existing = set(self.allowed_list.get(0, "end"))
-        added = 0
-        for package in self.config.packages:
-            if package not in existing:
-                self.allowed_list.insert("end", package)
-                existing.add(package)
-                added += 1
-        if added:
-            self.message_bar.info(
-                f"Добавлено имён: {added}. Это предположение по именам пакетов — "
-                "проверьте их и уберите лишние."
-            )
-        else:
-            self.message_bar.info("Нечего подставлять: пакеты не выбраны или уже добавлены.")
+        for child in self.launcher_box.winfo_children():
+            child.destroy()
+        self.launcher_vars = {}
+
+        packages = list(self.config.packages)
+        if not packages:
+            ttk.Label(
+                self.launcher_box,
+                text="Пакеты не выбраны: вернитесь на шаг «Пакеты для предустановки». "
+                "Без них пользователю нечего будет запустить.",
+                style="Hint.TLabel",
+                wraplength=theme.TEXT_WRAP,
+            ).pack(anchor="w")
+            return
+
+        known = getattr(self, "_package_launchers", {}) or {}
+        hidden = set(self.config.kiosk.hidden_launchers)
+        shown = 0
+        for package in packages:
+            for name in known.get(package, ()):
+                variable = tk.BooleanVar(value=name not in hidden)
+                self.launcher_vars[name] = variable
+                ttk.Checkbutton(
+                    self.launcher_box,
+                    text=f"{name}  —  из пакета {package}",
+                    variable=variable,
+                ).pack(anchor="w")
+                shown += 1
+        if shown:
+            return
+
+        ttk.Label(
+            self.launcher_box,
+            text="Какие запускатели принесут эти пакеты, станет видно при сборке: "
+            "для Debian состав пакета из установочного образа не читается "
+            "(файла Contents на DVD нет). Установка перечислит найденное в журнале.",
+            style="Hint.TLabel",
+            wraplength=theme.TEXT_WRAP,
+        ).pack(anchor="w")
 
     def _read_image_catalog(self) -> None:
         """Читает из установочного образа то, что иначе вводится по памяти.
@@ -1035,6 +1011,13 @@ class ConfigWizardFrame(WizardFrame):
         try:
             with MountedImage(chosen) as image:
                 applications = image_catalog.desktop_applications(image.mountpoint, family)
+                # Связка «пакет -> его запускатели»: из неё складываются
+                # галочки на шаге киоска. Спрашиваем только про выбранные
+                # пакеты -- полный перебор образа занял бы минуты, а нужен
+                # ответ про десяток имён.
+                launchers = image_catalog.launchers_by_package(
+                    image.mountpoint, family, list(self.config.packages)
+                )
                 locales = image_catalog.locales(image.mountpoint, family)
                 zones = image_catalog.timezones(image.mountpoint, family)
                 layouts = image_catalog.keyboard_layouts(image.mountpoint, family)
@@ -1042,8 +1025,9 @@ class ConfigWizardFrame(WizardFrame):
             self.message_bar.error(f"Не удалось прочитать образ: {exc}")
             return
 
-        if applications:
-            self.app_entry_combo.configure(values=applications)
+        self._package_launchers = launchers
+        if hasattr(self, "launcher_box"):
+            self._refresh_launchers()
         if locales and hasattr(self, "locale_combo"):
             self.locale_combo.configure(values=locales)
         if zones and hasattr(self, "timezone_combo"):
@@ -1052,8 +1036,12 @@ class ConfigWizardFrame(WizardFrame):
             self.keymap_combo.configure(values=[code for code, _name in layouts])
 
         parts = []
+        if launchers:
+            parts.append(
+                f"запускателей у выбранных пакетов: {sum(len(v) for v in launchers.values())}"
+            )
         if applications:
-            parts.append(f"приложений: {len(applications)}")
+            parts.append(f"приложений в образе: {len(applications)}")
         if locales:
             parts.append(f"локалей: {len(locales)}")
         if zones:
@@ -1083,7 +1071,9 @@ class ConfigWizardFrame(WizardFrame):
         kiosk.enabled = self.config.profile == "kiosk"
         kiosk.desktop_environment = self.desktop_var.get()
         kiosk.session_type = self.session_var.get()
-        kiosk.allowed_apps = list(self.allowed_list.get(0, "end"))
+        kiosk.hidden_launchers = sorted(
+            name for name, variable in self.launcher_vars.items() if not variable.get()
+        )
         kiosk.autostart_app = self.autostart_var.get().strip()
         kiosk.allow_shutdown = self.allow_shutdown_var.get()
         kiosk.allow_removable_media = self.allow_media_var.get()
@@ -1111,10 +1101,11 @@ class ConfigWizardFrame(WizardFrame):
                     "Выберите консольную систему или другую целевую ОС."
                 )
                 return False
-            if not kiosk.allowed_apps:
+            if not self.config.packages:
                 self.message_bar.error(
-                    "Разрешите хотя бы одно приложение — иначе пользователь получит "
-                    "рабочий стол, с которого нечего запустить."
+                    "Выберите хотя бы один пакет с приложением на шаге «Пакеты для "
+                    "предустановки» — система собирается минимальной, и без них "
+                    "пользователю нечего будет запустить."
                 )
                 return False
             if kiosk.session_type == "wayland":
@@ -1128,10 +1119,10 @@ class ConfigWizardFrame(WizardFrame):
                         "В образе РЕД ОС нет Wayland-сеанса Plasma — для РЕД ОС выберите X11."
                     )
                     return False
-            if kiosk.autostart_app and kiosk.autostart_app not in kiosk.allowed_apps:
+            if kiosk.autostart_app and kiosk.autostart_app in kiosk.hidden_launchers:
                 self.message_bar.error(
-                    f"Приложение автозапуска «{kiosk.autostart_app}» не входит в список "
-                    "разрешённых — после установки оно было бы скрыто."
+                    f"Запускатель «{kiosk.autostart_app}» снят из показа — приложение "
+                    "запускалось бы, но открыть его заново было бы нечем."
                 )
                 return False
             if kiosk.screen_blank_minutes < 0:

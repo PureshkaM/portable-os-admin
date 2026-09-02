@@ -76,7 +76,7 @@ FIELD_LABELS = {
     "kiosk.enabled": "Режим киоска",
     "kiosk.desktop_environment": "Рабочая среда",
     "kiosk.session_type": "Графический протокол",
-    "kiosk.allowed_apps": "Разрешённые приложения",
+    "kiosk.hidden_launchers": "Скрытые запускатели",
     "kiosk.allowed_settings": "Что можно настраивать",
     "kiosk.autostart_app": "Приложение автозапуска",
     "kiosk.screen_blank_minutes": "Гашение экрана, мин",
@@ -194,11 +194,11 @@ class KioskConfig:
     implementation covers Debian and RED OS alike and does not depend on the
     version of the image the administrator happens to hold.
 
-    `allowed_apps` names desktop entries the way RED OS does: the basename of
-    a file in /usr/share/applications with the ".desktop" suffix dropped
-    (`mate-calc`, `libreoffice-writer`, `firefox-esr`). Naming entries rather
-    than packages is what makes the whitelist meaningful -- one package can
-    install several launchers, and it is launchers a user clicks.
+    Списка разрешённых приложений здесь нет намеренно: он выводится из
+    пакетов, которые поставил администратор. Собранная система минимальна и не
+    даёт пользователю ни одного приложения; прикладную часть администратор
+    кладёт поверх сам, и она же становится доступной. `hidden_launchers` --
+    единственная ручная правка, и она вычитает, а не добавляет.
     """
 
     enabled: bool = False
@@ -232,9 +232,24 @@ class KioskConfig:
     #: keeps the mode honest as that happens rather than silently losing a
     #: restriction.
     session_type: str = "x11"
-    #: Desktop-entry names the user may launch. Everything else is hidden from
-    #: the menu and the desktop.
-    allowed_apps: list[str] = field(default_factory=list)
+    #: Запускатели, которые администратор снял вручную.
+    #:
+    #: Списка разрешённого здесь нет и не должно быть: что администратор
+    #: поставил пакетами, то пользователю и доступно. Наше дело -- собрать
+    #: минимальную систему, в которой пользователю не доступно ни одного
+    #: приложения, а прикладную часть администратор кладёт поверх сам.
+    #:
+    #: До 02.09.2026 тут стоял `allowed_apps` -- список имён desktop-записей,
+    #: который заполнялся руками. Ошибку он давал такую, что поймать её было
+    #: нечем: прогон того же дня разрешил `atril`, пакета с ним не поставил, и
+    #: меню оказалось пустым; узнал бы об этом администратор от пользователя.
+    #: Имя пакета и имя его записи совпадают далеко не всегда.
+    #:
+    #: Здесь остаётся обратное действие -- вычитание. Один пакет нередко
+    #: ставит несколько запускателей (LibreOffice -- шесть), и лишние надо
+    #: уметь убрать. Имена читаются из образа и показываются галочками, а
+    #: снятые попадают сюда.
+    hidden_launchers: list[str] = field(default_factory=list)
     #: Settings the user may change: "network", "sound", "datetime".
     #:
     #: A kiosk still has to be usable by whoever sits in front of it -- joining
@@ -252,6 +267,11 @@ class KioskConfig:
     allowed_settings: list[str] = field(default_factory=list)
     #: Desktop entry started automatically when the session opens. Empty means
     #: the user gets the (restricted) desktop itself.
+    #:
+    #: Проверить его против списка доступного на этапе конфигурации больше
+    #: нельзя -- список складывается уже в собранной системе, -- поэтому
+    #: несуществующее имя ловится там же, при установке, и попадает в журнал
+    #: строкой, а не остаётся молчаливым пустым автозапуском.
     autostart_app: str = ""
     #: Minutes of inactivity before the screen blanks. 0 keeps it lit.
     #:
@@ -655,7 +675,7 @@ class InstallConfig:
         service switched on. Widening is visible; narrowing does not have to be
         remembered.
 
-        Only `allowed_apps` is left empty, and that is deliberate too: there is
+        Ничего не разрешается заранее, и это тоже намеренно: there is
         no sensible guess at which applications a particular kiosk should have,
         and validation refuses a kiosk without any -- so the one thing the
         administrator must decide is the one thing they are asked for.
@@ -665,7 +685,7 @@ class InstallConfig:
         config.kiosk = KioskConfig(
             enabled=True,
             desktop_environment="mate",
-            allowed_apps=[],
+            hidden_launchers=[],
             # No lock screen is possible anyway (the account password is
             # locked), and a kiosk that dims is a kiosk whose panel survives.
             screen_blank_minutes=15,

@@ -328,12 +328,8 @@ def plasma_layout_script(config: InstallConfig, paths: "KdePaths | None" = None)
         return ""
 
     paths = paths or KDE5_PATHS
-    apps = sorted(set(config.kiosk.allowed_apps))
-    if config.kiosk.allowed_settings:
-        # Разрешив настройки, администратор должен дать чем до них дойти.
-        apps.append("systemsettings")
-    launchers = ",".join(f"applications:{a}.desktop" for a in apps)
-    favourites = ",".join(f"{a}.desktop" for a in apps)
+    # Разрешив настройки, администратор должен дать чем до них дойти.
+    settings_entry = "systemsettings" if config.kiosk.allowed_settings else ""
     applet_service_removal = (
         f'    rm -f "{paths.services_dir}/plasma-applet-$plasmoid.desktop"\n'
         if paths.has_applet_services
@@ -341,8 +337,17 @@ def plasma_layout_script(config: InstallConfig, paths: "KdePaths | None" = None)
     )
     return f"""
 # Панель, избранное и запертые виджеты.
-APPLETSRC_LAUNCHERS="{launchers}"
-FAVOURITES="{favourites}"
+#
+# Список берётся из $ALLOWED -- того, что вычислила сама система по пакетам
+# администратора, -- а не из конфигурации. Так панель Plasma и меню
+# показывают ровно то, что установлено: раньше здесь стояли имена, вписанные
+# при сборке, и разойтись с действительностью им ничего не мешало.
+APPLETSRC_LAUNCHERS=""
+FAVOURITES=""
+for a in $ALLOWED {settings_entry}; do
+    APPLETSRC_LAUNCHERS="${{APPLETSRC_LAUNCHERS:+$APPLETSRC_LAUNCHERS,}}applications:$a.desktop"
+    FAVOURITES="${{FAVOURITES:+$FAVOURITES,}}$a.desktop"
+done
 
 for home in /etc/skel /home/*; do
     [ -d "$home" ] || continue
