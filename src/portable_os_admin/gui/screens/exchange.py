@@ -57,6 +57,8 @@ class ExchangeFrame(ttk.Frame):
             connect_row, text="Отключить", command=self._disconnect, state="disabled"
         )
         self.disconnect_btn.pack(side="left", padx=(8, 0))
+        self.space_var = tk.StringVar(value="")
+        ttk.Label(connect_row, textvariable=self.space_var).pack(side="right")
         ttk.Button(connect_row, text="Обновить список файлов", command=self._refresh).pack(
             side="left", padx=(8, 0)
         )
@@ -72,7 +74,13 @@ class ExchangeFrame(ttk.Frame):
         self.write_path_var = tk.StringVar()
         ttk.Label(write_row, text="Файл для записи:").pack(side="left")
         ttk.Entry(write_row, textvariable=self.write_path_var, width=44).pack(side="left", padx=(6, 6))
-        ttk.Button(write_row, text="Записать", command=self._write).pack(side="left")
+        ttk.Button(write_row, text="Выбрать файл…", command=self._choose_source_file).pack(
+            side="left"
+        )
+        ttk.Button(write_row, text="Выбрать каталог…", command=self._choose_source_dir).pack(
+            side="left", padx=(6, 0)
+        )
+        ttk.Button(write_row, text="Записать", command=self._write).pack(side="left", padx=(6, 0))
 
         read_row = ttk.Frame(self)
         read_row.pack(fill="x", padx=16, pady=(0, 4))
@@ -84,7 +92,10 @@ class ExchangeFrame(ttk.Frame):
         self.read_dest_var = tk.StringVar()
         ttk.Label(read_row, text="Куда скопировать:").pack(side="left")
         ttk.Entry(read_row, textvariable=self.read_dest_var, width=30).pack(side="left", padx=(6, 6))
-        ttk.Button(read_row, text="Прочитать", command=self._read).pack(side="left")
+        ttk.Button(read_row, text="Куда сохранить…", command=self._choose_destination).pack(
+            side="left"
+        )
+        ttk.Button(read_row, text="Прочитать", command=self._read).pack(side="left", padx=(6, 0))
         ttk.Button(read_row, text="Удалить", command=self._delete).pack(side="left", padx=(6, 0))
 
         back_row = ttk.Frame(self)
@@ -151,7 +162,7 @@ class ExchangeFrame(ttk.Frame):
         self.connect_btn.configure(state="disabled")
         self.disconnect_btn.configure(state="normal")
         self.message_bar.success("Раздел обмена подключён.")
-        self._refresh()
+        self._after_change()
 
     def _connect_failed(self, exc: BaseException) -> None:
         if not widget_alive(self):
@@ -197,6 +208,48 @@ class ExchangeFrame(ttk.Frame):
         name = self.files_table.item(selection[0], "values")[0]
         self.selected_name_var.set(name)
 
+    def _choose_source_file(self) -> None:
+        from tkinter import filedialog
+
+        chosen = filedialog.askopenfilename(parent=self, title="Файл для раздела обмена")
+        if chosen:
+            self.write_path_var.set(chosen)
+
+    def _choose_source_dir(self) -> None:
+        """Каталог целиком.
+
+        Через обмен едут настройки доустановленных программ, а это чаще
+        дерево, чем один файл: заставлять выбирать его по файлу значит
+        предлагать не пользоваться этим вовсе.
+        """
+        from tkinter import filedialog
+
+        chosen = filedialog.askdirectory(parent=self, title="Каталог для раздела обмена")
+        if chosen:
+            self.write_path_var.set(chosen)
+
+    def _choose_destination(self) -> None:
+        from tkinter import filedialog
+
+        chosen = filedialog.askdirectory(parent=self, title="Куда сохранить")
+        if not chosen:
+            return
+        name = self.selected_name_var.get().strip().rstrip("/")
+        self.read_dest_var.set(f"{chosen}/{name}" if name else chosen)
+
+    def _show_free_space(self) -> None:
+        """Сколько места осталось -- до записи, а не отказом после неё."""
+        mount_point = self._mount_point()
+        if mount_point is None:
+            return
+        try:
+            free, total = self.manager.free_space(mount_point)
+        except (ExchangeError, OSError):
+            return
+        self.space_var.set(
+            f"Свободно {free / 1024 / 1024:.0f} МБ из {total / 1024 / 1024:.0f} МБ"
+        )
+
     def _refresh(self) -> None:
         mount_point = self._mount_point()
         if mount_point is None:
@@ -209,6 +262,10 @@ class ExchangeFrame(ttk.Frame):
         except ExchangeError as exc:
             self.message_bar.error(str(exc))
 
+    def _after_change(self) -> None:
+        self._refresh()
+        self._show_free_space()
+
     def _write(self) -> None:
         mount_point = self._mount_point()
         if mount_point is None:
@@ -220,7 +277,7 @@ class ExchangeFrame(ttk.Frame):
         try:
             self.manager.write_file(mount_point, Path(source))
             self.message_bar.success(f"Файл {source!r} записан в раздел обмена.")
-            self._refresh()
+            self._after_change()
         except (ExchangeError, InsufficientSpaceError, OSError) as exc:
             self.message_bar.error(str(exc))
 
@@ -250,6 +307,6 @@ class ExchangeFrame(ttk.Frame):
         try:
             self.manager.delete_file(mount_point, name)
             self.message_bar.success(f"Файл {name!r} удалён из раздела обмена.")
-            self._refresh()
+            self._after_change()
         except (ExchangeError, OSError) as exc:
             self.message_bar.error(str(exc))

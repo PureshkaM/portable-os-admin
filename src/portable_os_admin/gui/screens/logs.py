@@ -58,6 +58,9 @@ class LogsFrame(ttk.Frame):
         ttk.Button(actions, text="Обновить список носителей", command=self._refresh_media).pack(
             side="left", padx=(8, 0)
         )
+        ttk.Button(actions, text="Сохранить в файл…", command=self._save_to_file).pack(
+            side="left", padx=(8, 0)
+        )
 
         self.message_bar = MessageBar(self)
         self.message_bar.pack(fill="x", padx=16)
@@ -72,6 +75,37 @@ class LogsFrame(ttk.Frame):
                 if record.media_id == self._preselected:
                     self.media_box.current(index)
                     break
+
+    def _save_to_file(self) -> None:
+        """Выгружает показанное в файл.
+
+        Журнал нужен не только на экране: его прикладывают к заявке, шлют
+        коллеге, хранят до разбора. Пересказывать его словами или снимать с
+        экрана -- худший из способов.
+        """
+        from tkinter import filedialog
+
+        lines = self.log_view.get("1.0", "end").strip()
+        if not lines:
+            self.message_bar.error("Нечего сохранять: журнал не загружен.")
+            return
+        record = self._selected_record()
+        suggested = f"journal-{record.media_id}.txt" if record else "journal.txt"
+        chosen = filedialog.asksaveasfilename(
+            parent=self,
+            title="Сохранить журнал",
+            initialfile=suggested,
+            defaultextension=".txt",
+        )
+        if not chosen:
+            return
+        try:
+            with open(chosen, "w", encoding="utf-8") as handle:
+                handle.write(lines + "\n")
+        except OSError as exc:
+            self.message_bar.error(f"Не удалось сохранить: {exc}")
+            return
+        self.message_bar.success(f"Журнал сохранён: {chosen}")
 
     def _refresh_media(self) -> None:
         # `container.data.media_records`, а не `container.media_records`.
