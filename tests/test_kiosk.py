@@ -1297,79 +1297,112 @@ def test_a_carried_in_drive_is_refused_at_the_device_level(layout):
 # ----------------------------------------------------------------------
 # Файловый менеджер: его нет ни в пакетах, ни в компонентах сессии
 # ----------------------------------------------------------------------
-def test_no_file_manager_is_installed_on_either_family():
-    """Файловый менеджер прямо нарушает определение минимальной системы.
+def test_kde_installs_no_file_manager_at_all():
+    """У KDE обзор файлов закрывается отсутствием, и это сильнее запретов.
 
-    Пользователю киоска он не положен: адресная строка файлового менеджера --
-    это и обзор всей файловой системы, и запуск чего угодно, то есть пролом
-    сразу двух слоёв. Долгое время caja стоял в наборе MATE как «рисовальщик
-    рабочего стола и потому неизбежный»; собственная схема MATE говорит иначе,
-    и это проверено по gschema образа: фон рисует mate-settings-daemon
-    (`draw-background`), а Caja отвечает только за значки
-    (`show-desktop-icons`), которых в киоске нет.
+    Рабочий стол Plasma рисует plasmashell, поэтому Dolphin не нужен вовсе.
+    Проверено сборками 01.09.2026: в собранных корнях РЕД ОС + KDE и
+    Debian + KDE нет ни dolphin, ни caja.
+    """
+    for target_os in ("debian", "redos"):
+        config = make_kiosk_config(target_os, allowed_apps=["mate-calc"])
+        config.kiosk.desktop_environment = "kde"
+        packages = get_backend(target_os).desktop_packages(config)
+        for manager in ("caja", "dolphin", "nautilus", "thunar", "pcmanfm"):
+            assert manager not in packages, f"{target_os}: в наборе KDE есть {manager}"
 
-    Проверяются оба семейства сразу: правило, записанное для одной среды и
-    молча не применённое к другой, -- тот самый класс ошибки, ради которого
-    киоск разнесли по средам 27.08.2026.
+
+def test_mate_keeps_caja_because_the_session_needs_it():
+    """В MATE файловый менеджер -- часть среды, и убрать его нельзя.
+
+    01.09.2026 его убрали, положившись на схему MATE: `draw-background`
+    обещает, что фон рисует mate-settings-daemon, а Caja отвечает лишь за
+    значки. Обещание оказалось неполным -- сеанс не поднялся вовсе: три
+    загрузки подряд, чёрный экран, пустой `.xsession-errors` при собранной
+    базе dconf и всех прочих компонентах на месте.
+
+    Вывод записан здесь, чтобы никто не повторил: Caja возвращён, а обзор
+    файлов закрывается тремя мерами, каждую из которых проверяют тесты ниже.
     """
     for target_os in ("debian", "redos"):
         config = make_kiosk_config(target_os, allowed_apps=["mate-calc"])
         config.kiosk.desktop_environment = "mate"
         packages = get_backend(target_os).desktop_packages(config)
-        for manager in ("caja", "dolphin", "nautilus", "thunar", "pcmanfm"):
-            assert manager not in packages, f"{target_os}: в наборе есть {manager}"
+        assert "caja" in packages, f"{target_os}: без caja сеанс MATE не поднимется"
 
 
-def test_the_session_stops_demanding_a_file_manager():
-    """Удалить пакет мало: mate-session вернёт его при следующем входе.
+def test_caja_draws_the_desktop_and_opens_no_windows():
+    """Мера первая: Caja запускается ключами, при которых окон не бывает.
 
-    Умолчание MATE -- required-components-list из windowmanager, panel,
-    filemanager и dock, где filemanager это caja. Описание ключа в gschema
-    прямо обещает: сессия «automatically add the required components back to
-    the session at login time if they do get removed». Без этой правки
-    носитель каждый вход просил бы то, чего на нём нет.
+    `--force-desktop` -- рисовать рабочий стол независимо от настроек и
+    окружения; `--no-default-window` -- «создавать окна только для явно
+    указанных URI». Оба прочитаны в man caja, а не подобраны.
 
-    Оконный менеджер и панель остаются: без них сеанс -- чёрный экран, и это
-    в проекте уже получалось однажды, живой загрузкой.
+    Запись подменяет штатную порядком поиска, а не удалением: XDG_DATA_DIRS
+    просматривает /usr/local/share раньше /usr/share.
     """
     from portable_os_admin.install.kiosk.environments import mate
 
-    config = make_kiosk_config("debian", allowed_apps=["mate-calc"])
+    config = make_kiosk_config(allowed_apps=["mate-calc"])
+    config.kiosk.desktop_environment = "mate"
+    files = mate.MateEnvironment().files(config)
+
+    assert mate.CAJA_DESKTOP_ENTRY_PATH.startswith("usr/local/share/applications/")
+    entry, _mode = files[mate.CAJA_DESKTOP_ENTRY_PATH]
+    assert "--force-desktop" in entry
+    assert "--no-default-window" in entry
+    assert "NoDisplay=true" in entry, "запись компонента не должна быть в меню"
+
+
+def test_the_session_uses_our_entry_not_the_packaged_one():
+    """Мера вторая: сессия запускает именно нашу запись.
+
+    Список обязательных компонентов остаётся полным -- windowmanager, panel и
+    filemanager, -- иначе mate-session вернёт файловый менеджер сам, по
+    описанию собственного ключа: «automatically add the required components
+    back to the session at login time if they do get removed». Меняется не
+    состав списка, а то, чем в нём является filemanager.
+    """
+    from portable_os_admin.install.kiosk.environments import mate
+
+    config = make_kiosk_config(allowed_apps=["mate-calc"])
     config.kiosk.desktop_environment = "mate"
     keyfile = mate.dconf_keyfile(config)
 
-    assert "required-components-list=['windowmanager', 'panel']" in keyfile
-    assert "filemanager" not in keyfile
-    # Фон рисуется без файлового менеджера, значков нет.
-    assert "draw-background=true" in keyfile
-    assert "show-desktop-icons=false" in keyfile
-    # Настройка без замка -- это умолчание, которое пользователь перепишет.
-    assert "/org/mate/desktop/session/required-components-list" in mate.dconf_locks(config)
+    assert "required-components-list=['windowmanager', 'panel', 'filemanager']" in keyfile
+    assert "filemanager='poa-caja-desktop'" in keyfile
 
 
-# ----------------------------------------------------------------------
-# Что администратор может разрешить настраивать
-# ----------------------------------------------------------------------
-def test_language_and_keyboard_can_be_allowed():
-    """Пять назначений, а не три.
+def test_what_else_is_closed_around_caja():
+    """Мера третья: всё, чем окно можно было бы открыть в обход.
 
-    Определение минимальной базовой системы оставляет пользователю язык и
-    раскладку, а обслуживались только сеть, звук и время: поле в конфигурации
-    было, а разрешить им язык было нечем. Имена модулей общие для обоих
-    поколений -- проверено по plasma-workspace 5.27.11 РЕД ОС и 6.3.6 Debian,
-    а не по памяти.
+    Командная строка панели, диалоги сохранения и открытия, выбор приложения
+    для незнакомого типа файла, значки на рабочем столе, домашний каталог по
+    двойному щелчку. Каждый пункт -- отдельная дверь к обзору файловой
+    системы; ключа, закрывающего сам файловый менеджер, в схеме MATE нет
+    вовсе (там девять ключей lockdown, и такого среди них не значится).
     """
-    from portable_os_admin.install.kiosk.environments import kde
+    from portable_os_admin.install.kiosk.environments import mate
 
-    config = make_kiosk_config("redos", allowed_apps=["mate-calc"],
-                               allowed_settings=["localisation", "keyboard"])
-    script = kde.settings_modules_script(config, kde.KDE5_PATHS)
+    config = make_kiosk_config(allowed_apps=["mate-calc"])
+    config.kiosk.desktop_environment = "mate"
+    keyfile = mate.dconf_keyfile(config)
 
-    assert "kcm_regionandlang" in script
-    assert "kcm_keyboard" in script
-    # Разрешено ровно названное: звук и сеть не приезжают заодно.
-    assert "kcm_pulseaudio" not in script
-    assert "kcm_networkmanagement" not in script
+    for key in (
+        "disable-command-line=true",
+        "disable-save-to-disk=true",
+        "disable-application-handlers=true",
+        "computer-icon-visible=false",
+        "home-icon-visible=false",
+        "desktop-is-home-dir=false",
+    ):
+        assert key in keyfile, f"не закрыто: {key}"
+
+    # И всё это заперто, а не предложено: незапертая настройка -- умолчание,
+    # которое пользователь перепишет.
+    locks = mate.dconf_locks(config)
+    assert "/org/mate/desktop/lockdown/disable-command-line" in locks
+
 
 
 def test_the_generations_do_not_share_a_settings_tree():

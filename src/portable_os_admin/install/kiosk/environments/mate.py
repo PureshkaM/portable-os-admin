@@ -15,6 +15,13 @@ from .base import DesktopEnvironment
 DCONF_PROFILE_PATH = "etc/dconf/profile/user"
 #: System-wide dconf settings and the locks that keep the user from changing
 #: them back. Both are compiled into a binary database by `dconf update`.
+#: Запись сессии, которой mate-session запускает Caja только как рисовальщик
+#: рабочего стола. Лежит в /usr/local/share: XDG_DATA_DIRS просматривает его
+#: раньше /usr/share, поэтому наша запись выигрывает у штатной, а сама
+#: caja.desktop остаётся нетронутой -- как и всё прочее, что киоск скрывает,
+#: но не удаляет.
+CAJA_DESKTOP_ENTRY_PATH = "usr/local/share/applications/poa-caja-desktop.desktop"
+
 DCONF_KEYFILE_PATH = "etc/dconf/db/local.d/00-poa-kiosk"
 DCONF_LOCKS_PATH = "etc/dconf/db/local.d/locks/00-poa-kiosk"
 # ----------------------------------------------------------------------
@@ -52,6 +59,13 @@ def _dconf_settings(config: InstallConfig) -> list[tuple[str, list[tuple[str, st
                 # user may not power the machine off it should not be offered
                 # at all.
                 ("disable-log-out", "false" if kiosk.allow_shutdown else "true"),
+                # Диалоги сохранения и открытия файлов -- тоже обзор файловой
+                # системы, просто через другое окно. Ключ проверен по схеме
+                # org.mate.lockdown образа: там девять ключей, и запрета
+                # именно файлового менеджера среди них нет вовсе -- потому
+                # доступ к Caja закрывается не одним запретом, а тремя мерами
+                # ниже.
+                ("disable-save-to-disk", "true"),
             ],
         ),
         (
@@ -102,6 +116,14 @@ def _dconf_settings(config: InstallConfig) -> list[tuple[str, list[tuple[str, st
                 # Caja's location bar is a file browser and a launcher at once.
                 ("always-use-browser", "false"),
                 ("show-hidden-files", "false"),
+                # Рабочий стол Caja рисует, а вот окно по щелчку по нему --
+                # нет: двойной щелчок по фону не должен открывать домашний
+                # каталог.
+                ("desktop-is-home-dir", "false"),
+                # Строка адреса вместо кнопок пути: набрать в ней путь --
+                # значит обойти всё, что закрыто выше. Отключается заранее, на
+                # случай если окно всё же откроется.
+                ("always-use-location-entry", "false"),
             ],
         ),
         (
@@ -127,18 +149,22 @@ def _dconf_settings(config: InstallConfig) -> list[tuple[str, list[tuple[str, st
             "org/mate/desktop/session",
             [
                 ("idle-delay", str(blank_minutes) if blanking else "0"),
-                # Файловый менеджер снят со списка обязательных компонентов
-                # сессии. Умолчание MATE -- ['windowmanager', 'panel',
-                # 'filemanager', 'dock'], где filemanager это caja, и
-                # mate-session, по описанию собственного ключа, «automatically
-                # add the required components back to the session at login
-                # time if they do get removed». То есть удалить пакет мало:
-                # сессия каждый вход просила бы то, чего на носителе нет.
+                # Имя записи без «.desktop»: mate-session ищет её в
+                # XDG_DATA_DIRS, где /usr/local/share идёт первым.
+                ("filemanager", "'poa-caja-desktop'"),
+                # Файловый менеджер сессии -- наша запись, а не штатная.
                 #
-                # Оконный менеджер и панель остаются -- без них сеанс это
-                # чёрный экран, и это уже проверялось живой загрузкой. Dock в
-                # умолчании пуст, поэтому и не назван.
-                ("required-components-list", "['windowmanager', 'panel']"),
+                # 01.09.2026 из списка убирали `filemanager` вместе с самим
+                # Caja, и сеанс перестал подниматься: три загрузки подряд
+                # заканчивались чёрным экраном при собранной базе dconf и всех
+                # прочих компонентах на месте. Caja в MATE -- часть среды, а
+                # не приложение поверх неё.
+                #
+                # Поэтому он остаётся, но запускается ключами
+                # `--force-desktop --no-default-window`: рабочий стол рисует,
+                # окон не открывает. Подробнее -- в `caja_desktop_entry`.
+                ("required-components-list",
+                 "['windowmanager', 'panel', 'filemanager']"),
             ],
         ),
         (
@@ -153,11 +179,50 @@ def _dconf_settings(config: InstallConfig) -> list[tuple[str, list[tuple[str, st
                 # когда он всё же появится зависимостью пакета
                 # администратора: рабочий стол со значками -- это папка, а
                 # папка -- это файловый менеджер.
-                ("show-desktop-icons", "false"),
+                # Рабочий стол рисует Caja, и это оставлено как есть: без
+                # него сеанс на РЕД ОС не поднимался вовсе (прогон
+                # 01.09.2026). Значков при этом нет -- они убраны поимённо
+                # ниже, в org/mate/caja/desktop, где выключены компьютер,
+                # домашний каталог, сеть и корзина.
+                ("show-desktop-icons", "true"),
             ],
         ),
     ]
     return settings
+
+
+def caja_desktop_entry() -> str:
+    """Caja как рисовальщик рабочего стола -- и только.
+
+    В MATE файловый менеджер входит в саму среду: mate-session держит его в
+    `required-components`, и без него сеанс не поднимается вовсе. Проверено
+    прогоном 01.09.2026 -- три загрузки подряд заканчивались чёрным экраном
+    при полностью исправном во всём остальном носителе.
+
+    Значит убрать Caja нельзя, а обзор файлов давать нельзя тоже. Разводится
+    это его же ключами, прочитанными в man caja:
+
+    * `--force-desktop` -- рисовать рабочий стол независимо от настроек и
+      окружения. Без него Caja может решить, что стол рисует кто-то другой, и
+      не нарисовать ничего;
+    * `--no-default-window` -- «создавать окна только для явно указанных
+      URI». То есть запуск сам по себе окна не открывает, а открыть его
+      явно неоткуда: запись в меню скрыта, обработчик каталогов снят, а
+      командная строка запрещена ключом lockdown.
+
+    Запись подменяет штатную не удалением, а порядком поиска: XDG_DATA_DIRS
+    просматривает /usr/local/share раньше /usr/share.
+    """
+    return (
+        "[Desktop Entry]\n"
+        "# generated by portable-os-admin\n"
+        "Type=Application\n"
+        "Name=Рабочий стол\n"
+        "Exec=caja --force-desktop --no-default-window\n"
+        # Не показывать нигде: это компонент сеанса, а не приложение.
+        "NoDisplay=true\n"
+        "X-MATE-Autostart-Phase=Desktop\n"
+    )
 
 
 def dconf_keyfile(config: InstallConfig) -> str:
@@ -210,6 +275,7 @@ class MateEnvironment(DesktopEnvironment):
             DCONF_PROFILE_PATH: (dconf_profile(), None),
             DCONF_KEYFILE_PATH: (dconf_keyfile(config), None),
             DCONF_LOCKS_PATH: (dconf_locks(config), None),
+            CAJA_DESKTOP_ENTRY_PATH: (caja_desktop_entry(), None),
         }
 
     def apply_fragment(self, config: InstallConfig) -> str:
