@@ -396,6 +396,97 @@ def test_the_desktop_can_actually_start(target_os):
     assert any(p.startswith("dconf") for p in packages)
 
 
+def test_the_two_families_describe_the_desktop_by_the_same_roles():
+    """Найденное на одной системе обязано попадать в обе.
+
+    До 02.09.2026 наборы лежали в бэкендах целиком и совпадали на десять
+    пакетов из двенадцати у MATE и на четыре из семи у KDE, а объяснения были
+    скопированы слово в слово. Именно в такой форме и потерялся пакет схем
+    GSettings: правку внесли бы в один файл и не заметили второй, а обошлось
+    бы это в сборку, запись и семь минут ожидания загрузки.
+
+    Тест держит форму описания: роли общие, бэкенд называет только исключения.
+    """
+    from portable_os_admin.install import desktop_roles
+
+    for desktop in ("mate", "kde"):
+        roles = desktop_roles.ROLES[desktop]
+        assert roles, f"{desktop}: роли не описаны"
+        # Каждая роль объясняет, зачем она в наборе: набор собран вручную
+        # именно затем, чтобы лишнего не было.
+        for role in roles:
+            assert role.why.strip(), f"{desktop}/{role.key}: роль без объяснения"
+        keys = [role.key for role in roles]
+        assert len(keys) == len(set(keys)), f"{desktop}: роль названа дважды"
+
+    # Исключений должно быть мало -- иначе общего описания нет, есть два
+    # списка, записанных другим способом.
+    for target_os in ("debian", "redos"):
+        overrides = get_backend(target_os).DESKTOP_PACKAGE_OVERRIDES
+        named = sum(len(v) for v in overrides.values())
+        assert named <= 4, f"{target_os}: исключений {named} -- описание разошлось"
+
+
+def test_every_role_of_the_session_is_actually_installed():
+    """Роль без пакета -- это компонент, которого в системе не окажется.
+
+    Проверяется на обоих семействах разом: смысл выноса ролей в том, что
+    ответ «чем исполняется эта роль» есть у каждой системы.
+    """
+    from portable_os_admin.install import desktop_roles
+
+    for target_os in ("debian", "redos"):
+        backend = get_backend(target_os)
+        for desktop in ("mate", "kde"):
+            config = make_kiosk_config(target_os, allowed_apps=["mate-calc"])
+            config.kiosk.desktop_environment = desktop
+            config.kiosk.screen_blank_minutes = 15
+            packages = backend.desktop_packages(config)
+            for role in desktop_roles.ROLES[desktop]:
+                name = backend.DESKTOP_PACKAGE_OVERRIDES.get(desktop, {}).get(
+                    role.key, role.package
+                )
+                if not name:
+                    continue  # роли у этого семейства нет, и это сказано явно
+                assert name in packages, (
+                    f"{target_os}/{desktop}: роль {role.key} не исполняет никто"
+                )
+
+
+def test_the_schemas_package_is_named_as_a_role_not_as_a_habit():
+    """Схемы GSettings -- отдельная роль, и это цена шести чёрных экранов.
+
+    `mate-panel` зависит только от библиотеки `libmate-desktop-2.so.17`, и на
+    этом цепочка обрывается: сами схемы приходят другим пакетом. Пока это было
+    записано двумя строками в двух списках, ошибку было не видно; ролью её
+    видно сразу -- у роли есть имя и объяснение.
+    """
+    from portable_os_admin.install import desktop_roles
+
+    schemas = [r for r in desktop_roles.MATE_ROLES if r.key == "settings-schemas"]
+    assert len(schemas) == 1
+    assert "org.mate.interface" in schemas[0].why
+
+    for target_os in ("debian", "redos"):
+        config = make_kiosk_config(target_os, allowed_apps=["mate-calc"])
+        config.kiosk.desktop_environment = "mate"
+        assert "mate-desktop" in get_backend(target_os).desktop_packages(config)
+
+
+def test_a_package_can_be_traced_back_to_its_role():
+    """«Не поставился mate-desktop» ничего не говорит тому, кто читает журнал.
+
+    «Не поставились схемы настроек» объясняет, почему сеанс не поднимется, --
+    поэтому обратный поиск по имени пакета есть и он проверяется.
+    """
+    from portable_os_admin.install import desktop_roles
+
+    overrides = get_backend("debian").DESKTOP_PACKAGE_OVERRIDES
+    assert desktop_roles.role_of("mate", "mate-desktop") == "settings-schemas"
+    assert desktop_roles.role_of("mate", "lightdm", overrides) == "display-manager"
+    assert desktop_roles.role_of("mate", "чего-нет") == ""
+
+
 def test_screensaver_is_only_installed_when_the_screen_should_blank():
     assert "mate-screensaver" not in get_backend("debian").desktop_packages(make_kiosk_config())
     assert "mate-screensaver" in get_backend("debian").desktop_packages(

@@ -166,56 +166,30 @@ class RedOSInstallBackend(InstallBackend):
         "dejavu-sans-fonts",
     )
 
-    #: Minimal Plasma. RED OS 8 ships KDE as its own desktop -- the image
-    #: carries redos-kde-theme-cert, the certified edition's theme -- so this
-    #: is the distribution's native environment rather than an add-on.
-    #: `konsole5` (RED OS's name for the terminal) and the settings centre are
-    #: deliberately absent.
-    KDE_PACKAGES = (
-        "plasma-desktop",
-        "plasma-workspace",
-        "kwin",
-        "sddm",
-        "plasma-nm",
-        "kde-settings-plasma",
-        "breeze-icon-theme",
-    )
+    #: Чем РЕД ОС отличается от общего описания среды (install/desktop_roles.py).
+    #:
+    #: KDE здесь родная, а не добавленная: РЕД ОС 8 несёт Plasma как свою
+    #: оболочку и кладёт в образ redos-kde-theme-cert -- тему сертифицированной
+    #: редакции. Терминал (`konsole5` в терминологии дистрибутива) и центр
+    #: настроек в набор всё равно не входят: их отсутствие -- сильнейшее из
+    #: ограничений этого режима.
+    #:
+    #: Три строки на две среды -- столько и есть настоящих различий. До
+    #: 02.09.2026 здесь лежали оба набора целиком, тридцать с лишним строк, из
+    #: которых с Debian совпадали десять из двенадцати у MATE и четыре из семи
+    #: у KDE.
+    DESKTOP_PACKAGE_OVERRIDES = {
+        # Роли те же, что у Debian; имена совпадают, кроме апплета сети.
+        "mate": {"network-applet": "network-manager-applet"},
+        # kwin у РЕД ОС не разделён на x11/wayland-варианты.
+        "kde": {"compositor": "kwin"},
+    }
 
-    KIOSK_PACKAGES = (
-        "sddm",
-        # MATE, the same desktop RED OS's own kiosk mode is built on.
-        "mate-session-manager",
-        # mate-desktop -- ради схем GSettings, а не ради утилит.
-        #
-        # Найдено прогоном 02.09.2026, и это была причина, по которой сеанс
-        # MATE не поднимался вовсе: `mate-session` падал в первом же
-        # `g_object_new` с «GLib-GIO-ERROR: Settings schema
-        # 'org.mate.interface' is not installed», SDDM возвращался к экрану
-        # входа, снова запускал сеанс -- и так по кругу. Снаружи это выглядело
-        # как чёрный экран без единого сообщения.
-        #
-        # Схемы лежат отдельно от библиотеки: `mate-panel` требует
-        # `libmate-desktop-2.so.17`, её приносит mate-desktop-libs, и на этом
-        # зависимости кончаются. Файлы `org.mate.*.gschema.xml` живут в
-        # mate-desktop-gschemas (РЕД ОС) и mate-desktop-common (Debian), а их
-        # тянет `mate-desktop` -- потому он и назван, хотя сам по себе почти
-        # ничего не делает.
-        #
-        # В коде до этого стояло обратное утверждение: «библиотека, которая
-        # нужна сеансу, приходит зависимостью mate-panel». Библиотека -- да.
-        # Схемы -- нет, и разницу между ними видно только на живой загрузке.
-        "mate-desktop",
-        "mate-panel",
-        "marco",
-        # Caja -- компонент среды, а не приложение. См. debian.py.
-        "caja",
-        "mate-settings-daemon",
-        "mate-polkit",
-        "mate-notification-daemon",
-        "mate-themes",
-        "mate-icon-theme",
-        "network-manager-applet",
-    )
+    #: Пакет настроек Plasma, которому пары у Debian нет: он несёт умолчания
+    #: оболочки, принятые в этом дистрибутиве.
+    DESKTOP_EXTRA_PACKAGES = {"kde": ("kde-settings-plasma",)}
+
+
 
     # ------------------------------------------------------------------
     # Unattended updates, run on the medium itself
@@ -240,17 +214,6 @@ class RedOSInstallBackend(InstallBackend):
             # its kernel, and `kernel*` alone would not match it.
             argv.append("--exclude=kernel*,kernel-lt*,grub2*,shim*")
         return argv
-
-    def desktop_packages(self, config: InstallConfig) -> list[str]:
-        if not kiosk_mode.is_enabled(config):
-            return []
-        packages = list(self.GRAPHICS_PACKAGES)
-        if kiosk_mode.desktop_of(config) == kiosk_mode.DESKTOP_KDE:
-            return packages + list(self.KDE_PACKAGES)
-        packages += list(self.KIOSK_PACKAGES)
-        if config.kiosk.screen_blank_minutes > 0:
-            packages.append("mate-screensaver")
-        return packages
 
     def display_manager_files(self, config: InstallConfig) -> dict[str, str]:
         """SDDM autologin, both desktops.

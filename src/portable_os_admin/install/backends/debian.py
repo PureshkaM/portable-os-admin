@@ -94,102 +94,37 @@ class DebianInstallBackend(InstallBackend):
         "desktop-file-utils",
     )
 
-    KIOSK_PACKAGES = (
-        # Display manager: the only way into the session, since the account's
-        # password is locked and the getty units are masked.
-        "lightdm",
-        "lightdm-gtk-greeter",
-        "network-manager-gnome",
-        # MATE, named package by package. `mate-desktop-environment` and
-        # `task-mate-desktop` would each drag in mate-terminal, the control
-        # centre and a system monitor -- the tools this mode exists to remove.
-        "mate-session-manager",
-        # mate-desktop -- ради схем GSettings, а не ради утилит.
-        #
-        # Найдено прогоном 02.09.2026, и это была причина, по которой сеанс
-        # MATE не поднимался вовсе: `mate-session` падал в первом же
-        # `g_object_new` с «GLib-GIO-ERROR: Settings schema
-        # 'org.mate.interface' is not installed», SDDM возвращался к экрану
-        # входа, снова запускал сеанс -- и так по кругу. Снаружи это выглядело
-        # как чёрный экран без единого сообщения.
-        #
-        # Схемы лежат отдельно от библиотеки: `mate-panel` требует
-        # `libmate-desktop-2.so.17`, её приносит mate-desktop-libs, и на этом
-        # зависимости кончаются. Файлы `org.mate.*.gschema.xml` живут в
-        # mate-desktop-gschemas (РЕД ОС) и mate-desktop-common (Debian), а их
-        # тянет `mate-desktop` -- потому он и назван, хотя сам по себе почти
-        # ничего не делает.
-        #
-        # В коде до этого стояло обратное утверждение: «библиотека, которая
-        # нужна сеансу, приходит зависимостью mate-panel». Библиотека -- да.
-        # Схемы -- нет, и разницу между ними видно только на живой загрузке.
-        "mate-desktop",
-        "mate-panel",
-        "marco",
-        # Caja стоит, и это решение, принятое после прогона.
-        #
-        # 01.09.2026 его пробовали убрать: определение минимальной базовой
-        # системы файлового менеджера не допускает, а схема MATE обещала, что
-        # фон нарисует mate-settings-daemon (`draw-background`), тогда как
-        # Caja отвечает лишь за значки (`show-desktop-icons`). Обещание
-        # оказалось неполным: без Caja сеанс на РЕД ОС не поднимался вовсе --
-        # три загрузки подряд, чёрный экран вместо рабочего стола, пустой
-        # `.xsession-errors`, и это при собранной базе dconf и всех прочих
-        # компонентах на месте.
-        #
-        # Значит Caja в MATE -- компонент среды, а не приложение, и правильный
-        # ответ не «убрать», а «не дать до него добраться». Меры перечислены в
-        # kiosk/environments/mate.py: запись скрыта, обработчик каталогов снят,
-        # окно файлового менеджера запрещено ключами lockdown.
-        #
-        # Слой «нечего запускать» здесь уступает слою «неоткуда запустить», и
-        # сказано это прямо: киоск на MATE в этом месте слабее киоска на KDE,
-        # где Dolphin отсутствует по-настоящему.
-        "caja",
-        "mate-settings-daemon",
-        "mate-polkit",
-        "mate-notification-daemon",
-        "mate-themes",
-        "mate-icon-theme",
-    )
+    #: Чем Debian отличается от общего описания среды (install/desktop_roles.py).
+    #:
+    #: Четыре строки на две среды -- столько и есть настоящих различий. До
+    #: 02.09.2026 здесь лежали оба набора целиком, полсотни строк вместе с
+    #: объяснениями, и те же объяснения слово в слово лежали в бэкенде РЕД ОС.
+    DESKTOP_PACKAGE_OVERRIDES = {
+        "mate": {
+            # В образе Debian sddm есть, но lightdm легче и не требует своей
+            # шины для автовхода.
+            "display-manager": "lightdm",
+            "network-applet": "network-manager-gnome",
+        },
+        # kwin в Debian разделён по протоколам; сеанс здесь X11, а вариант
+        # Wayland добавляется отдельно -- см. WAYLAND_PACKAGES.
+        "kde": {"compositor": "kwin-x11", "icons": "breeze"},
+    }
 
-    #: Minimal Plasma. `systemsettings`, `plasma-discover` and `kwrited` are
-    #: only *Recommends* of plasma-desktop -- checked against the image's own
-    #: index -- and package_install_command passes --no-install-recommends, so
-    #: a kiosk gets Plasma with no settings centre, no software store and no
-    #: terminal. Dolphin is not listed at all: unlike MATE, where caja draws
-    #: the desktop and is therefore unavoidable, Plasma's desktop is drawn by
-    #: plasmashell, so the file manager can simply be absent.
-    KDE_PACKAGES = (
-        "plasma-desktop",
-        "plasma-workspace",
-        "kwin-x11",
-        "sddm",
-        "plasma-nm",
-        "breeze",
-        "kde-config-gtk-style",
-    )
+    #: Пакеты, которым роли нет.
+    #:
+    #: Оболочка lightdm поставляется отдельно от самого менеджера входа: без
+    #: неё он поднимется и покажет пустой экран. Пакет тем оформления GTK нужен
+    #: Plasma затем, чтобы приложения на GTK -- а разрешённые приложения чаще
+    #: всего именно такие -- не выглядели чужими в сеансе KDE.
+    DESKTOP_EXTRA_PACKAGES = {
+        "mate": ("lightdm-gtk-greeter",),
+        "kde": ("kde-config-gtk-style",),
+    }
 
-    def desktop_packages(self, config: InstallConfig) -> list[str]:
-        if not kiosk_mode.is_enabled(config):
-            return []
-        if kiosk_mode.desktop_of(config) == kiosk_mode.DESKTOP_KDE:
-            packages = list(self.GRAPHICS_PACKAGES) + list(self.KDE_PACKAGES)
-            if kiosk_mode.wants_wayland(config):
-                # kwin-wayland is the compositor itself; xwayland lets X-only
-                # applications (which is most of what a kiosk allows) run at
-                # all inside a Wayland session.
-                packages += ["kwin-wayland", "xwayland"]
-            # KDE blanks the screen through kscreenlocker, which Plasma already
-            # carries; nothing extra to install.
-            return packages
-        packages = list(self.GRAPHICS_PACKAGES) + list(self.KIOSK_PACKAGES)
-        # Only when the screen is meant to blank. It is the component that
-        # would otherwise also offer to lock, which this login model cannot
-        # support -- see KioskConfig.screen_blank_minutes.
-        if config.kiosk.screen_blank_minutes > 0:
-            packages.append("mate-screensaver")
-        return packages
+    #: Сеанс Plasma под Wayland: композитор и мост для приложений, умеющих
+    #: только X -- а это большинство того, что киоск разрешает.
+    WAYLAND_PACKAGES = ("kwin-wayland", "xwayland")
 
     def display_manager_files(self, config: InstallConfig) -> dict[str, str]:
         """Autologin, because the account has no usable password.

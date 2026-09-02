@@ -16,6 +16,7 @@ from abc import ABC, abstractmethod
 
 from ...config.schema import ExtraUserConfig, InstallConfig
 from .. import autoupdate
+from .. import desktop_roles
 from .. import kiosk as kiosk_mode
 from .. import machine_binding
 from ..disk import MediaLayout
@@ -373,6 +374,22 @@ class InstallBackend(ABC):
             return None
         return ["sh", "-c", f"{shlex.join(argv)} || true"]
 
+    #: Роли рабочей среды, которые у этого семейства называются иначе.
+    #:
+    #: `{"mate": {"display-manager": "lightdm"}}` читается как «менеджер входа у
+    #: нас называется lightdm», а пустая строка -- как «этой роли у нас нет».
+    #: Всё, что не названо здесь, берётся из общего описания в
+    #: `install/desktop_roles.py`, и это главное: правка, найденная на одной
+    #: системе, попадает в обе разом. До 02.09.2026 списки лежали в бэкендах
+    #: целиком и совпадали на десять пакетов из двенадцати -- ровно та форма
+    #: дублирования, которой потерялся пакет схем GSettings.
+    DESKTOP_PACKAGE_OVERRIDES: dict[str, dict[str, str]] = {}
+
+    #: Пакеты, которым роли нет: существуют у одного семейства и не имеют пары
+    #: у другого. Список короткий намеренно -- растущий означает, что роль
+    #: всё-таки есть и её надо назвать.
+    DESKTOP_EXTRA_PACKAGES: dict[str, tuple[str, ...]] = {}
+
     def desktop_packages(self, config: InstallConfig) -> list[str]:
         """Packages the restricted desktop needs, or [] for a console system.
 
@@ -382,8 +399,31 @@ class InstallBackend(ABC):
         control centre, a system monitor and a text editor -- precisely the
         tools the kiosk exists to withhold. Not installing them is this mode's
         strongest restriction, so the list is chosen here and not delegated.
+
+        Сам набор общий для семейств и собирается по ролям; бэкенду остаётся
+        графическая часть, которая у дистрибутивов действительно своя --
+        драйверы, прошивки, шрифты, -- и короткий список исключений.
         """
-        return []
+        if not kiosk_mode.is_enabled(config):
+            return []
+        desktop = kiosk_mode.desktop_of(config)
+        packages = list(self.GRAPHICS_PACKAGES)
+        packages += desktop_roles.packages_for(
+            desktop,
+            overrides=self.DESKTOP_PACKAGE_OVERRIDES,
+            extras=self.DESKTOP_EXTRA_PACKAGES,
+            # Гашение экрана -- роль MATE: у Plasma его делает kscreenlocker,
+            # который приходит вместе с оболочкой.
+            blank_screen=config.kiosk.screen_blank_minutes > 0,
+        )
+        if desktop == kiosk_mode.DESKTOP_KDE and kiosk_mode.wants_wayland(config):
+            packages += list(self.WAYLAND_PACKAGES)
+        return packages
+
+    #: Дополнение к сеансу Plasma под Wayland. Пусто там, где сеанса Wayland
+    #: нет вовсе: в образе РЕД ОС 8 его не существует, и пара «РЕД ОС +
+    #: Wayland» отклоняется проверкой конфигурации, а не молча подменяется.
+    WAYLAND_PACKAGES: tuple[str, ...] = ()
 
     def display_manager_files(self, config: InstallConfig) -> dict[str, str]:
         """Display-manager configuration granting the kiosk account autologin.
