@@ -50,6 +50,11 @@ class DeployWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
         self.device_path = ""
         self.device_size_gb = ""
         self.passphrase = ""
+        #: Как назвать носитель в списке -- спрашивается здесь, потому что
+        #: здесь администратор и решает, кому носитель пойдёт.
+        self.media_name = ""
+        #: Файлы и каталоги, которые лягут в раздел обмена сразу при записи.
+        self.exchange_files: list[str] = []
         self.metadata = None
         self.dist_config: InstallConfig | None = None
         self._running = False
@@ -57,11 +62,18 @@ class DeployWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
         super().__init__(
             parent,
             app,
-            step_titles=["Дистрибутив", "Носитель", "Пароль", "Подтверждение и запись"],
+            step_titles=[
+                "Дистрибутив",
+                "Носитель",
+                "Пароль",
+                "Кому и что",
+                "Подтверждение и запись",
+            ],
             step_hints=[
                 "",
                 "",
                 "",
+                "Необязательно, но здесь это дешевле, чем потом.",
                 "",
             ],
             finish_label="К панели",
@@ -151,6 +163,131 @@ class DeployWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
         config = getattr(self.metadata, "config", None)
         luks = getattr(config, "luks", None)
         return int(getattr(luks, "min_passphrase_length", 0) or LuksConfig().min_passphrase_length)
+
+    # -- шаг 3: имя носителя и файлы в раздел обмена ------------------------
+    def _build_step_handover(self, body: ttk.Frame) -> None:
+        """Два вопроса, которые иначе задаются постфактум.
+
+        **Имя.** После записи носитель попадает в список, где строки
+        различаются идентификаторами вроде `46aed677`. Они отвечают на вопрос
+        «тот ли это носитель», но не на вопрос «чей он», а второй как раз и
+        задают, когда носитель надо отозвать или заменить.
+
+        **Файлы.** Через раздел обмена едут настройки программ, которые
+        администратор доустановил в образ. Раздел в момент записи уже
+        смонтирован -- положить в него файл здесь ничего не стоит, тогда как
+        после сборки это отдельный заход: открыть контейнер, подключить
+        носитель, открыть том, скопировать.
+        """
+        form = ttk.Frame(body)
+        form.pack(anchor="w", fill="x")
+        self.media_name_var = tk.StringVar(value=self.media_name)
+        add_field(
+            form,
+            0,
+            "Имя носителя:",
+            self.media_name_var,
+            width=36,
+            hint="Например: «Иванов, бухгалтерия». Хранится в контейнере "
+            "администратора и на носитель не пишется — переименовать можно в любой момент.",
+        )
+
+        files = ttk.LabelFrame(body, text=" Файлы в раздел обмена ", padding=theme.SPACE_SM)
+        files.pack(fill="both", expand=True, pady=(theme.SPACE_MD, 0))
+        ttk.Label(
+            files,
+            text="Настройки доустановленных программ и всё, что должно быть у "
+            "пользователя с первого запуска. Каталоги копируются целиком.",
+            style="Hint.TLabel",
+            wraplength=theme.TEXT_WRAP,
+        ).pack(anchor="w", pady=(0, theme.SPACE_SM))
+
+        self.exchange_list = tk.Listbox(
+            files,
+            height=6,
+            selectmode="extended",
+            exportselection=False,
+            background=theme.SURFACE,
+            foreground=theme.TEXT,
+            highlightthickness=1,
+            highlightbackground=theme.BORDER,
+            borderwidth=0,
+        )
+        self.exchange_list.pack(fill="both", expand=True)
+        for path in self.exchange_files:
+            self.exchange_list.insert("end", path)
+
+        buttons = ttk.Frame(files)
+        buttons.pack(fill="x", pady=(theme.SPACE_SM, 0))
+        ttk.Button(buttons, text="Добавить файлы…", command=self._add_exchange_files).pack(
+            side="left"
+        )
+        ttk.Button(buttons, text="Добавить каталог…", command=self._add_exchange_directory).pack(
+            side="left", padx=(theme.SPACE_SM, 0)
+        )
+        ttk.Button(buttons, text="Убрать выбранное", command=self._remove_exchange_entries).pack(
+            side="left", padx=(theme.SPACE_SM, 0)
+        )
+
+    def _add_exchange_files(self) -> None:
+        from tkinter import filedialog
+
+        chosen = filedialog.askopenfilenames(parent=self, title="Файлы для раздела обмена")
+        for path in chosen or ():
+            if path not in self.exchange_list.get(0, "end"):
+                self.exchange_list.insert("end", path)
+
+    def _add_exchange_directory(self) -> None:
+        from tkinter import filedialog
+
+        chosen = filedialog.askdirectory(parent=self, title="Каталог для раздела обмена")
+        if chosen and chosen not in self.exchange_list.get(0, "end"):
+            self.exchange_list.insert("end", chosen)
+
+    def _remove_exchange_entries(self) -> None:
+        for index in reversed(self.exchange_list.curselection()):
+            self.exchange_list.delete(index)
+
+    def _save_step_handover(self) -> None:
+        self.media_name = self.media_name_var.get().strip()
+        self.exchange_files = list(self.exchange_list.get(0, "end"))
+
+    def _validate_step_handover(self) -> bool:
+        """Проверяет, что выбранное ещё существует и поместится.
+
+        Файл, исчезнувший между выбором и записью, иначе обернулся бы
+        предупреждением в конце часовой работы; а превышение размера раздела --
+        отказом копирования там, где носитель уже стёрт.
+        """
+        import os
+
+        missing = [path for path in self.exchange_files if not os.path.exists(path)]
+        if missing:
+            self.message_bar.error(
+                "Не найдено: " + ", ".join(missing) + ". Уберите из списка или выберите заново."
+            )
+            return False
+
+        total = 0
+        for path in self.exchange_files:
+            if os.path.isfile(path):
+                total += os.path.getsize(path)
+                continue
+            for directory, _dirs, names in os.walk(path):
+                for name in names:
+                    try:
+                        total += os.path.getsize(os.path.join(directory, name))
+                    except OSError:
+                        pass
+        config = getattr(self.metadata, "config", None)
+        capacity_mb = int(getattr(getattr(config, "disk", None), "exchange_partition_mb", 0) or 0)
+        if capacity_mb and total > capacity_mb * 1024 * 1024 * 0.9:
+            self.message_bar.error(
+                f"Выбрано {total / 1024 / 1024:.0f} МБ, а раздел обмена этого дистрибутива — "
+                f"{capacity_mb} МБ. Уберите лишнее или соберите дистрибутив с большим разделом."
+            )
+            return False
+        return True
 
     # -- шаг 3: подтверждение и запись --------------------------------------
     def _build_step_confirm(self, body: ttk.Frame) -> None:
@@ -342,6 +479,8 @@ class DeployWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
                 dry_run=False,
                 confirm_device=confirm_device,
                 on_step=self._on_stage,
+                media_name=self.media_name,
+                exchange_files=self.exchange_files,
             )
 
         run_in_background(self, work, on_success=self._done, on_error=self._failed)
@@ -420,18 +559,21 @@ class DeployWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
         _build_step_distribution,
         DeviceStepMixin._build_step_device,
         _build_step_passphrase,
+        _build_step_handover,
         _build_step_confirm,
     ]
     _STEP_SAVERS = [
         _save_step_distribution,
         DeviceStepMixin._save_step_device,
         _save_step_passphrase,
+        _save_step_handover,
         None,
     ]
     _STEP_VALIDATORS = [
         _validate_step_distribution,
         DeviceStepMixin._validate_step_device,
         _validate_step_passphrase,
+        _validate_step_handover,
         None,
     ]
 

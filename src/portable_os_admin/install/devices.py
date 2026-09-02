@@ -29,6 +29,13 @@ class Partition:
     fstype: str
     label: str
     mountpoint: str
+    #: UUID раздела -- у тома LUKS это UUID его заголовка.
+    #:
+    #: По нему подключённый носитель узнаётся, не открывая ни одного тома:
+    #: те же UUID записаны в контейнере администратора при выдаче. Пароль для
+    #: этого не нужен, монтировать ничего не надо, и носитель, который просто
+    #: воткнули в порт, называет себя сам.
+    uuid: str = ""
 
     def describe(self) -> str:
         size_gb = self.size_bytes / 1024**3
@@ -101,6 +108,7 @@ def collect_partitions(entry: dict) -> tuple[Partition, ...]:
                     fstype=(child.get("fstype") or "").strip(),
                     label=(child.get("label") or "").strip(),
                     mountpoint=mountpoints[0] if mountpoints else "",
+                    uuid=(child.get("uuid") or "").strip(),
                 )
             )
         found.extend(collect_partitions(child))
@@ -108,7 +116,7 @@ def collect_partitions(entry: dict) -> tuple[Partition, ...]:
 
 
 class DeviceLister:
-    LSBLK_COLUMNS = "NAME,PATH,SIZE,MODEL,RM,TRAN,TYPE,FSTYPE,LABEL,MOUNTPOINTS"
+    LSBLK_COLUMNS = "NAME,PATH,SIZE,MODEL,RM,TRAN,TYPE,FSTYPE,LABEL,UUID,MOUNTPOINTS"
 
     def list_removable(self) -> list[BlockDevice]:
         data = self._lsblk_json()
@@ -130,6 +138,38 @@ class DeviceLister:
                     size_bytes=int(entry.get("size") or 0),
                     model=(entry.get("model") or "").strip(),
                     removable=True,
+                    mountpoints=collect_mountpoints(entry),
+                    partitions=collect_partitions(entry),
+                )
+            )
+        return devices
+
+    def list_all(self) -> list[BlockDevice]:
+        """Все блочные устройства с их разделами, без отбора по съёмности.
+
+        Нужно для узнавания своих носителей: там вопрос не «можно ли на это
+        писать», а «не наш ли это носитель», и отсеивать по признаку съёмности
+        значит терять ровно те случаи, ради которых узнавание и заводилось.
+        Кардридер, о котором в `list_removable` сказано, что он врёт про RM,
+        врёт и здесь -- только теперь ценой не отказа записи, а неузнанной
+        флешки. Плюс носитель, подключённый через `losetup`, -- это стенд, на
+        котором проверяют саму программу.
+
+        Ничего не пишется и не открывается: читаются заголовки, которые lsblk
+        и так показывает всем.
+        """
+        data = self._lsblk_json()
+        devices = []
+        for entry in data.get("blockdevices", []):
+            if entry.get("type") not in ("disk", "loop"):
+                continue
+            devices.append(
+                BlockDevice(
+                    name=entry.get("name", ""),
+                    path=entry.get("path") or f"/dev/{entry.get('name', '')}",
+                    size_bytes=int(entry.get("size") or 0),
+                    model=(entry.get("model") or "").strip(),
+                    removable=_truthy(entry.get("rm")),
                     mountpoints=collect_mountpoints(entry),
                     partitions=collect_partitions(entry),
                 )

@@ -5,7 +5,7 @@ Maps to course-project § "Структура данных системы": "З�
 """
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime, timezone
 
 
@@ -17,10 +17,23 @@ def _now_iso() -> str:
 class MediaRecord:
     media_id: str
     luks_uuid: str
+    #: Как носитель называется в системе: модель флешки или путь устройства.
+    #: Заполняется при записи и остаётся техническим ответом на вопрос «что
+    #: это за железка».
     label: str
     config_name: str
     target_os: str
     created_at: str = field(default_factory=_now_iso)
+    #: Как носитель называет администратор: «Иванов, бухгалтерия».
+    #:
+    #: Идентификатор носителя (`media_id`) отвечает на вопрос «тот ли это
+    #: носитель», но не отвечает на вопрос «чей он». В списке из десяти строк
+    #: `46aed677` и `218d2d33` неразличимы, и администратор, которому надо
+    #: отозвать носитель уволившегося сотрудника, не знает, какой из них
+    #: выбрать. Имя задаётся при записи и меняется в любой момент: оно живёт в
+    #: контейнере, а не на самом носителе, и переименование ничего не пишет на
+    #: флешку.
+    name: str = ""
     #: Base64 of the key that opens this medium's log and exchange volumes.
     #: It lives here, inside the encrypted administrator container, and
     #: nowhere else on the administrator's machine -- losing the container
@@ -31,14 +44,6 @@ class MediaRecord:
     #: medium without trusting device names, which reorder between ports.
     logs_luks_uuid: str = ""
     exchange_luks_uuid: str = ""
-    #: Опись незашифрованной части носителя: путь -> sha256, и подпись к ней.
-    #:
-    #: Эталон живёт здесь, а не на носителе, и в этом весь смысл: тот, кто
-    #: подменил загрузчик, до контейнера администратора не дотянулся. Носитель
-    #: несёт свою копию на зашифрованном корне -- ею он проверяет себя сам,
-    #: но подделать обе разом можно только зная пароль и имея контейнер.
-    boot_manifest: dict = field(default_factory=dict)
-    boot_manifest_signature: str = ""
     #: Опись незашифрованной части носителя: путь -> sha256, и подпись к ней.
     #:
     #: Эталон живёт здесь, а не на носителе, и в этом весь смысл: тот, кто
@@ -59,7 +64,23 @@ class MediaRecord:
 
     @classmethod
     def from_dict(cls, data: dict) -> "MediaRecord":
-        return cls(**data)
+        """Записи, сделанные прежними версиями, читаются как есть.
+
+        Контейнер администратора переживает обновления программы, и запись,
+        созданная до появления нового поля, не должна ронять открытие сеанса:
+        неизвестные ключи отбрасываются, отсутствующие берут умолчание.
+        """
+        known = {f.name for f in fields(cls)}
+        return cls(**{key: value for key, value in data.items() if key in known})
+
+    @property
+    def display_name(self) -> str:
+        """Чем эту строку называть в списке.
+
+        Имя, если администратор его дал; иначе -- модель носителя; в крайнем
+        случае идентификатор, который хотя бы уникален.
+        """
+        return self.name or self.label or self.media_id
 
 
 @dataclass

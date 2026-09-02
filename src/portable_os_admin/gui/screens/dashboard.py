@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 import tkinter as tk
-from tkinter import ttk
+from tkinter import simpledialog, ttk
 
+from ...admin import media_detect
 from .. import theme
 from ..widgets import MessageBar
 
@@ -72,10 +73,17 @@ class DashboardFrame(ttk.Frame):
         card = ttk.Frame(self, style="Card.TFrame", padding=theme.SPACE_MD)
         card.pack(side="top", fill="both", expand=True, padx=theme.SPACE_LG)
 
-        columns = ("media_id", "label", "os", "config", "created")
+        # Первым -- имя, которое дал администратор, а не идентификатор.
+        #
+        # `46aed677` отвечает на вопрос «тот ли это носитель», но не на вопрос
+        # «чей он», а список из десяти строк читают именно ради второго.
+        # Столбец «Подключён» заполняется сам: носитель, воткнутый в порт,
+        # узнаётся по UUID своих томов, без пароля и без монтирования.
+        columns = ("name", "connected", "media_id", "os", "config", "created")
         headings = {
+            "name": "Носитель",
+            "connected": "Подключён",
             "media_id": "Идентификатор",
-            "label": "Метка",
             "os": "ОС",
             "config": "Конфигурация",
             "created": "Создан",
@@ -83,7 +91,14 @@ class DashboardFrame(ttk.Frame):
         # Сумма ширин влезает в область содержимого при окне минимальной
         # ширины: до 02.09.2026 она была больше, и колонка «Создан» уходила за
         # край -- дата создания носителя не читалась вовсе.
-        widths = {"media_id": 150, "label": 130, "os": 80, "config": 150, "created": 180}
+        widths = {
+            "name": 190,
+            "connected": 110,
+            "media_id": 110,
+            "os": 70,
+            "config": 130,
+            "created": 150,
+        }
         self.table = ttk.Treeview(card, columns=columns, show="headings", height=10)
         for col in columns:
             self.table.heading(col, text=headings[col])
@@ -108,8 +123,15 @@ class DashboardFrame(ttk.Frame):
         ttk.Button(
             row_actions, text="Журналы носителя", command=self._open_selected_logs
         ).pack(side="left", padx=(theme.SPACE_SM, 0))
+        ttk.Button(
+            row_actions, text="Переименовать", command=self._rename_selected
+        ).pack(side="left", padx=(theme.SPACE_SM, 0))
 
-        self._refresh_table()
+        self._poll_job = None
+        self._poll_connected()
+        # Опрос прекращается вместе с экраном: `after` переживает виджет и
+        # продолжал бы дёргать уничтоженную таблицу.
+        self.bind("<Destroy>", self._stop_polling)
         # Said plainly rather than left as an empty grid, which reads as a
         # screen that failed to load rather than as a container with nothing in
         # it yet.
@@ -121,10 +143,83 @@ class DashboardFrame(ttk.Frame):
     def _refresh_table(self) -> None:
         for item in self.table.get_children():
             self.table.delete(item)
-        for record in self.app.session.container.data.media_records:
+        records = self.app.session.container.data.media_records
+        connected = media_detect.detect_map(records)
+        for record in records:
+            found = connected.get(record.media_id)
             self.table.insert(
-                "", "end", values=(record.media_id, record.label, record.target_os, record.config_name, record.created_at)
+                "",
+                "end",
+                values=(
+                    record.display_name,
+                    found.device_path if found else "",
+                    record.media_id,
+                    record.target_os,
+                    record.config_name,
+                    record.created_at,
+                ),
             )
+
+    def _poll_connected(self) -> None:
+        """Опрашивает порты, пока экран открыт.
+
+        Носитель втыкают уже после того, как список открыт, -- и если не
+        опрашивать, администратору придётся догадаться нажать «обновить».
+        Пять секунд -- достаточно редко, чтобы не мешать, и достаточно часто,
+        чтобы флешка «появилась» пока рука ещё на ней.
+        """
+        if not self.winfo_exists():
+            return
+        try:
+            self._refresh_table()
+        finally:
+            self._poll_job = self.after(5000, self._poll_connected)
+
+    def _rename_selected(self) -> None:
+        """Имя носителя живёт в контейнере, а не на флешке.
+
+        Поэтому переименование ничего не пишет на носитель: его можно дать
+        уже выданному, потерянному и даже сломанному -- лишь бы запись о нём
+        была здесь.
+        """
+        selection = self.table.selection()
+        if not selection:
+            self.message_bar.error("Выберите носитель в списке.")
+            return
+        media_id = self.table.item(selection[0], "values")[2]
+        record = next(
+            (r for r in self.app.session.container.data.media_records if r.media_id == media_id),
+            None,
+        )
+        if record is None:
+            self.message_bar.error("Запись о носителе не найдена.")
+            return
+        chosen = simpledialog.askstring(
+            "Имя носителя",
+            "Как называть этот носитель? Например: «Иванов, бухгалтерия».\n"
+            "Имя хранится в контейнере администратора и на носитель не пишется.",
+            initialvalue=record.name or record.label,
+            parent=self,
+        )
+        if chosen is None:
+            return
+        record.name = chosen.strip()
+        self.app.save_container()
+        self._refresh_table()
+        self.message_bar.success(
+            f"Носитель {media_id} теперь называется «{record.display_name}»."
+        )
+
+    def _stop_polling(self, event=None) -> None:
+        if event is not None and event.widget is not self:
+            return
+        job = getattr(self, "_poll_job", None)
+        if job is not None:
+            try:
+                self.after_cancel(job)
+            except Exception:  # noqa: BLE001 -- окно уже уничтожено
+                pass
+            self._poll_job = None
 
     def _open_selected_integrity(self, _event=None) -> None:
         from .integrity_check import IntegrityFrame
@@ -132,7 +227,7 @@ class DashboardFrame(ttk.Frame):
         selection = self.table.selection()
         if not selection:
             return
-        media_id = self.table.item(selection[0], "values")[0]
+        media_id = self.table.item(selection[0], "values")[2]
         self.app.show_frame(IntegrityFrame, media_id=media_id)
 
     def _open_selected_logs(self) -> None:
@@ -142,7 +237,7 @@ class DashboardFrame(ttk.Frame):
         спрашивать второй раз незачем.
         """
         selection = self.table.selection()
-        media_id = self.table.item(selection[0], "values")[0] if selection else ""
+        media_id = self.table.item(selection[0], "values")[2] if selection else ""
         self.app.show_section("logs", media_id=media_id)
 
     def _open_build(self) -> None:

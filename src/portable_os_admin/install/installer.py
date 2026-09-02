@@ -569,6 +569,8 @@ class OSInstaller:
         dry_run: bool = True,
         confirm_device: str | None = None,
         on_step: "Callable[[int, int, str], None] | None" = None,
+        media_name: str = "",
+        exchange_files: "list[str] | tuple[str, ...]" = (),
     ) -> InstallResult:
         """Writes a built distribution onto one medium, with its own encryption.
 
@@ -580,9 +582,26 @@ class OSInstaller:
         The distribution is verified against its recorded checksum **before**
         the medium is touched, so a damaged archive costs a message rather than
         an erased stick and an hour of waiting.
+
+        `media_name` -- как этот носитель называть в списке: «Иванов,
+        бухгалтерия». Спрашивается здесь потому, что здесь администратор и
+        решает, кому носитель пойдёт; идентификатор появится только после
+        записи, и назвать носитель постфактум означает искать его в списке
+        одинаковых строк.
+
+        `exchange_files` -- файлы и каталоги, которые лягут в раздел обмена
+        сразу при записи. Через обмен едут настройки программ, которые
+        администратор доустановил в образ, и класть их после сборки означало
+        бы второй заход: открыть контейнер, подключить носитель, открыть том,
+        скопировать. Раздел в этот момент уже смонтирован -- копирование
+        ничего не стоит.
         """
         self.session.require_open()
         self._progress = _Progress(on_step, expected=_Progress.DEPLOY_STAGES)
+        # Читается шагом, который монтирует раздел обмена: тащить список
+        # через семь параметров вложенных вызовов ради одного `cp` -- хуже.
+        self._exchange_files = tuple(exchange_files)
+        self._exchange_problems: list[str] = []
 
         self._progress.step("Проверка дистрибутива")
         metadata = distribution.read_metadata(directory)
@@ -640,6 +659,10 @@ class OSInstaller:
             media_id=media_id,
             luks_uuid=layout.luks_uuid,
             label=device.model or device.path,
+            # Имя даёт администратор при записи: здесь он и решает, кому
+            # носитель пойдёт. После записи носитель попадает в список, где
+            # строки различаются только идентификаторами.
+            name=media_name.strip(),
             config_name=config.name,
             target_os=config.target_os,
             service_key_b64=base64.b64encode(service_key).decode("ascii"),
@@ -673,7 +696,9 @@ class OSInstaller:
             media_record=media_record,
             recovery_record=recovery_records[0],
             plan=plan,
-            warnings=warnings,
+            # Неудача с файлом настроек -- предупреждение, а не отказ: носитель
+            # записан и годен, а файл кладётся потом через раздел «Обмен».
+            warnings=[*warnings, *self._exchange_problems],
         )
 
     def _deploy(
@@ -1235,6 +1260,9 @@ class OSInstaller:
         run(["mount", layout.exchange_mapper_path, f"{layout.mount_root}{EXCHANGE_MOUNTPOINT}"])
         state.mounts.append(f"{layout.mount_root}{EXCHANGE_MOUNTPOINT}")
         run(["chmod", "1777", f"{layout.mount_root}{EXCHANGE_MOUNTPOINT}"])
+        self._exchange_problems = self._fill_exchange(
+            run, layout, getattr(self, "_exchange_files", ())
+        )
 
         refresh = backend.package_refresh_command(layout.mount_root)
         if refresh is not None:
@@ -1610,6 +1638,32 @@ class OSInstaller:
             path = f"{layout.mount_root}/{relative}"
             self._run(["mkdir", "-p", path.rsplit("/", 1)[0]], plan, dry_run, confirm_device)
             self._write_file(path, content, plan, dry_run, confirm_device, mode=mode)
+
+    def _fill_exchange(self, run, layout, sources) -> "list[str]":
+        """Кладёт файлы администратора в раздел обмена, пока он смонтирован.
+
+        Каталоги копируются целиком (`cp -a`): настройки программы -- это чаще
+        дерево, чем один файл, и заставлять выбирать их по одному значит
+        предлагать не пользоваться этим вовсе.
+
+        Ошибка копирования не срывает запись носителя, а возвращается
+        предупреждением. Носитель без файла настроек работоспособен, и файл
+        кладётся потом через раздел «Обмен»; носитель, стёртый на
+        девятнадцатом шаге из двадцати, не спасти ничем.
+        """
+        problems: list[str] = []
+        if not sources:
+            return problems
+        target = f"{layout.mount_root}{EXCHANGE_MOUNTPOINT}"
+        for source in sources:
+            try:
+                run(["cp", "-a", "--", str(source), f"{target}/"])
+            except Exception as exc:  # noqa: BLE001
+                problems.append(
+                    f"не удалось положить в раздел обмена {source!r}: {exc}; "
+                    "носитель записан, файл можно добавить через раздел «Обмен»"
+                )
+        return problems
 
     def _collect_boot_manifest(self, layout, dry_run: bool) -> "dict[str, str]":
         """Опись того, что исполняется до расшифровки корня.
