@@ -14,6 +14,11 @@ missing. Each would have installed cleanly and protected nothing.
 """
 from __future__ import annotations
 
+import pathlib
+import shutil
+import subprocess
+import tempfile
+
 import pytest
 
 from portable_os_admin.config import InstallConfig
@@ -1512,8 +1517,52 @@ def test_the_menu_pins_no_settings_shortcut():
     config = make_kiosk_config(allowed_apps=["mate-calc"])
     config.kiosk.desktop_environment = "mate"
 
-    assert "pinned-shortcuts=[]" in mate.dconf_keyfile(config)
+    # Тип пустого списка указан явно: на «[]» dconf отказывается собирать
+    # базу целиком -- «unable to infer type», -- и вместе с ней теряются все
+    # остальные ключи киоска. Поймано сборкой 02.09.2026.
+    assert "pinned-shortcuts=@as []" in mate.dconf_keyfile(config)
     assert "/com/solus-project/brisk-menu/pinned-shortcuts" in mate.dconf_locks(config)
+
+
+@pytest.mark.skipif(shutil.which("dconf") is None, reason="dconf на этой машине нет")
+def test_the_dconf_database_actually_compiles():
+    """Проверка формой не поймала бы того, что поймала сборка 02.09.2026.
+
+    Ключ `pinned-shortcuts` был записан как `[]`, и dconf отказался собирать
+    базу целиком: «invalid value: []: unable to infer type». Пустой список не
+    несёт типа элементов, а GVariant его требует. Упал при этом не один ключ,
+    а вся база -- вместе со всеми запретами киоска, и сборка дистрибутива
+    закончилась ошибкой на шаге 6 из 10.
+
+    Форму такой ошибки не видно: строка `pinned-shortcuts=[]` выглядит
+    правильной ровно до того, как её прочитает dconf. Поэтому тест не
+    сравнивает текст, а вызывает `dconf compile` -- ту же программу, которая
+    выполняется на целевой системе.
+    """
+    for desktop, target_os in (("mate", "redos"), ("mate", "debian")):
+        config = make_kiosk_config(target_os, allowed_apps=["mate-calc"])
+        config.kiosk.desktop_environment = desktop
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            for path, (content, _mode) in kiosk.config_files(config).items():
+                if "/dconf/db/" not in path:
+                    continue
+                target = root / path
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(content, encoding="utf-8")
+
+            keydir = root / "etc/dconf/db/local.d"
+            assert keydir.is_dir(), "файлы dconf не записаны -- проверять нечего"
+            result = subprocess.run(
+                ["dconf", "compile", str(root / "local"), str(keydir)],
+                capture_output=True,
+                text=True,
+            )
+            assert result.returncode == 0, (
+                f"{target_os}/{desktop}: dconf не собрал базу: "
+                f"{result.stderr.strip() or result.stdout.strip()}"
+            )
 
 
 def test_the_generations_do_not_share_a_settings_tree():
