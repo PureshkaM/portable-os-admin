@@ -72,6 +72,10 @@ class ExchangeFrame(ttk.Frame):
         self.files_table = ttk.Treeview(card, columns=("name", "size"), show="headings", height=8)
         self.files_table.heading("name", text="файл")
         self.files_table.heading("size", text="размер (байт)")
+        # Числа -- по правому краю: так разряды стоят под разрядами и размеры
+        # сравниваются взглядом, без чтения каждой цифры.
+        self.files_table.column("name", anchor="w")
+        self.files_table.column("size", anchor="e")
         self.files_table.pack(fill="both", expand=True)
         self.files_table.bind("<<TreeviewSelect>>", self._on_row_selected)
         # Пусто здесь значит разное: носитель ещё не подключён или на разделе

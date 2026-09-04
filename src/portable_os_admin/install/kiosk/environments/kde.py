@@ -379,7 +379,19 @@ mkdir -p "/{LOOK_AND_FEEL_LAYOUT_DIR}"
     echo "var panel = new Panel"
     echo "panel.location = 'bottom'"
     echo "panel.height = 36"
-    echo "panel.addWidget('org.kde.plasma.kickoff')"
+    echo "var menu = panel.addWidget('org.kde.plasma.kickoff')"
+    # Избранное задаётся здесь по той же причине, что и закреплённые в
+    # списке задач: `plasma-org.kde.plasma.desktop-appletsrc` при установке
+    # ещё не существует, и правка ниже, работающая через sed по этому файлу,
+    # при первой установке не находит, что править. На живой загрузке
+    # 04.09.2026 раздел «Favorites» в меню оказался пуст именно поэтому.
+    printf "menu.currentConfigGroup = ['General']\\n"
+    printf "menu.writeConfig('favorites', '%s')\\n" "$FAVOURITES"
+    # Флаг `favoritesPortedToKAstats` намеренно не трогаем: по умолчанию он
+    # false (проверено по main.xml плазмоида kickoff), и Plasma при первом
+    # запуске сама переносит написанное здесь в KAStats. Поставить его true
+    # значило бы сказать «список уже перенесён» -- и меню взяло бы пустой
+    # набор KAStats вместо нашего.
     echo "var tasks = panel.addWidget('org.kde.plasma.icontasks')"
     # Закреплённые -- разрешённые приложения, и только они. По умолчанию
     # Plasma закрепляет «Параметры системы» и «Центр приложений»: и то, и

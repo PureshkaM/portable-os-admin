@@ -1927,3 +1927,29 @@ def test_mate_gets_its_gsettings_schemas():
         assert "mate-desktop" in packages, (
             f"{target_os}: нет пакета со схемами GSettings -- сеанс не запустится"
         )
+
+
+def test_the_menu_favourites_are_written_where_plasma_reads_them():
+    """Избранное задаётся сценарием оформления, а не правкой чужого файла.
+
+    Прогон 04.09.2026: раздел «Favorites» в меню Plasma оказался пуст. Список
+    писался тем же `sed` по
+    `plasma-org.kde.plasma.desktop-appletsrc`, что и раскладка панели, --
+    файлу, которого при установке ещё нет. Панель эту причину уже пережила
+    (задача 8), избранное осталось с ней один на один.
+
+    Флаг `favoritesPortedToKAstats` намеренно не выставляется: по умолчанию
+    он false (проверено по main.xml плазмоида kickoff), и Plasma сама
+    переносит написанное в KAStats при первом запуске. Сказать «уже
+    перенесено» значило бы отдать меню пустой набор KAStats.
+    """
+    from portable_os_admin.install.kiosk.environments import kde
+
+    script = kde.plasma_layout_script(make_kiosk_config(desktop_environment="kde"))
+
+    assert "menu.writeConfig('favorites'" in script, "избранное не задаётся в раскладке"
+    assert "$FAVOURITES" in script, "избранное не берётся из вычисленного списка"
+    assert "menu.writeConfig('favoritesPortedToKAstats'" not in script, (
+        "флаг переноса выставлен -- меню возьмёт пустой KAStats"
+    )
+
