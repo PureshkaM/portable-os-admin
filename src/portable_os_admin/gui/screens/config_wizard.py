@@ -687,7 +687,9 @@ class ConfigWizardFrame(WizardFrame):
         ttk.Entry(filter_row, textvariable=self.filter_var, width=40).pack(side="left", padx=(6, 0))
 
         self.catalog_label_var = tk.StringVar(value="Нажмите «Подключиться к репозиторию», чтобы увидеть пакеты.")
-        ttk.Label(body, textvariable=self.catalog_label_var, foreground="#555555").pack(anchor="w", pady=(6, 2))
+        ttk.Label(body, textvariable=self.catalog_label_var, style="Hint.TLabel").pack(
+            anchor="w", pady=(theme.SPACE_XS, 2)
+        )
 
         lists = ttk.Frame(body)
         lists.pack(fill="both", expand=True)
@@ -699,24 +701,42 @@ class ConfigWizardFrame(WizardFrame):
         self.catalog_table = ttk.Treeview(
             left, columns=("name", "version", "summary"), show="headings", height=10, selectmode="extended"
         )
-        for col, text, width in (("name", "пакет", 140), ("version", "версия", 100), ("summary", "описание", 260)):
+        # Ширины подобраны так, чтобы обе половины шага помещались в карточку
+        # при окне наименьшего размера (1040x700, с которым программа
+        # открывается). До 04.09.2026 сумма была больше: правая половина с
+        # кнопкой «Добавить выбранные» уходила за край, и шаг оказывался
+        # неработоспособным, пока окно не растянут вручную.
+        #
+        # `minwidth` не даёт колонке сжаться до нечитаемого, а `stretch` --
+        # растянуться за счёт соседей: описание длиннее любой ширины, и без
+        # этого оно отбирало место у имени пакета.
+        for col, text, width, minimum, stretch in (
+            ("name", "пакет", 130, 90, False),
+            ("version", "версия", 90, 70, False),
+            ("summary", "описание", 170, 120, True),
+        ):
             self.catalog_table.heading(col, text=text, command=lambda c=col: self._sort_catalog(c))
-            self.catalog_table.column(col, width=width, anchor="w")
+            self.catalog_table.column(
+                col, width=width, minwidth=minimum, stretch=stretch, anchor="w"
+            )
         self.catalog_table.pack(fill="both", expand=True)
         ttk.Label(
             left,
             text="Ctrl — по одному, Shift — диапазоном.",
-            foreground="#777777",
-            font=("TkDefaultFont", 9),
-            wraplength=420,
+            style="Hint.TLabel",
+            wraplength=theme.HINT_WRAP,
             justify="left",
-        ).pack(anchor="w", pady=(4, 0))
+        ).pack(anchor="w", pady=(theme.SPACE_XS, 0))
         ttk.Button(left, text="Добавить выбранные ->", command=self._add_package).pack(anchor="w", pady=(4, 0))
 
         right = ttk.Frame(lists)
-        right.pack(side="left", fill="both", expand=True, padx=(12, 0))
+        # Не expand: место сначала получает таблица каталога -- в ней ищут, а
+        # справа лежит короткий список выбранного.
+        right.pack(side="left", fill="y", padx=(theme.SPACE_MD, 0))
         ttk.Label(right, text="Выбрано для установки:").pack(anchor="w")
-        self.selected_list = tk.Listbox(right, height=10, selectmode="extended")
+        # Ширина задана явно: без неё список растёт по длиннейшему имени
+        # пакета и выталкивает свою же кнопку за край карточки.
+        self.selected_list = tk.Listbox(right, height=10, width=24, selectmode="extended")
         self.selected_list.pack(fill="both", expand=True)
         for name in self.config.packages:
             self.selected_list.insert("end", name)

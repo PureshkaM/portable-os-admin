@@ -82,43 +82,76 @@ class BuildWizardFrame(WizardFrame):
     # -- step 1: configuration ---------------------------------------------
     def _build_step_config(self, body: ttk.Frame) -> None:
         self.config_table = ttk.Treeview(
-            body, columns=("name", "os", "profile"), show="headings", height=8
+            body, columns=("name", "os", "profile", "state"), show="headings", height=8
         )
         for column, title, width in (
-            ("name", "Конфигурация", 260),
-            ("os", "ОС", 100),
-            ("profile", "Режим", 180),
+            ("name", "Конфигурация", 240),
+            ("os", "ОС", 90),
+            ("profile", "Режим", 160),
+            ("state", "Состояние", 150),
         ):
             self.config_table.heading(column, text=title)
             self.config_table.column(column, width=width, anchor="w")
         self.config_table.pack(fill="both", expand=True)
 
+        # Показываются все конфигурации, а непроверенные -- с пометкой.
+        #
+        # До 04.09.2026 непроверенные просто не попадали в список, и это была
+        # худшая из возможных подсказок: администратор, только что
+        # сохранивший конфигурацию, не находил её здесь и не мог понять,
+        # почему. Собирать из непроверенной по-прежнему нельзя -- отказ
+        # приходит при попытке выбрать, и он называет причину.
+        self._paths = []
         self._valid_paths = []
         for path in self.app.config_manager.list_configs(self.app.configs_dir):
             config = self.app.config_manager.open(path)
-            if config.validation_status != "valid":
-                continue
-            self._valid_paths.append(path)
             profile = "киоск" if config.kiosk.enabled else "консоль"
             if config.kiosk.enabled:
                 profile += f" / {config.kiosk.desktop_environment}"
-            self.config_table.insert("", "end", values=(path.name, config.target_os, profile))
+            state = {
+                "valid": "проверена",
+                "invalid": "с ошибками",
+            }.get(config.validation_status, "не проверена")
+            self._paths.append((path, config.validation_status))
+            if config.validation_status == "valid":
+                self._valid_paths.append(path)
+            self.config_table.insert(
+                "", "end", values=(path.name, config.target_os, profile, state)
+            )
 
-        if not self._valid_paths:
+        if not self._paths:
             ttk.Label(
                 body,
-                text="Нет проверенных конфигураций. Создайте конфигурацию и нажмите «Проверить».",
+                text="Конфигураций пока нет. Создайте её в разделе «Конфигурации».",
+                style="Warning.TLabel",
+                wraplength=theme.TEXT_WRAP,
+            ).pack(anchor="w", pady=(theme.SPACE_SM, 0))
+        elif not self._valid_paths:
+            ttk.Label(
+                body,
+                text="Ни одна конфигурация не проверена. Откройте раздел «Конфигурации» "
+                "и нажмите «Проверить» — сборка идёт только из проверенной.",
                 style="Warning.TLabel",
                 wraplength=theme.TEXT_WRAP,
             ).pack(anchor="w", pady=(theme.SPACE_SM, 0))
 
     def _validate_step_config(self) -> bool:
         selection = self.config_table.selection()
-        if not self._valid_paths or not selection:
+        if not selection:
             self.message_bar.error("Выберите конфигурацию.")
             return False
-        index = self.config_table.index(selection[0])
-        self.selected_config_path = self._valid_paths[index]
+        path, status = self._paths[self.config_table.index(selection[0])]
+        if status != "valid":
+            # Причина называется здесь, а не выражается отсутствием строки.
+            reason = {
+                "invalid": "она не прошла проверку",
+            }.get(status, "она ещё не проверена")
+            self.message_bar.error(
+                f"Из «{path.name}» собрать нельзя: {reason}. Откройте раздел «Конфигурации», "
+                "нажмите «Проверить» и вернитесь сюда."
+            )
+            return False
+        self.selected_config_path = path
         return True
 
     # -- step 2: the administrator's own packages ---------------------------
