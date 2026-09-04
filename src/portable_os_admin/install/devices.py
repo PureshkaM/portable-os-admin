@@ -115,6 +115,98 @@ def collect_partitions(entry: dict) -> tuple[Partition, ...]:
     return tuple(found)
 
 
+def busy_holders(path: str) -> "list[str]":
+    """Кто ещё держит это устройство открытым -- по одной строке на держателя.
+
+    Пустой список означает «никто», и это единственное состояние, в котором на
+    носитель можно писать.
+
+    Зачем. Прогон 04.09.2026 стоил испорченного носителя и часа работы:
+    виртуальная машина стенда осталась запущенной и держала файл образа
+    открытым на запись, установка отработала все 18 шагов, отчиталась
+    «Носитель готов» -- а внутри системного тома не оказалось файловой
+    системы вовсе. Две программы писали в одно место, и ни одна об этом не
+    знала. Проверка «носитель смонтирован» такое не ловит: смонтировано
+    ничего не было.
+
+    Смотрим в двух местах, потому что держать устройство можно двумя
+    способами:
+
+    * `/sys/block/<имя>/holders` -- ядро само перечисляет тех, кто построен
+      поверх: открытый том dm-crypt, собранный RAID, LVM. Это не «процесс», а
+      устройство, и отсюда же берётся понятная строка для сообщения;
+    * открытые файловые дескрипторы в `/proc/*/fd` -- так виден процесс,
+      который просто открыл устройство или файл-образ и пишет в него. Для
+      файла, подключённого через losetup, проверяется и сам файл: с точки
+      зрения ядра это разные объекты, а портится один и тот же носитель.
+
+    Ничего не открывается и не изменяется: читаются только имена в /proc и
+    /sys, доступные и без прав root.
+    """
+    found: list[str] = []
+    name = os.path.basename(os.path.realpath(path))
+
+    # Держатели самого устройства и каждого его раздела.
+    #
+    # Раздел -- отдельная запись в /sys, и открытый том dm-crypt висит именно
+    # на нём: у `/sys/block/loop0/holders` в этот момент пусто, а у
+    # `/sys/block/loop0/loop0p3/holders` -- нет. Проверено 04.09.2026: первая
+    # версия этой функции открытый том не замечала вовсе.
+    holder_dirs = [f"/sys/block/{name}/holders"]
+    try:
+        holder_dirs += [
+            f"/sys/block/{name}/{entry}/holders"
+            for entry in sorted(os.listdir(f"/sys/block/{name}"))
+            if entry.startswith(name)
+        ]
+    except OSError:
+        pass
+    for holders_dir in holder_dirs:
+        try:
+            for holder in sorted(os.listdir(holders_dir)):
+                description = f"/dev/{holder} (том или устройство поверх носителя)"
+                if description not in found:
+                    found.append(description)
+        except OSError:
+            continue
+
+    # Для loop-устройства -- ещё и файл, который оно отдаёт.
+    targets = {os.path.realpath(path)}
+    backing = f"/sys/block/{name}/loop/backing_file"
+    try:
+        with open(backing, encoding="utf-8") as handle:
+            targets.add(handle.read().strip())
+    except OSError:
+        pass
+
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        fd_dir = f"/proc/{entry}/fd"
+        try:
+            descriptors = os.listdir(fd_dir)
+        except OSError:
+            continue  # процесс уже закончился или чужой
+        for descriptor in descriptors:
+            try:
+                target = os.path.realpath(os.path.join(fd_dir, descriptor))
+            except OSError:
+                continue
+            if target not in targets:
+                continue
+            try:
+                with open(f"/proc/{entry}/comm", encoding="utf-8") as handle:
+                    command = handle.read().strip()
+            except OSError:
+                command = "?"
+            description = f"процесс {entry} ({command})"
+            if description not in found:
+                found.append(description)
+            break
+
+    return found
+
+
 class DeviceLister:
     LSBLK_COLUMNS = "NAME,PATH,SIZE,MODEL,RM,TRAN,TYPE,FSTYPE,LABEL,UUID,MOUNTPOINTS"
 

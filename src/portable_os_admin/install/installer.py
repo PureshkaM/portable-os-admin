@@ -38,7 +38,7 @@ from .backends.base import (
 from .command_runner import BOOTSTRAP_TIMEOUT, CommandPlan, CommandResult, CommandRunner
 from . import distribution
 from . import integrity
-from .devices import BlockDevice, check_install_eligible
+from .devices import BlockDevice, busy_holders, check_install_eligible
 from .disk import DiskManager, MediaLayout, build_media_layout, plan_partitions
 from .image_source import MountedImage, inspect_mounted
 from . import machine_binding
@@ -1404,6 +1404,7 @@ class OSInstaller:
 
         self._progress.step("Отключение носителя от системы")
         self._unmount_medium(device, plan, dry_run, confirm_device)
+        self._refuse_if_busy(device, dry_run)
 
         self._progress.step("Очистка носителя и создание разделов")
         # Set immediately before the first destructive command, not after: if
@@ -1759,6 +1760,31 @@ class OSInstaller:
     # ------------------------------------------------------------------
     # Preflight / teardown
     # ------------------------------------------------------------------
+    def _refuse_if_busy(self, device: BlockDevice, dry_run: bool) -> None:
+        """Отказывается писать на носитель, который держит кто-то ещё.
+
+        Проверка стоит после размонтирования и до первой разрушающей команды:
+        размонтировать своё -- наша работа, а вот чужой процесс, пишущий в то
+        же устройство, -- причина остановиться.
+
+        Цена ошибки известна: прогон 04.09.2026 писал носитель одновременно с
+        оставшейся запущенной виртуальной машиной. Все восемнадцать шагов
+        прошли, приложение отчиталось «Носитель готов», а внутри системного
+        тома не оказалось файловой системы -- загрузка встала, ожидая том по
+        UUID, которого не существует. Обнаружить это дёшево, а последствие --
+        носитель, который выглядит записанным и не грузится.
+        """
+        if dry_run:
+            return
+        holders = busy_holders(device.path)
+        if not holders:
+            return
+        raise InstallError(
+            f"носитель {device.path} занят: " + "; ".join(holders) + ". "
+            "Запись в четыре руки испортит его молча -- закройте то, что его держит, "
+            "и повторите. Открытые тома можно освободить на экране «Обслуживание»."
+        )
+
     def _unmount_medium(self, device: BlockDevice, plan: CommandPlan, dry_run: bool, confirm_device: str | None) -> None:
         """Desktop automounters mount a stick's partitions the moment it is
         plugged in; partitioning underneath a live filesystem corrupts it, so
