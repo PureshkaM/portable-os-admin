@@ -430,7 +430,7 @@ class InstallWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
         confirm_frame = ttk.Frame(body)
         confirm_frame.pack(anchor="w", pady=(4, 0))
         self.confirm_device_var = tk.StringVar()
-        add_field(
+        confirm_entry, _ = add_field(
             confirm_frame,
             0,
             "Повторите путь к устройству:",
@@ -438,9 +438,21 @@ class InstallWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
             hint="это последняя защита от установки не на тот диск",
             width=30,
         )
+        # Фокус -- в поле, а не на кнопке, стирающей носитель: см. тот же
+        # шаг в мастере развёртывания.
+        confirm_entry.focus_set()
 
-        self.start_btn = ttk.Button(body, text="Стереть носитель и установить систему", command=self._start_install)
+        self.start_btn = ttk.Button(
+            body,
+            text="Стереть носитель и установить систему",
+            command=self._start_install,
+            state="disabled",
+        )
         self.start_btn.pack(anchor="w", pady=(8, 4))
+        # Недоступна, пока путь не повторён верно -- как в мастере
+        # развёртывания, и по той же причине.
+        self.confirm_device_var.trace_add("write", self._sync_start_button)
+        self._sync_start_button()
 
         # Determinate, with the stage named next to it: an install takes the
         # better part of an hour and most of it sits inside one command, so an
@@ -461,6 +473,14 @@ class InstallWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
         self.log_text.insert("end", text + "\n")
         self.log_text.configure(state="disabled")
         self.log_text.see("end")
+
+    def _sync_start_button(self, *_args) -> None:
+        """Кнопка запуска доступна ровно тогда, когда повтор пути совпал."""
+        button = getattr(self, "start_btn", None)
+        if button is None or not button.winfo_exists():
+            return
+        matches = self.confirm_device_var.get().strip() == (self.device_path or "")
+        button.configure(state=("normal" if matches else "disabled"))
 
     def _start_install(self) -> None:
         if self._running:

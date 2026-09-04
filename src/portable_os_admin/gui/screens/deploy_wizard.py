@@ -377,7 +377,7 @@ class DeployWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
         confirm_frame = ttk.Frame(body)
         confirm_frame.pack(anchor="w", pady=(4, 0))
         self.confirm_device_var = tk.StringVar()
-        add_field(
+        confirm_entry, _ = add_field(
             confirm_frame,
             0,
             "Повторите путь к устройству:",
@@ -385,14 +385,27 @@ class DeployWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
             hint="это последняя защита от записи не на тот диск",
             width=30,
         )
+        # Фокус -- в поле, а не на кнопке, которая стирает носитель.
+        confirm_entry.focus_set()
 
         self.start_btn = ttk.Button(
             body,
             text="Стереть носитель и записать дистрибутив",
             style="Accent.TButton",
             command=self._start,
+            state="disabled",
         )
         self.start_btn.pack(anchor="w", pady=(8, 4))
+        # Кнопка недоступна, пока путь не повторён верно.
+        #
+        # Раньше повтор сверялся при нажатии, а кнопка всё это время была
+        # готова сработать -- в том числе от пробела и Enter, которыми
+        # пролистывают мастер. Условие доступности надёжнее проверки
+        # постфактум: пока набрано не то, нажимать нечего, и это видно
+        # глазом. Сверка внутри `_start` остаётся -- она отвечает за случай,
+        # когда устройство подменили между набором и нажатием.
+        self.confirm_device_var.trace_add("write", self._sync_start_button)
+        self._sync_start_button()
 
         self.stage_var = tk.StringVar(value="")
         self.stage_label = ttk.Label(body, textvariable=self.stage_var, wraplength=theme.TEXT_WRAP, justify="left")
@@ -420,6 +433,14 @@ class DeployWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
         self.stage_var.set(f"Шаг {index} из {total}: {text}")
         self.progress.configure(value=int(index * 100 / max(total, 1)))
         self._log(f"[{index}/{total}] {text}")
+
+    def _sync_start_button(self, *_args) -> None:
+        """Кнопка запуска доступна ровно тогда, когда повтор пути совпал."""
+        button = getattr(self, "start_btn", None)
+        if button is None or not button.winfo_exists():
+            return
+        matches = self.confirm_device_var.get().strip() == (self.device_path or "")
+        button.configure(state=("normal" if matches else "disabled"))
 
     def _start(self) -> None:
         if self._running:

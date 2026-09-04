@@ -1554,3 +1554,45 @@ def test_the_empty_table_hint_appears_and_disappears(gui_app, tmp_path):
     app.update()
     assert frame.placeholder.label.winfo_manager() == ""
 
+
+def test_the_erase_button_stays_disabled_until_the_path_is_repeated(gui_app, tmp_path):
+    """Пока путь не повторён верно, стирать нечем.
+
+    Повтор пути к устройству -- последняя защита от записи не на тот диск, и
+    до 04.09.2026 он сверялся только при нажатии: кнопка «Стереть носитель и
+    записать дистрибутив» всё время была готова сработать, в том числе от
+    пробела и Enter -- клавиш, которыми пролистывают мастер.
+
+    Условие доступности надёжнее сверки постфактум: пока набрано не то,
+    нажимать нечего, и это видно глазом. Сверка внутри `_start` остаётся --
+    она отвечает за случай, когда устройство подменили между набором и
+    нажатием, -- и её проверяет соседний тест.
+    """
+    from portable_os_admin.gui.screens.deploy_wizard import DeployWizardFrame
+
+    app = gui_app
+    _open_container(app, tmp_path)
+    app.show_frame(DeployWizardFrame)
+    app.update()
+    wizard = app._current_frame
+
+    _write_distribution(tmp_path / "dist")
+    wizard.directory_var.set(str(tmp_path / "dist"))
+    wizard.save_step(0)
+    wizard.validate_step(0)
+    wizard.device_path = "/dev/sdz"
+    wizard.device_size_gb = "16"
+    wizard.passphrase = "CorrectHorse123"
+    wizard.step_index = wizard.step_titles.index("Подтверждение и запись")
+    wizard._render_step()
+    app.update()
+
+    assert str(wizard.start_btn["state"]) == "disabled", "шаг открылся с готовой кнопкой"
+
+    wizard.confirm_device_var.set("/dev/sda")
+    app.update()
+    assert str(wizard.start_btn["state"]) == "disabled", "чужой путь включил кнопку"
+
+    wizard.confirm_device_var.set("/dev/sdz")
+    app.update()
+    assert str(wizard.start_btn["state"]) == "normal", "верный повтор не включил кнопку"
