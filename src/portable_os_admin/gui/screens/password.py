@@ -16,6 +16,7 @@ import tkinter as tk
 from tkinter import ttk
 
 from ...errors import WeakPasswordError
+from .. import theme
 from ..widgets import MessageBar, add_field, error_guard
 
 
@@ -27,7 +28,7 @@ class PasswordFrame(ttk.Frame):
         ttk.Label(
             self,
             text="Смена пароля контейнера",
-            font=("TkDefaultFont", 13, "bold"),
+            font=theme.FONT_TITLE,
         ).pack(anchor="w", padx=16, pady=(16, 8))
 
         form = ttk.Frame(self)

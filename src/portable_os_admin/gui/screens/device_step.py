@@ -18,6 +18,7 @@ import tkinter as tk
 from tkinter import ttk
 
 from ...install import BlockDevice, DeviceLister, leftovers
+from .. import theme
 from ..widgets import add_field, run_in_background, widget_alive
 
 #: Используется для текста «это будет уничтожено». Обычный красный, а не цвет
@@ -49,8 +50,8 @@ class DeviceStepMixin:
         ttk.Label(
             body,
             text="Если нужного носителя нет в списке, укажите путь вручную ниже.",
-            foreground="#777777",
-            wraplength=700,
+            foreground=theme.TEXT_MUTED,
+            wraplength=theme.TEXT_WRAP,
             justify="left",
         ).pack(anchor="w", pady=(6, 8))
 

@@ -44,8 +44,9 @@ class MessageBar(ttk.Frame):
         super().__init__(parent, style=frame_style)
         self.var = tk.StringVar()
         self.label = ttk.Label(
-            self, textvariable=self.var, style=self._label_style, wraplength=860, justify="left"
+            self, textvariable=self.var, style=self._label_style, justify="left"
         )
+        wrap_to_width(self.label)
         self.label.pack(anchor="w", pady=theme.SPACE_XS)
 
     def clear(self) -> None:
@@ -63,6 +64,80 @@ class MessageBar(ttk.Frame):
     def _set(self, text: str, kind: str) -> None:
         self.var.set(text)
         self.label.configure(foreground=self.COLORS[kind])
+
+
+def wrap_to_width(label: ttk.Label, padding: int = 0) -> ttk.Label:
+    """Перенос по фактической ширине, а не по числу, вписанному на глаз.
+
+    До 04.09.2026 длина строки задавалась числом в каждом месте отдельно:
+    860 в строке сообщений, 760 на одном шаге мастера, 740 на соседнем. Числа
+    подбирались под окно 1280 и в окне 1040 оказывались шире доступного
+    места, поэтому сообщение об ошибке обрывалось на полуслове ровно там,
+    где его важнее всего дочитать: «...доступен только на носителе, созданном
+    этой програм|».
+
+    Ширина берётся у родителя при каждом его изменении, так что одна и та же
+    подпись верна в обоих размерах окна и переживёт третий.
+    """
+    parent = label.master
+
+    def _resize(event: "tk.Event") -> None:
+        width = max(event.width - padding, 160)
+        if label.cget("wraplength") != width:
+            label.configure(wraplength=width)
+
+    parent.bind("<Configure>", _resize, add="+")
+    return label
+
+
+def section_card(parent: tk.Widget, grow: bool = True) -> ttk.Frame:
+    """Белое поле раздела -- то, что стоит под заголовком на каждом экране.
+
+    Пара к `section_header`. Разделять их незачем: заголовок на фоне окна и
+    содержимое на белом поле -- это одна раскладка, и разъезжались они
+    ровно тогда, когда экран набирал её сам.
+
+    Внутри карточки обычные `ttk.Label` и `ttk.Frame` уже белые, поэтому
+    содержимому не нужно называть стиль -- и лишний повод ошибиться пропадает.
+    """
+    card = ttk.Frame(parent, style="Card.TFrame", padding=theme.SPACE_MD)
+    card.pack(
+        side="top",
+        # `grow=False` -- для экранов из одного поля: белое полотно во весь
+        # рост под тремя строчками выглядит не спокойно, а недогруженным.
+        fill="both" if grow else "x",
+        expand=grow,
+        padx=theme.SPACE_LG,
+        pady=(0, theme.SPACE_LG),
+    )
+    return card
+
+
+def section_header(parent: tk.Widget, title: str, hint: str = "") -> ttk.Frame:
+    """Заголовок раздела: одинаковый на всех экранах.
+
+    До 04.09.2026 каждый экран набирал его сам, и разница была видна ровно
+    там, где её и замечают, -- при переходе между разделами: где-то отступ
+    16 пикселей, где-то из шкалы темы; где-то подпись серая, где-то чёрная.
+
+    Возвращается сам заголовок -- на случай, если экрану нужно добавить в ту
+    же строку что-то своё.
+    """
+    header = ttk.Frame(parent, style="Window.TFrame")
+    header.pack(side="top", fill="x", padx=theme.SPACE_LG, pady=(theme.SPACE_LG, theme.SPACE_SM))
+    ttk.Label(header, text=title, style="Window.TLabel", font=theme.FONT_TITLE).pack(anchor="w")
+    if hint:
+        ttk.Label(
+            header,
+            text=hint,
+            style="Window.TLabel",
+            foreground=theme.TEXT_MUTED,
+            # Перенос, а не обрезание: подпись объясняет раздел, и обрыв на
+            # полуслове хуже её отсутствия.
+            wraplength=theme.TEXT_WRAP,
+            justify="left",
+        ).pack(anchor="w", pady=(theme.SPACE_XS, 0))
+    return header
 
 
 @contextmanager

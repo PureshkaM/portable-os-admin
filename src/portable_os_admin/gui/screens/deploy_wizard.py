@@ -341,7 +341,7 @@ class DeployWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
                 + (f"  ·  {device.model}" if device.model else "")
                 + f"  ·  {device.size_bytes / 1024**3:.1f} ГБ"
             ),
-            font=("TkDefaultFont", 10, "bold"),
+            font=theme.FONT_SECTION,
             justify="left",
         ).pack(anchor="w", padx=10, pady=(8, 2))
 
@@ -370,7 +370,7 @@ class DeployWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
                     + ") — он будет отмонтирован автоматически."
                 ),
                 foreground=DANGER_COLOR,
-                wraplength=720,
+                wraplength=theme.TEXT_WRAP,
                 justify="left",
             ).pack(anchor="w", padx=10, pady=(4, 0))
 
@@ -395,7 +395,7 @@ class DeployWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
         self.start_btn.pack(anchor="w", pady=(8, 4))
 
         self.stage_var = tk.StringVar(value="")
-        self.stage_label = ttk.Label(body, textvariable=self.stage_var, wraplength=740, justify="left")
+        self.stage_label = ttk.Label(body, textvariable=self.stage_var, wraplength=theme.TEXT_WRAP, justify="left")
         self.progress = ttk.Progressbar(body, mode="determinate", length=420, maximum=100)
 
         self.log_text = tk.Text(body, height=10, width=95, state="disabled")

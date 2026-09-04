@@ -6,7 +6,7 @@ from tkinter import simpledialog, ttk
 
 from ...admin import media_detect
 from .. import theme
-from ..widgets import MessageBar
+from ..widgets import MessageBar, section_card, section_header
 
 
 class DashboardFrame(ttk.Frame):
@@ -43,35 +43,20 @@ class DashboardFrame(ttk.Frame):
                 side="left", padx=(theme.SPACE_SM, 0)
             )
 
-        header = ttk.Frame(self, style="Window.TFrame")
-        header.pack(side="top", fill="x", padx=theme.SPACE_LG, pady=(theme.SPACE_LG, theme.SPACE_SM))
         # Заголовок раздела, а не программы: имя программы уже стоит над
         # списком разделов слева, и повторять его здесь значит занимать
         # строку тем, что читатель только что прочитал.
-        ttk.Label(
-            header,
-            text="Носители",
-            style="Window.TLabel",
-            font=theme.FONT_TITLE,
-        ).pack(anchor="w")
-        ttk.Label(
-            header,
-            # Двойной щелчок сам себя не объясняет, и это тот случай, когда
-            # подпись несёт новое, а не пересказывает очевидное.
-            text=(
-                "Носители, зарегистрированные в этом контейнере администратора. "
-                "Двойной щелчок — проверка загрузчика и initramfs."
-            ),
-            style="Window.TLabel",
-            foreground=theme.TEXT_MUTED,
-            # Перенос, а не обрезание: без него строка уходила за правый край
-            # окна и обрывалась на полуслове.
-            wraplength=theme.TEXT_WRAP,
-            justify="left",
-        ).pack(anchor="w", pady=(theme.SPACE_XS, 0))
+        #
+        # Двойной щелчок сам себя не объясняет, и это тот случай, когда
+        # подпись несёт новое, а не пересказывает очевидное.
+        section_header(
+            self,
+            "Носители",
+            "Носители, зарегистрированные в этом контейнере администратора. "
+            "Двойной щелчок — проверка загрузчика и initramfs.",
+        )
 
-        card = ttk.Frame(self, style="Card.TFrame", padding=theme.SPACE_MD)
-        card.pack(side="top", fill="both", expand=True, padx=theme.SPACE_LG)
+        card = section_card(self)
 
         # Первым -- имя, которое дал администратор, а не идентификатор.
         #
@@ -91,10 +76,13 @@ class DashboardFrame(ttk.Frame):
         # Сумма ширин влезает в область содержимого при окне минимальной
         # ширины: до 02.09.2026 она была больше, и колонка «Создан» уходила за
         # край -- дата создания носителя не читалась вовсе.
+        # Ширина проверяется по заголовку, а не по значению: идентификатор --
+        # восемь знаков и в сотню пикселей помещается, а слово
+        # «Идентификатор» над ним обрезалось до «Идентификат».
         widths = {
-            "name": 190,
+            "name": 170,
             "connected": 110,
-            "media_id": 110,
+            "media_id": 130,
             "os": 70,
             "config": 130,
             "created": 150,

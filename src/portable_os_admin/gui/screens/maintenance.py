@@ -15,7 +15,7 @@ from tkinter import messagebox, ttk
 
 from ...install import leftovers
 from .. import theme
-from ..widgets import MessageBar
+from ..widgets import MessageBar, section_card, section_header
 
 
 class MaintenanceFrame(ttk.Frame):
@@ -26,14 +26,13 @@ class MaintenanceFrame(ttk.Frame):
         self.message_bar = MessageBar(self)
         self.message_bar.pack(side="bottom", fill="x", padx=theme.SPACE_LG, pady=(0, theme.SPACE_MD))
 
-        header = ttk.Frame(self, style="Window.TFrame")
-        header.pack(side="top", fill="x", padx=theme.SPACE_LG, pady=(theme.SPACE_LG, theme.SPACE_SM))
-        ttk.Label(header, text="Обслуживание", style="Window.TLabel", font=theme.FONT_TITLE).pack(
-            anchor="w"
+        section_header(
+            self,
+            "Обслуживание",
+            "Действия над самим контейнером и следами прерванных установок.",
         )
 
-        card = ttk.Frame(self, style="Card.TFrame", padding=theme.SPACE_MD)
-        card.pack(side="top", fill="x", padx=theme.SPACE_LG)
+        card = section_card(self, grow=False)
 
         ttk.Label(card, text="Пароль контейнера", font=theme.FONT_SECTION).pack(anchor="w")
         ttk.Label(

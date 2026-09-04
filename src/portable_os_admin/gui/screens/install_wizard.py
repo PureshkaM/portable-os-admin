@@ -29,6 +29,7 @@ from ...install import image_source, leftovers
 from ...install.emulation import probe as probe_emulation
 from ...install.installer import IMAGE_FAMILY
 from ..elevate import invoking_user_home
+from .. import theme
 from ..widgets import KNOWN_ERRORS, UiMailbox, WizardFrame, add_field, run_in_background, widget_alive
 from .device_step import (
     DANGER_COLOR,
@@ -74,9 +75,9 @@ class InstallWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
                 body,
                 text=f"Выбранный образ: {self.image_info.label} ({self.image_info.family} "
                 f"{self.image_info.release})",
-                wraplength=740,
+                wraplength=theme.TEXT_WRAP,
                 justify="left",
-                foreground="#555555",
+                foreground=theme.TEXT_MUTED,
             ).pack(anchor="w", pady=(0, 6))
 
         ttk.Label(body, text="Проверенные конфигурации:").pack(anchor="w")
@@ -93,7 +94,7 @@ class InstallWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
         # Unsuitable rows stay visible rather than being hidden: seeing that a
         # configuration exists but does not fit the chosen image is information;
         # silently omitting it looks like the configuration was lost.
-        self.config_table.tag_configure("unfit", foreground="#a0a0a0")
+        self.config_table.tag_configure("unfit", foreground=theme.TEXT_DISABLED)
         self.config_table.pack(fill="both", expand=True, pady=(4, 8))
 
         all_paths = self.app.config_manager.list_configs(self.app.configs_dir)
@@ -114,7 +115,7 @@ class InstallWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
             ttk.Label(
                 body,
                 text="Нет проверенных конфигураций. Сначала создайте конфигурацию и нажмите «Проверить».",
-                foreground="#c0362c",
+                foreground=theme.DANGER,
                 wraplength=600,
                 justify="left",
             ).pack(anchor="w", pady=(4, 4))
@@ -182,9 +183,9 @@ class InstallWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
         ttk.Label(
             body,
             text="Полный установочный образ (DVD); netinst не годится.",
-            wraplength=740,
+            wraplength=theme.TEXT_WRAP,
             justify="left",
-            foreground="#555555",
+            foreground=theme.TEXT_MUTED,
         ).pack(anchor="w")
 
         form = ttk.Frame(body)
@@ -206,7 +207,7 @@ class InstallWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
             value=self._describe_image() if self.image_info else "Образ не выбран."
         )
         self.image_status = ttk.Label(
-            body, textvariable=self.image_status_var, wraplength=740, justify="left"
+            body, textvariable=self.image_status_var, wraplength=theme.TEXT_WRAP, justify="left"
         )
         self.image_status.pack(anchor="w", pady=(10, 0))
         self.image_progress = ttk.Progressbar(body, mode="indeterminate", length=260)
@@ -347,7 +348,7 @@ class InstallWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
         ttk.Label(
             body,
             text=f"Конфигурация: {cfg.name} ({cfg.target_os}, {cfg.release})",
-            wraplength=760,
+            wraplength=theme.TEXT_WRAP,
             justify="left",
         ).pack(anchor="w")
 
@@ -367,7 +368,7 @@ class InstallWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
             else:
                 notice = self._emulation.reason + "\nУстановка невозможна."
             ttk.Label(
-                box, text=notice, foreground=DANGER_COLOR, wraplength=760, justify="left"
+                box, text=notice, foreground=DANGER_COLOR, wraplength=theme.TEXT_WRAP, justify="left"
             ).pack(anchor="w", padx=10, pady=8)
 
         device = self._resolve_device(self._parsed_size_gb())
@@ -382,7 +383,7 @@ class InstallWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
                 + (f"  ·  {device.model}" if device.model else "")
                 + f"  ·  {device.size_bytes / 1024**3:.1f} ГБ"
             ),
-            font=("TkDefaultFont", 10, "bold"),
+            font=theme.FONT_SECTION,
             justify="left",
         ).pack(anchor="w", padx=10, pady=(8, 2))
 
@@ -411,7 +412,7 @@ class InstallWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
                     + ") — он будет отмонтирован автоматически."
                 ),
                 foreground=DANGER_COLOR,
-                wraplength=720,
+                wraplength=theme.TEXT_WRAP,
                 justify="left",
             ).pack(anchor="w", padx=10, pady=(4, 0))
 
@@ -422,7 +423,7 @@ class InstallWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
                 "именно тот носитель, и что всё нужное с него скопировано."
             ),
             foreground=DANGER_COLOR,
-            wraplength=720,
+            wraplength=theme.TEXT_WRAP,
             justify="left",
         ).pack(anchor="w", padx=10, pady=(6, 10))
 
@@ -446,7 +447,7 @@ class InstallWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
         # indeterminate spinner tells the person nothing about whether anything
         # is happening or how much is left.
         self.stage_var = tk.StringVar(value="")
-        self.stage_label = ttk.Label(body, textvariable=self.stage_var, wraplength=740, justify="left")
+        self.stage_label = ttk.Label(body, textvariable=self.stage_var, wraplength=theme.TEXT_WRAP, justify="left")
         self.progress = ttk.Progressbar(body, mode="determinate", length=420, maximum=100)
 
         self.log_text = tk.Text(body, height=12, width=95, state="disabled")

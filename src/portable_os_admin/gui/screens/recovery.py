@@ -6,20 +6,25 @@ from tkinter import ttk
 
 from ...recovery import RecoveryService
 from ...recovery.request import KIND_MACHINES, RecoveryRequest
-from ..widgets import MessageBar, add_field, error_guard
+from .. import theme
+from ..widgets import MessageBar, add_field, error_guard, section_card, section_header
 
 
 class RecoveryFrame(ttk.Frame):
     def __init__(self, parent: tk.Widget, app):
-        super().__init__(parent)
+        super().__init__(parent, style="Window.TFrame")
         self.app = app
 
-        ttk.Label(self, text="Выдача кода восстановления доступа", font=("TkDefaultFont", 13, "bold")).pack(
-            anchor="w", padx=16, pady=(16, 8)
+        section_header(
+            self,
+            "Восстановление",
+            "Код выдаётся по запросу пользователя, когда пароль забыт.",
         )
 
-        form = ttk.Frame(self)
-        form.pack(anchor="w", padx=16)
+        card = section_card(self, grow=False)
+
+        form = ttk.Frame(card)
+        form.pack(anchor="w")
         self.request_var = tk.StringVar()
         add_field(
             form,
@@ -30,13 +35,15 @@ class RecoveryFrame(ttk.Frame):
             width=30,
         )
 
-        actions = ttk.Frame(self)
-        actions.pack(anchor="w", padx=16, pady=8)
+        actions = ttk.Frame(card)
+        actions.pack(fill="x", pady=theme.SPACE_SM)
         ttk.Button(actions, text="Выдать код", command=self._issue).pack(side="left")
-        ttk.Button(actions, text="Назад", command=self.app.show_dashboard).pack(side="left", padx=(8, 0))
+        ttk.Button(actions, text="Назад", command=self.app.show_dashboard).pack(
+            side="left", padx=(theme.SPACE_SM, 0)
+        )
 
-        self.message_bar = MessageBar(self)
-        self.message_bar.pack(fill="x", padx=16)
+        self.message_bar = MessageBar(card, on_card=True)
+        self.message_bar.pack(fill="x")
 
     def _issue(self) -> None:
         request_text = self.request_var.get().strip()

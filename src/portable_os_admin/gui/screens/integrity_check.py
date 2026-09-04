@@ -25,12 +25,13 @@ import tkinter as tk
 from tkinter import ttk
 
 from ...install import integrity
-from ..widgets import MessageBar, add_field, error_guard
+from .. import theme
+from ..widgets import MessageBar, add_field, error_guard, section_card, section_header
 
 
 class IntegrityFrame(ttk.Frame):
     def __init__(self, parent: tk.Widget, app, media_id: str = ""):
-        super().__init__(parent)
+        super().__init__(parent, style="Window.TFrame")
         self.app = app
         self.media_id = media_id
 
@@ -38,23 +39,27 @@ class IntegrityFrame(ttk.Frame):
         title = "Проверка носителя"
         if record is not None:
             title += f": {record.label or record.media_id}"
-        ttk.Label(self, text=title, font=("TkDefaultFont", 13, "bold")).pack(
-            anchor="w", padx=16, pady=(16, 8)
+        section_header(
+            self,
+            title,
+            "Суммы файлов на ESP и /boot сверяются с описью из контейнера.",
         )
 
         self.record = record
         if record is None:
-            MessageBar(self).pack(fill="x", padx=16)
-            ttk.Label(
-                self, text="Носитель не найден в контейнере.", foreground="#a33"
-            ).pack(anchor="w", padx=16)
-            ttk.Button(self, text="Назад", command=app.show_dashboard).pack(
-                anchor="w", padx=16, pady=8
+            card = section_card(self, grow=False)
+            bar = MessageBar(card, on_card=True)
+            bar.pack(fill="x")
+            bar.error("Носитель не найден в контейнере.")
+            ttk.Button(card, text="Назад", command=app.show_dashboard).pack(
+                anchor="w", pady=(theme.SPACE_SM, 0)
             )
             return
 
-        form = ttk.Frame(self)
-        form.pack(anchor="w", padx=16)
+        card = section_card(self)
+
+        form = ttk.Frame(card)
+        form.pack(anchor="w")
         self.esp_var = tk.StringVar()
         self.boot_var = tk.StringVar()
         # Пути, а не устройство: разделы монтирует администратор своими
@@ -63,18 +68,18 @@ class IntegrityFrame(ttk.Frame):
         add_field(form, 0, "Раздел EFI смонтирован в:", self.esp_var, width=40)
         add_field(form, 1, "Раздел /boot смонтирован в:", self.boot_var, width=40)
 
-        actions = ttk.Frame(self)
-        actions.pack(anchor="w", padx=16, pady=8)
+        actions = ttk.Frame(card)
+        actions.pack(fill="x", pady=theme.SPACE_SM)
         ttk.Button(actions, text="Проверить", command=self._check).pack(side="left")
         ttk.Button(actions, text="Назад", command=app.show_dashboard).pack(
-            side="left", padx=(8, 0)
+            side="left", padx=(theme.SPACE_SM, 0)
         )
 
-        self.message_bar = MessageBar(self)
-        self.message_bar.pack(fill="x", padx=16)
+        self.message_bar = MessageBar(card, on_card=True)
+        self.message_bar.pack(fill="x")
 
-        self.details = tk.Text(self, height=12, width=90, state="disabled")
-        self.details.pack(fill="both", expand=True, padx=16, pady=(8, 16))
+        self.details = tk.Text(card, height=12, state="disabled")
+        self.details.pack(fill="both", expand=True, pady=(theme.SPACE_SM, 0))
 
     def _check(self) -> None:
         esp = self.esp_var.get().strip()

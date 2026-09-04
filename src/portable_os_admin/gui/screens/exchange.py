@@ -21,88 +21,115 @@ from tkinter import ttk
 from ...admin import ExchangeManager
 from ...admin.service_volumes import ServiceVolumeError, open_exchange
 from ...errors import ExchangeError, InsufficientSpaceError
-from ..widgets import MessageBar, run_in_background, widget_alive
+from .. import theme
+from ..widgets import (
+    MessageBar,
+    run_in_background,
+    section_card,
+    section_header,
+    widget_alive,
+)
 
 
 class ExchangeFrame(ttk.Frame):
     def __init__(self, parent: tk.Widget, app):
-        super().__init__(parent)
+        super().__init__(parent, style="Window.TFrame")
         self.app = app
         self.manager = ExchangeManager()
         self._volume = None
         self._records = []
 
-        ttk.Label(self, text="Раздел обмена", font=("TkDefaultFont", 13, "bold")).pack(
-            anchor="w", padx=16, pady=(16, 8)
-        )
-        ttk.Label(
+        section_header(
             self,
-            text="Открывается ключом из контейнера; пользователю виден как обычная папка.",
-            wraplength=760,
-            justify="left",
-        ).pack(anchor="w", padx=16)
+            "Обмен",
+            "Открывается ключом из контейнера; пользователю виден как обычная папка.",
+        )
 
-        form = ttk.Frame(self)
-        form.pack(anchor="w", padx=16, pady=(8, 0))
-        ttk.Label(form, text="Носитель:").grid(row=0, column=0, sticky="w", pady=4)
+        card = section_card(self)
+
+        form = ttk.Frame(card)
+        form.pack(anchor="w")
+        ttk.Label(form, text="Носитель:").grid(row=0, column=0, sticky="w", pady=theme.SPACE_XS)
         self.media_var = tk.StringVar()
         self.media_box = ttk.Combobox(form, textvariable=self.media_var, width=52, state="readonly")
-        self.media_box.grid(row=0, column=1, sticky="w", padx=(8, 0), pady=4)
+        self.media_box.grid(row=0, column=1, sticky="w", padx=(theme.SPACE_SM, 0), pady=theme.SPACE_XS)
 
-        connect_row = ttk.Frame(self)
-        connect_row.pack(anchor="w", padx=16, pady=(6, 4))
+        connect_row = ttk.Frame(card)
+        connect_row.pack(fill="x", pady=(theme.SPACE_XS, theme.SPACE_SM))
         self.connect_btn = ttk.Button(connect_row, text="Подключить носитель", command=self._connect)
         self.connect_btn.pack(side="left")
         self.disconnect_btn = ttk.Button(
             connect_row, text="Отключить", command=self._disconnect, state="disabled"
         )
-        self.disconnect_btn.pack(side="left", padx=(8, 0))
+        self.disconnect_btn.pack(side="left", padx=(theme.SPACE_SM, 0))
         self.space_var = tk.StringVar(value="")
         ttk.Label(connect_row, textvariable=self.space_var).pack(side="right")
         ttk.Button(connect_row, text="Обновить список файлов", command=self._refresh).pack(
-            side="left", padx=(8, 0)
+            side="left", padx=(theme.SPACE_SM, 0)
         )
 
-        self.files_table = ttk.Treeview(self, columns=("name", "size"), show="headings", height=8)
+        self.files_table = ttk.Treeview(card, columns=("name", "size"), show="headings", height=8)
         self.files_table.heading("name", text="файл")
         self.files_table.heading("size", text="размер (байт)")
-        self.files_table.pack(fill="both", expand=True, padx=16)
+        self.files_table.pack(fill="both", expand=True)
         self.files_table.bind("<<TreeviewSelect>>", self._on_row_selected)
 
-        write_row = ttk.Frame(self)
-        write_row.pack(fill="x", padx=16, pady=(10, 4))
+        # Поле и кнопки -- двумя строками, а не одной.
+        #
+        # В одну строку они не помещались в окно, с которым программа
+        # открывается: «Выбрать каталог…» обрезалось краем, а «Записать»
+        # не было видно вовсе. Тот же дефект уже правили на шаге выбора
+        # пакетов, и лечится он одинаково -- не сужением подписей, а
+        # переносом на свою строку.
+        write_box = ttk.Frame(card)
+        write_box.pack(fill="x", pady=(theme.SPACE_SM, theme.SPACE_XS))
+        write_row = ttk.Frame(write_box)
+        write_row.pack(fill="x")
         self.write_path_var = tk.StringVar()
-        ttk.Label(write_row, text="Файл для записи:").pack(side="left")
-        ttk.Entry(write_row, textvariable=self.write_path_var, width=44).pack(side="left", padx=(6, 6))
-        ttk.Button(write_row, text="Выбрать файл…", command=self._choose_source_file).pack(
+        ttk.Label(write_row, text="Что записать:").pack(side="left")
+        ttk.Entry(write_row, textvariable=self.write_path_var).pack(
+            side="left", fill="x", expand=True, padx=(theme.SPACE_SM, 0)
+        )
+        write_buttons = ttk.Frame(write_box)
+        write_buttons.pack(fill="x", pady=(theme.SPACE_XS, 0))
+        ttk.Button(write_buttons, text="Выбрать файл…", command=self._choose_source_file).pack(
             side="left"
         )
-        ttk.Button(write_row, text="Выбрать каталог…", command=self._choose_source_dir).pack(
-            side="left", padx=(6, 0)
+        ttk.Button(write_buttons, text="Выбрать каталог…", command=self._choose_source_dir).pack(
+            side="left", padx=(theme.SPACE_SM, 0)
         )
-        ttk.Button(write_row, text="Записать", command=self._write).pack(side="left", padx=(6, 0))
+        ttk.Button(write_buttons, text="Записать", command=self._write).pack(
+            side="left", padx=(theme.SPACE_SM, 0)
+        )
 
-        read_row = ttk.Frame(self)
-        read_row.pack(fill="x", padx=16, pady=(0, 4))
+        read_box = ttk.Frame(card)
+        read_box.pack(fill="x", pady=(0, theme.SPACE_XS))
+        read_row = ttk.Frame(read_box)
+        read_row.pack(fill="x")
         self.selected_name_var = tk.StringVar()
-        ttk.Label(read_row, text="Выбранный файл:").pack(side="left")
-        ttk.Entry(read_row, textvariable=self.selected_name_var, width=24, state="readonly").pack(
-            side="left", padx=(6, 6)
+        ttk.Label(read_row, text="Выбрано:").pack(side="left")
+        ttk.Entry(read_row, textvariable=self.selected_name_var, width=22, state="readonly").pack(
+            side="left", padx=(theme.SPACE_SM, theme.SPACE_MD)
         )
         self.read_dest_var = tk.StringVar()
-        ttk.Label(read_row, text="Куда скопировать:").pack(side="left")
-        ttk.Entry(read_row, textvariable=self.read_dest_var, width=30).pack(side="left", padx=(6, 6))
-        ttk.Button(read_row, text="Куда сохранить…", command=self._choose_destination).pack(
+        ttk.Label(read_row, text="Куда:").pack(side="left")
+        ttk.Entry(read_row, textvariable=self.read_dest_var).pack(
+            side="left", fill="x", expand=True, padx=(theme.SPACE_SM, 0)
+        )
+        read_buttons = ttk.Frame(read_box)
+        read_buttons.pack(fill="x", pady=(theme.SPACE_XS, 0))
+        ttk.Button(read_buttons, text="Куда сохранить…", command=self._choose_destination).pack(
             side="left"
         )
-        ttk.Button(read_row, text="Прочитать", command=self._read).pack(side="left", padx=(6, 0))
-        ttk.Button(read_row, text="Удалить", command=self._delete).pack(side="left", padx=(6, 0))
+        ttk.Button(read_buttons, text="Прочитать", command=self._read).pack(
+            side="left", padx=(theme.SPACE_SM, 0)
+        )
+        ttk.Button(read_buttons, text="Удалить", command=self._delete).pack(
+            side="left", padx=(theme.SPACE_SM, 0)
+        )
 
-        back_row = ttk.Frame(self)
-        back_row.pack(anchor="w", padx=16, pady=(4, 8))
-
-        self.message_bar = MessageBar(self)
-        self.message_bar.pack(fill="x", padx=16)
+        self.message_bar = MessageBar(card, on_card=True)
+        self.message_bar.pack(fill="x", pady=(theme.SPACE_SM, 0))
 
         self.bind("<Destroy>", self._on_destroy)
         self._refresh_media()

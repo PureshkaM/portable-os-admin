@@ -19,12 +19,20 @@ from tkinter import ttk
 from ...admin import LogViewer
 from ...admin.service_volumes import ServiceVolumeError, open_logs
 from ...errors import LogsCorruptedError, LogsUnavailableError
-from ..widgets import MessageBar, add_field, run_in_background, widget_alive
+from .. import theme
+from ..widgets import (
+    MessageBar,
+    add_field,
+    run_in_background,
+    section_card,
+    section_header,
+    widget_alive,
+)
 
 
 class LogsFrame(ttk.Frame):
     def __init__(self, parent: tk.Widget, app, media_id: str = ""):
-        super().__init__(parent)
+        super().__init__(parent, style="Window.TFrame")
         self.app = app
         #: Носитель, выбранный до входа сюда -- со строки списка носителей.
         #: Спрашивать второй раз то, на что ответ уже дан, значит заставлять
@@ -32,41 +40,39 @@ class LogsFrame(ttk.Frame):
         #: что выделил.
         self._preselected = media_id
 
-        ttk.Label(self, text="Просмотр журналов операционной системы", font=("TkDefaultFont", 13, "bold")).pack(
-            anchor="w", padx=16, pady=(16, 8)
-        )
-        ttk.Label(
+        section_header(
             self,
-            text="Открывается ключом из контейнера; пароль пользователя не нужен.",
-            wraplength=760,
-            justify="left",
-        ).pack(anchor="w", padx=16)
+            "Журналы",
+            "Открывается ключом из контейнера; пароль пользователя не нужен.",
+        )
 
-        form = ttk.Frame(self)
-        form.pack(anchor="w", padx=16, pady=(8, 0))
-        ttk.Label(form, text="Носитель:").grid(row=0, column=0, sticky="w", pady=4)
+        card = section_card(self)
+
+        form = ttk.Frame(card)
+        form.pack(anchor="w")
+        ttk.Label(form, text="Носитель:").grid(row=0, column=0, sticky="w", pady=theme.SPACE_XS)
         self.media_var = tk.StringVar()
         self.media_box = ttk.Combobox(form, textvariable=self.media_var, width=52, state="readonly")
-        self.media_box.grid(row=0, column=1, sticky="w", padx=(8, 0), pady=4)
+        self.media_box.grid(row=0, column=1, sticky="w", padx=(theme.SPACE_SM, 0), pady=theme.SPACE_XS)
         self.filter_var = tk.StringVar()
         add_field(form, 1, "Фильтр (необязательно):", self.filter_var, width=40)
 
-        actions = ttk.Frame(self)
-        actions.pack(anchor="w", padx=16, pady=8)
+        actions = ttk.Frame(card)
+        actions.pack(fill="x", pady=theme.SPACE_SM)
         self.load_btn = ttk.Button(actions, text="Загрузить журналы", command=self._load)
         self.load_btn.pack(side="left")
         ttk.Button(actions, text="Обновить список носителей", command=self._refresh_media).pack(
-            side="left", padx=(8, 0)
+            side="left", padx=(theme.SPACE_SM, 0)
         )
         ttk.Button(actions, text="Сохранить в файл…", command=self._save_to_file).pack(
-            side="left", padx=(8, 0)
+            side="left", padx=(theme.SPACE_SM, 0)
         )
 
-        self.message_bar = MessageBar(self)
-        self.message_bar.pack(fill="x", padx=16)
+        self.message_bar = MessageBar(card, on_card=True)
+        self.message_bar.pack(fill="x")
 
-        self.log_view = tk.Text(self, height=20, state="disabled")
-        self.log_view.pack(fill="both", expand=True, padx=16, pady=(4, 16))
+        self.log_view = tk.Text(card, height=20, state="disabled")
+        self.log_view.pack(fill="both", expand=True, pady=(theme.SPACE_XS, 0))
 
         self._records = []
         self._refresh_media()

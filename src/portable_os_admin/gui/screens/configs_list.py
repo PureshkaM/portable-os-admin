@@ -11,42 +11,47 @@ from pathlib import Path
 from tkinter import ttk
 
 from ...config.validator import ConfigValidationUnavailableError
-from ..widgets import MessageBar, error_guard
+from .. import theme
+from ..widgets import MessageBar, error_guard, section_card, section_header
 
 
 class ConfigsListFrame(ttk.Frame):
     def __init__(self, parent: tk.Widget, app):
-        super().__init__(parent)
+        super().__init__(parent, style="Window.TFrame")
         self.app = app
         self._paths: list[Path] = []
 
-        ttk.Label(self, text="Файлы конфигурации установки", font=("TkDefaultFont", 13, "bold")).pack(
-            anchor="w", padx=16, pady=(16, 8)
+        section_header(
+            self,
+            "Конфигурации",
+            "Из чего собирается система. Собирать можно только из проверенной.",
         )
+
+        card = section_card(self)
 
         columns = ("file", "target_os", "release", "status")
         headings = {"file": "файл", "target_os": "цель", "release": "релиз", "status": "статус проверки"}
-        self.table = ttk.Treeview(self, columns=columns, show="headings", height=12)
+        self.table = ttk.Treeview(card, columns=columns, show="headings", height=12)
         for col in columns:
             self.table.heading(col, text=headings[col])
             self.table.column(col, width=160, anchor="w")
-        self.table.pack(fill="both", expand=True, padx=16)
+        self.table.pack(fill="both", expand=True)
         self.table.bind("<Double-1>", lambda _event: self._edit_selected())
 
-        create_row = ttk.Frame(self)
-        create_row.pack(fill="x", padx=16, pady=(10, 4))
+        create_row = ttk.Frame(card)
+        create_row.pack(fill="x", pady=(theme.SPACE_SM, theme.SPACE_XS))
         ttk.Button(create_row, text="Создать новую конфигурацию", command=self._create_new).pack(side="left")
 
-        action_row = ttk.Frame(self)
-        action_row.pack(fill="x", padx=16, pady=(0, 10))
+        action_row = ttk.Frame(card)
+        action_row.pack(fill="x", pady=(0, theme.SPACE_SM))
         ttk.Button(action_row, text="Редактировать", command=self._edit_selected).pack(side="left")
-        ttk.Button(action_row, text="Проверить", command=self._validate_selected).pack(side="left", padx=(8, 0))
-        ttk.Button(action_row, text="Установить...", command=self._install_selected).pack(side="left", padx=(8, 0))
-        ttk.Button(action_row, text="Удалить", command=self._delete_selected).pack(side="left", padx=(8, 0))
-        ttk.Button(action_row, text="Назад", command=self.app.show_dashboard).pack(side="left", padx=(8, 0))
+        ttk.Button(action_row, text="Проверить", command=self._validate_selected).pack(side="left", padx=(theme.SPACE_SM, 0))
+        ttk.Button(action_row, text="Установить…", command=self._install_selected).pack(side="left", padx=(theme.SPACE_SM, 0))
+        ttk.Button(action_row, text="Удалить", command=self._delete_selected).pack(side="left", padx=(theme.SPACE_SM, 0))
+        ttk.Button(action_row, text="Назад", command=self.app.show_dashboard).pack(side="left", padx=(theme.SPACE_SM, 0))
 
-        self.message_bar = MessageBar(self)
-        self.message_bar.pack(fill="x", padx=16)
+        self.message_bar = MessageBar(card, on_card=True)
+        self.message_bar.pack(fill="x")
 
         self._refresh_table()
 

@@ -190,7 +190,7 @@ class ConfigWizardFrame(WizardFrame):
                 command=self._on_target_os_changed,
             ).pack(anchor="w")
         row += 1
-        ttk.Label(form, textvariable=self.os_description_var, foreground="#777777", wraplength=480, justify="left").grid(
+        ttk.Label(form, textvariable=self.os_description_var, foreground=theme.TEXT_MUTED, wraplength=480, justify="left").grid(
             row=row, column=1, sticky="w"
         )
         row += 1
@@ -1387,7 +1387,7 @@ class ConfigWizardFrame(WizardFrame):
         elif self.config.validation_status == "invalid":
             status = "содержит ошибки: " + "; ".join(self.config.validation_errors)
         self.validation_status_var = tk.StringVar(value=f"Статус проверки: {status}")
-        ttk.Label(body, textvariable=self.validation_status_var, wraplength=740, justify="left").pack(
+        ttk.Label(body, textvariable=self.validation_status_var, wraplength=theme.TEXT_WRAP, justify="left").pack(
             anchor="w", pady=(6, 0)
         )
 

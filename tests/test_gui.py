@@ -1373,3 +1373,98 @@ def test_interface_preferences_survive_a_broken_file(tmp_path, monkeypatch):
 
     assert preferences.load() == {}
     assert preferences.get("config_wizard_expert", False) is False
+
+
+def test_no_screen_spells_a_colour_or_a_font_by_hand():
+    """Один и тот же смысл должен выглядеть одинаково на всех экранах.
+
+    До 04.09.2026 подсказка была то `#555555`, то `#777777`, то `#a0a0a0`, а
+    заголовок экрана набирался вручную на половине экранов и на пиксель
+    отличался от остальных. Разница не видна на одном экране и заметна, когда
+    администратор ходит между ними, -- а чинить её приходится в пятнадцати
+    местах, если не запретить писать так вовсе.
+
+    Тема остаётся единственным местом, где цвета и размеры названы: см.
+    gui/theme.py и три правила в его заголовке.
+    """
+    import pathlib
+    import re
+
+    screens = pathlib.Path(__file__).resolve().parent.parent / "src/portable_os_admin/gui"
+    offenders = []
+    for path in sorted(screens.rglob("*.py")):
+        if path.name == "theme.py":
+            continue  # ему и положено называть цвета
+        text = path.read_text(encoding="utf-8")
+        for number, line in enumerate(text.splitlines(), start=1):
+            if re.search(r'(foreground|background)\s*=\s*"#', line):
+                offenders.append(f"{path.name}:{number} цвет вписан вручную")
+            if re.search(r'font\s*=\s*\("Tk', line):
+                offenders.append(f"{path.name}:{number} шрифт вписан вручную")
+
+    assert not offenders, "мимо темы: " + "; ".join(offenders)
+
+
+def test_every_wizard_ends_with_a_verb_not_with_ok():
+    """Последний шаг называет действие, а не соглашается неизвестно с чем.
+
+    Практика работы с опасными действиями (PatternFly, Smashing) сходится в
+    одном: кнопка, завершающая мастер, должна говорить, что произойдёт.
+    «Готово» на шаге, где стирается носитель, -- это согласие вслепую.
+    """
+    from portable_os_admin.gui.screens.build_wizard import BuildWizardFrame
+    from portable_os_admin.gui.screens.config_wizard import ConfigWizardFrame
+    from portable_os_admin.gui.screens.deploy_wizard import DeployWizardFrame
+    from portable_os_admin.gui.screens.install_wizard import InstallWizardFrame
+
+    import inspect
+
+    for wizard in (BuildWizardFrame, ConfigWizardFrame, DeployWizardFrame, InstallWizardFrame):
+        source = inspect.getsource(wizard.__init__)
+        assert "finish_label" in source, f"{wizard.__name__}: кнопка финала не названа"
+        # «Готово» -- то самое слово, которое ничего не говорит.
+        assert 'finish_label="Готово"' not in source, (
+            f"{wizard.__name__}: кнопка финала должна называть действие"
+        )
+
+
+def test_sections_use_the_shared_header_and_card():
+    """Раздел не набирает раскладку сам.
+
+    До 04.09.2026 каждый экран сам ставил заголовок и сам решал, лежит ли
+    содержимое на белом поле. Расходилось это не сразу, а по одному пикселю
+    за правку, и видно становилось при переходе между разделами: где-то
+    отступ 16, где-то 24; где-то серая подпись, где-то чёрная; где-то ряд
+    кнопок белой полосой поперёк серого фона.
+
+    Оба помощника живут в gui/widgets.py и меняются вместе.
+    """
+    import pathlib
+    import re
+
+    screens = pathlib.Path("src/portable_os_admin/gui/screens")
+    sections = (
+        "dashboard.py",
+        "configs_list.py",
+        "logs.py",
+        "exchange.py",
+        "recovery.py",
+        "maintenance.py",
+        "integrity_check.py",
+    )
+    offenders = []
+    for name in sections:
+        text = (screens / name).read_text(encoding="utf-8")
+        if "section_header(" not in text:
+            offenders.append(f"{name}: заголовок набран вручную")
+        if "section_card(" not in text:
+            offenders.append(f"{name}: содержимое не на общем поле")
+        # Белое поле красит своих детей само. Экран, который называет
+        # оконный стиль внутри карточки, ставит серый прямоугольник на белом
+        # -- и это видно сразу, в отличие от разъехавшихся отступов.
+        for number, line in enumerate(text.splitlines(), start=1):
+            if "card" in line and re.search(r'style="Window\.T(Frame|Label)"', line):
+                offenders.append(f"{name}:{number} оконный стиль внутри белого поля")
+
+    assert not offenders, "разнобой разделов: " + "; ".join(offenders)
+
