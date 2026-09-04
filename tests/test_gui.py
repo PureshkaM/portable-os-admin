@@ -62,13 +62,21 @@ def _pump(app, condition, timeout=20.0, interval=0.05):
 def _allow_an_application(app, wizard, name: str = "mate-calc"):
     """Fills in the one thing a new configuration cannot guess.
 
-    A new configuration is a kiosk with no applications allowed, and validation
-    refuses that on purpose -- so any test that walks the wizard to the end has
-    to make the same decision an administrator would.
+    A new configuration is a kiosk with nothing installed on top of the
+    minimal system, and validation refuses that on purpose -- so any test that
+    walks the wizard to the end has to make the same decision an administrator
+    would: name a package.
+
+    Отдельного списка «разрешённых приложений» больше нет: то, что доступно
+    пользователю, выводится из пакетов администратора. Но добавляются они
+    выбором строки в каталоге репозитория, а каталога в тестах нет -- за ним
+    нужна сеть и зеркало, -- поэтому пакет кладётся туда же, куда его положил
+    бы `_add_package`.
     """
-    _advance_to(app, wizard, "Режим системы и обновления")
-    wizard.app_entry_var.set(name)
-    wizard._add_allowed_app()
+    _advance_to(app, wizard, "Пакеты для предустановки")
+    if name not in wizard.config.packages:
+        wizard.config.packages.append(name)
+        wizard.selected_list.insert("end", name)
     app.update()
 
 
@@ -207,13 +215,26 @@ def test_config_wizard_final_step_edits_are_applied_or_refused(gui_app, tmp_path
     _open_container(app, tmp_path)
     app.show_frame(ConfigWizardFrame)
     wizard = app._current_frame
+    # Текст конфигурации показывают только в экспертном режиме: в упрощённом
+    # на последнем шаге стоит список изменений по-русски, и править там
+    # нечего. Режим запоминается между запусками, поэтому тест называет его
+    # сам, а не полагается на то, каким программу оставили в прошлый раз.
+    wizard._mode_var.set(True)
+    wizard._on_mode_toggled()
+    app.update()
     wizard.name_var.set("stick1")
     _allow_an_application(app, wizard)
     _advance_to(app, wizard, "Проверка и сохранение")
 
+    # Правка выбрана так, чтобы она была правкой при любом дистрибутиве:
+    # прежняя меняла «bookworm» на «trixie», а с тех пор trixie стал выпуском
+    # Debian по умолчанию -- замена не меняла ничего, и тест проверял пустоту.
     text = wizard.config_text.get("1.0", "end")
+    assert '"timezone": "UTC"' in text, "поменялся текст конфигурации"
     wizard.config_text.delete("1.0", "end")
-    wizard.config_text.insert("1.0", text.replace('"release": "bookworm"', '"release": "trixie"'))
+    wizard.config_text.insert(
+        "1.0", text.replace('"timezone": "UTC"', '"timezone": "Asia/Yekaterinburg"')
+    )
 
     # not applied yet -> saving must refuse rather than discard the edit
     wizard._go_next()
@@ -223,7 +244,7 @@ def test_config_wizard_final_step_edits_are_applied_or_refused(gui_app, tmp_path
 
     wizard._apply_edits()
     app.update()
-    assert wizard.config.release == "trixie"
+    assert wizard.config.localisation.timezone == "Asia/Yekaterinburg"
     # editing invalidates the previous verdict, since the installer only
     # accepts configurations that passed validation
     assert wizard.config.validation_status == "unchecked"
@@ -745,25 +766,29 @@ def test_leaving_a_screen_does_not_leave_tk_variables_for_another_thread(gui_app
     assert after <= before, f"{after - before} tk.Variable objects left behind by screen changes"
 
 
-def test_dashboard_state_check_reports_instead_of_crashing(gui_app, tmp_path, monkeypatch):
+def test_state_check_reports_instead_of_crashing(gui_app, tmp_path, monkeypatch):
     """Regression: the button raised instead of answering.
 
-    `_check_leftovers` called `self.message_bar`, `leftovers` and `messagebox`
-    -- none of which the dashboard created or imported. So the one control that
-    exists to tell an administrator whether an interrupted install left the
-    medium mounted and its encrypted volume open failed with an AttributeError
-    the moment it was pressed, and did so in the situation where it was needed
-    most.
+    `_check_leftovers` called `self.message_bar`, `leftovers` и `messagebox` --
+    ничего из этого экран не создавал и не импортировал. Единственный
+    элемент управления, который отвечает администратору, осталась ли после
+    прерванной установки смонтированная файловая система и открытый том,
+    падал с AttributeError при нажатии -- ровно тогда, когда он нужнее всего.
+
+    Проверка переехала с главного экрана в раздел «Обслуживание» вместе с
+    остальными действиями над самим контейнером, но отвечать она обязана
+    по-прежнему.
     """
-    from portable_os_admin.gui.screens import dashboard as dashboard_module
+    from portable_os_admin.gui.screens import maintenance as maintenance_module
+    from portable_os_admin.gui.screens.maintenance import MaintenanceFrame
 
     app = gui_app
     _open_container(app, tmp_path)
-    app.show_dashboard()
+    app.show_frame(MaintenanceFrame)
     app.update()
     frame = app._current_frame
 
-    monkeypatch.setattr(dashboard_module.leftovers, "find", lambda: None)
+    monkeypatch.setattr(maintenance_module.leftovers, "find", lambda: None)
     frame._check_leftovers()
     app.update()
 
@@ -836,13 +861,15 @@ def test_final_step_lists_what_the_administrator_changed(gui_app, tmp_path):
     wizard.name_var.set("stick1")
     wizard.arch_var.set("amd64")
     _allow_an_application(app, wizard)
+    # Флажок живёт на шаге киоска и появляется только когда шаг построен.
+    _advance_to(app, wizard, "Режим системы и обновления")
     wizard.allow_media_var.set(True)
     _advance_to(app, wizard, "Проверка и сохранение")
 
     changes = dict(
         (label, (before, after)) for label, before, after in wizard.config.diff_from(wizard._baseline)
     )
-    assert changes["Разрешённые приложения"] == ("(пусто)", "mate-calc")
+    assert changes["Предустановленные пакеты"] == ("(пусто)", "mate-calc")
     assert changes["Съёмные носители"] == ("нет", "да")
     assert changes["Архитектура носителя"] == ("(пусто)", "amd64")
 
@@ -946,7 +973,10 @@ def test_deploy_wizard_shows_what_it_is_about_to_write(gui_app, tmp_path):
     wizard.device_path = "/dev/sdz"
     wizard.device_size_gb = "16"
     wizard.passphrase = "CorrectHorse123"
-    wizard.step_index = 3
+    # По названию, а не по номеру: шаг «Кому и что» вставлен между паролем и
+    # подтверждением, и `step_index = 3` с тех пор открывал не тот шаг --
+    # молча, потому что рисуется он так же.
+    wizard.step_index = wizard.step_titles.index("Подтверждение и запись")
     wizard._render_step()
     app.update()
 
@@ -977,7 +1007,10 @@ def test_deploy_refuses_when_the_device_confirmation_does_not_match(gui_app, tmp
     wizard.device_path = "/dev/sdz"
     wizard.device_size_gb = "16"
     wizard.passphrase = "CorrectHorse123"
-    wizard.step_index = 3
+    # По названию, а не по номеру: шаг «Кому и что» вставлен между паролем и
+    # подтверждением, и `step_index = 3` с тех пор открывал не тот шаг --
+    # молча, потому что рисуется он так же.
+    wizard.step_index = wizard.step_titles.index("Подтверждение и запись")
     wizard._render_step()
     app.update()
 
@@ -1051,7 +1084,10 @@ def test_a_long_write_can_be_aborted_from_the_interface(gui_app, tmp_path, monke
     wizard.device_path = "/dev/sdz"
     wizard.device_size_gb = "16"
     wizard.passphrase = "CorrectHorse123"
-    wizard.step_index = 3
+    # По названию, а не по номеру: шаг «Кому и что» вставлен между паролем и
+    # подтверждением, и `step_index = 3` с тех пор открывал не тот шаг --
+    # молча, потому что рисуется он так же.
+    wizard.step_index = wizard.step_titles.index("Подтверждение и запись")
     wizard._render_step()
     app.update()
 
@@ -1093,7 +1129,10 @@ def test_an_abort_is_reported_as_a_decision_not_a_failure(gui_app, tmp_path):
     wizard.device_path = "/dev/sdz"
     wizard.device_size_gb = "16"
     wizard.passphrase = "CorrectHorse123"
-    wizard.step_index = 3
+    # По названию, а не по номеру: шаг «Кому и что» вставлен между паролем и
+    # подтверждением, и `step_index = 3` с тех пор открывал не тот шаг --
+    # молча, потому что рисуется он так же.
+    wizard.step_index = wizard.step_titles.index("Подтверждение и запись")
     wizard._render_step()
     app.update()
 
