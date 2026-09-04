@@ -208,3 +208,36 @@ def test_nothing_is_copied_when_nothing_was_chosen():
     installer = OSInstaller.__new__(OSInstaller)
     assert installer._fill_exchange(lambda argv, **kw: calls.append(argv), object(), []) == []
     assert calls == []
+
+
+def test_both_ways_of_writing_a_medium_fill_the_exchange():
+    """Развёртывание и установка с образа -- два разных пути, и оба обязаны.
+
+    Проверено прогоном 04.09.2026: правка стояла только в пути установки с
+    образа, носитель развернулся успешно, а каталог настроек в разделе обмена
+    не появился вовсе. Снаружи это выглядит как «файл не скопировался», и
+    ошибку видно только тому, кто заглянет в раздел после записи.
+
+    Смотрим туда же, куда смотрит сама программа: раздел обмена монтируется в
+    двух местах кода, и рядом с каждым монтированием обязан стоять вызов,
+    который его наполняет. Проверка по тексту, а не по поведению: поднять
+    настоящую запись в тесте нечем, а «в обеих ветках есть вызов» -- ровно то,
+    чего не хватало.
+    """
+    import inspect
+
+    from portable_os_admin.install import installer as installer_module
+
+    source = inspect.getsource(installer_module).splitlines()
+    mount_lines = [
+        index
+        for index, line in enumerate(source)
+        if 'run(["mount", layout.exchange_mapper_path' in line
+    ]
+    assert len(mount_lines) == 2, "раздел обмена монтируется не в двух местах -- проверьте тест"
+
+    for index in mount_lines:
+        nearby = "\n".join(source[index : index + 15])
+        assert "_fill_exchange" in nearby, (
+            f"около монтирования обмена (строка {index + 1}) нет наполнения раздела"
+        )

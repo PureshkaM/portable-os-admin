@@ -814,6 +814,15 @@ class OSInstaller:
         run(["mount", layout.exchange_mapper_path, f"{layout.mount_root}{EXCHANGE_MOUNTPOINT}"])
         state.mounts.append(f"{layout.mount_root}{EXCHANGE_MOUNTPOINT}")
         run(["chmod", "1777", f"{layout.mount_root}{EXCHANGE_MOUNTPOINT}"])
+        # Файлы администратора -- здесь же, пока том смонтирован.
+        #
+        # Второй раз, и это не дубль: развёртывание и установка с образа
+        # монтируют раздел обмена каждое у себя. Правка, сделанная в одном
+        # месте, ничего не дала другому -- проверено прогоном 04.09.2026:
+        # носитель записался, а каталог настроек в разделе не появился.
+        self._exchange_problems = self._fill_exchange(
+            run, layout, getattr(self, "_exchange_files", ())
+        )
 
         # Before the initramfs is built, never after: these are what the
         # rebuild copies into the image.
