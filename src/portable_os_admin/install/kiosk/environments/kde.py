@@ -774,6 +774,17 @@ for tool in {self.paths.sycoca_tools}; do
 done
 if [ ! -f /etc/xdg/kdeglobals ]; then
     echo "poa-kiosk: ВНИМАНИЕ: /etc/xdg/kdeglobals отсутствует, ограничения KDE не применены" >&2
+else
+    # Перечень действующих запретов -- в журнал установки.
+    #
+    # Разбирать чужое поведение по памяти о том, что мы «вроде бы ставили»,
+    # дорого: на прогоне 04.09.2026 ярлык на рабочем столе отвечал «You are
+    # not authorized to execute this file», и первым делом пришлось выяснять,
+    # какие ограничения вообще действуют на носителе. Теперь это видно в
+    # журнале, без монтирования корня и чтения kdeglobals глазами.
+    echo "poa-kiosk: ограничения KDE:" \\
+         "$(grep -o '^[a-z_/][^=]*=false' /etc/xdg/kdeglobals \\
+            | sed 's/=false//' | tr '\\n' ' ')"
 fi
 """
         )

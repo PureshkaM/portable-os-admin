@@ -1953,3 +1953,24 @@ def test_the_menu_favourites_are_written_where_plasma_reads_them():
         "флаг переноса выставлен -- меню возьмёт пустой KAStats"
     )
 
+
+def test_the_install_log_names_the_restrictions_that_are_in_force():
+    """Что запрещено на носителе -- видно в журнале, а не по памяти.
+
+    Прогон 04.09.2026: ярлык на рабочем столе Plasma отвечал «You are not
+    authorized to execute this file», и первым делом пришлось выяснять, какие
+    ограничения вообще действуют, -- монтировать корень и читать kdeglobals
+    глазами. Установка теперь называет их сама, тем же приёмом «проверять на
+    месте, а не предполагать», что и остальные проверки целевой системы.
+    """
+    from portable_os_admin.install.kiosk.environments import kde
+
+    config = make_kiosk_config(desktop_environment="kde")
+    fragment = kde.Kde5Environment().apply_fragment(config)
+
+    assert "poa-kiosk: ограничения KDE:" in fragment, "перечень не попадает в журнал"
+    # Читается из того же файла, который мы пишем, а не из списка в коде:
+    # список в коде отвечает на вопрос «что мы собирались», а нужен ответ
+    # «что оказалось на носителе».
+    assert "/etc/xdg/kdeglobals" in fragment
+
