@@ -90,6 +90,42 @@ def wrap_to_width(label: ttk.Label, padding: int = 0) -> ttk.Label:
     return label
 
 
+class TablePlaceholder:
+    """Объяснение поверх пустой таблицы.
+
+    Пустая сетка со шапкой читается как экран, который не загрузился, а не
+    как контейнер, в котором пока ничего нет. Раньше это лечили по-разному:
+    на главном экране -- синей строкой внизу, на остальных никак, и человек
+    смотрел на пустую таблицу, не понимая, сломалось что-то или так и надо.
+
+    Объяснение стоит там, где смотрят -- в самой таблице, -- и говорит, что
+    сделать, а не только что пусто.
+    """
+
+    def __init__(self, table: ttk.Treeview, text: str):
+        self.label = ttk.Label(table, text=text, style="Hint.TLabel", justify="center")
+        self._visible = False
+
+    def show(self, text: str = "") -> None:
+        if text:
+            self.label.configure(text=text)
+        if not self._visible:
+            self.label.place(relx=0.5, rely=0.4, anchor="center")
+            self._visible = True
+
+    def hide(self) -> None:
+        if self._visible:
+            self.label.place_forget()
+            self._visible = False
+
+    def update(self, empty: bool, text: str = "") -> None:
+        """`empty` -- пуста ли таблица; текст можно уточнить по обстоятельствам."""
+        if empty:
+            self.show(text)
+        else:
+            self.hide()
+
+
 def section_card(parent: tk.Widget, grow: bool = True) -> ttk.Frame:
     """Белое поле раздела -- то, что стоит под заголовком на каждом экране.
 

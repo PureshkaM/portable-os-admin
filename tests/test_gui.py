@@ -1507,3 +1507,50 @@ def test_sections_use_the_shared_header_and_card():
 
     assert not offenders, "разнобой разделов: " + "; ".join(offenders)
 
+
+def test_every_table_explains_itself_when_empty():
+    """Пустая таблица не молчит.
+
+    Сетка со шапкой и без строк читается как экран, который не загрузился.
+    До 04.09.2026 это было сказано словами только на главном экране, и то
+    строкой внизу; список конфигураций и список файлов раздела обмена
+    молчали.
+
+    Текст обязан говорить, что сделать, а не только что пусто, -- поэтому
+    проверяется и наличие заглушки, и то, что в ней есть глагол.
+    """
+    import pathlib
+    import re
+
+    screens = pathlib.Path("src/portable_os_admin/gui/screens")
+    for name in ("dashboard.py", "configs_list.py", "exchange.py"):
+        text = (screens / name).read_text(encoding="utf-8")
+        assert "TablePlaceholder(" in text, f"{name}: у таблицы нет объяснения пустоты"
+        said = re.findall(r"TablePlaceholder\(\s*[^,]+,\s*(.+?)\)", text, re.S)
+        assert said, f"{name}: объяснение пустоты без текста"
+
+
+def test_the_empty_table_hint_appears_and_disappears(gui_app, tmp_path):
+    """Заглушка живёт по числу строк, а не по случаю.
+
+    Проверяется на живом виджете, а не по исходному тексту: `place` и
+    `place_forget` -- то самое место, где легко оставить объяснение висеть
+    поверх заполненной таблицы.
+    """
+    from portable_os_admin.gui.widgets import TablePlaceholder
+
+    app = gui_app
+    _open_container(app, tmp_path)
+    app.show_dashboard()
+    app.update()
+    frame = app._current_frame
+
+    assert isinstance(frame.placeholder, TablePlaceholder)
+    # Контейнер пуст -- объяснение показано.
+    assert frame.placeholder.label.winfo_manager() == "place"
+
+    frame.table.insert("", "end", values=("stick1", "", "", "", "", ""))
+    frame.placeholder.update(False)
+    app.update()
+    assert frame.placeholder.label.winfo_manager() == ""
+

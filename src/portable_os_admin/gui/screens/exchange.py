@@ -24,6 +24,7 @@ from ...errors import ExchangeError, InsufficientSpaceError
 from .. import theme
 from ..widgets import (
     MessageBar,
+    TablePlaceholder,
     run_in_background,
     section_card,
     section_header,
@@ -73,6 +74,12 @@ class ExchangeFrame(ttk.Frame):
         self.files_table.heading("size", text="размер (байт)")
         self.files_table.pack(fill="both", expand=True)
         self.files_table.bind("<<TreeviewSelect>>", self._on_row_selected)
+        # Пусто здесь значит разное: носитель ещё не подключён или на разделе
+        # обмена нет файлов. Ответы разные, поэтому текст уточняется на месте.
+        self.placeholder = TablePlaceholder(
+            self.files_table, "Подключите носитель, чтобы увидеть файлы."
+        )
+        self.placeholder.show()
 
         # Поле и кнопки -- двумя строками, а не одной.
         #
@@ -280,6 +287,7 @@ class ExchangeFrame(ttk.Frame):
     def _refresh(self) -> None:
         mount_point = self._mount_point()
         if mount_point is None:
+            self.placeholder.show("Подключите носитель, чтобы увидеть файлы.")
             return
         for item in self.files_table.get_children():
             self.files_table.delete(item)
@@ -288,6 +296,10 @@ class ExchangeFrame(ttk.Frame):
                 self.files_table.insert("", "end", values=(info.name, info.size_bytes))
         except ExchangeError as exc:
             self.message_bar.error(str(exc))
+        self.placeholder.update(
+            not self.files_table.get_children(),
+            "На разделе обмена пока нет файлов.",
+        )
 
     def _after_change(self) -> None:
         self._refresh()

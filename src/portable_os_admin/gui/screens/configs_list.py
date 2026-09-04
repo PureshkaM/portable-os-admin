@@ -12,7 +12,7 @@ from tkinter import ttk
 
 from ...config.validator import ConfigValidationUnavailableError
 from .. import theme
-from ..widgets import MessageBar, error_guard, section_card, section_header
+from ..widgets import MessageBar, TablePlaceholder, error_guard, section_card, section_header
 
 
 class ConfigsListFrame(ttk.Frame):
@@ -37,6 +37,10 @@ class ConfigsListFrame(ttk.Frame):
             self.table.column(col, width=160, anchor="w")
         self.table.pack(fill="both", expand=True)
         self.table.bind("<Double-1>", lambda _event: self._edit_selected())
+        self.placeholder = TablePlaceholder(
+            self.table,
+            "Конфигураций пока нет.\nНажмите «Создать новую конфигурацию».",
+        )
 
         create_row = ttk.Frame(card)
         create_row.pack(fill="x", pady=(theme.SPACE_SM, theme.SPACE_XS))
@@ -59,6 +63,7 @@ class ConfigsListFrame(ttk.Frame):
         for item in self.table.get_children():
             self.table.delete(item)
         self._paths = self.app.config_manager.list_configs(self.app.configs_dir)
+        self.placeholder.update(not self._paths)
         for path in self._paths:
             config = self.app.config_manager.open(path)
             self.table.insert("", "end", values=(path.name, config.target_os, config.release, config.validation_status))

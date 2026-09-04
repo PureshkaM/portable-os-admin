@@ -6,7 +6,7 @@ from tkinter import simpledialog, ttk
 
 from ...admin import media_detect
 from .. import theme
-from ..widgets import MessageBar, section_card, section_header
+from ..widgets import MessageBar, TablePlaceholder, section_card, section_header
 
 
 class DashboardFrame(ttk.Frame):
@@ -99,6 +99,11 @@ class DashboardFrame(ttk.Frame):
         # вообще, поэтому она открывается со строки, а не кнопкой: седьмая
         # кнопка в ряд уже не помещается, и это ловит тест ширины.
         self.table.bind("<Double-1>", self._open_selected_integrity)
+        # Пустая сетка со шапкой читается как несработавший экран; объяснение
+        # стоит внутри таблицы и говорит, с чего начать.
+        self.placeholder = TablePlaceholder(
+            self.table, "Носителей пока нет.\nНачните с «Установка ОС»."
+        )
 
         # Действия над конкретным носителем стоят под таблицей, а не в общем
         # ряду: они относятся к выбранной строке, и место рядом с ней говорит
@@ -120,18 +125,13 @@ class DashboardFrame(ttk.Frame):
         # Опрос прекращается вместе с экраном: `after` переживает виджет и
         # продолжал бы дёргать уничтоженную таблицу.
         self.bind("<Destroy>", self._stop_polling)
-        # Said plainly rather than left as an empty grid, which reads as a
-        # screen that failed to load rather than as a container with nothing in
-        # it yet.
-        if not self.app.session.container.data.media_records:
-            self.message_bar.info(
-                "В контейнере пока нет носителей. Начните с «Установка ОС»."
-            )
+
 
     def _refresh_table(self) -> None:
         for item in self.table.get_children():
             self.table.delete(item)
         records = self.app.session.container.data.media_records
+        self.placeholder.update(not records)
         connected = media_detect.detect_map(records)
         for record in records:
             found = connected.get(record.media_id)
