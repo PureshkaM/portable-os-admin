@@ -1730,6 +1730,85 @@ def test_the_dconf_database_actually_compiles():
             )
 
 
+def test_the_panel_layout_is_delivered_the_way_plasma_reads_it():
+    """Правка чужого файла не работала, и это молчало с самого начала.
+
+    До 04.09.2026 раскладка панели наносилась правкой
+    `plasma-org.kde.plasma.desktop-appletsrc` в домашнем каталоге. Этого файла
+    при установке ещё нет: Plasma создаёт его при первом входе, уже после
+    того, как отработал скрипт. Правка пропускалась молча (`[ -f "$f" ] ||
+    continue`), и носитель уезжал с умолчаниями Plasma. Прочитано с живого
+    носителя: `immutability=1` и `launchers=applications:systemsettings.desktop,
+    applications:org.kde.discover.desktop` -- то есть виджеты не заперты, а в
+    панели закреплены «Параметры системы» и «Центр приложений».
+
+    Теперь раскладка отдаётся так, как Plasma её читает: пакетом оформления,
+    названным в kdeglobals. Его сценарий выполняется при первом входе.
+    """
+    from portable_os_admin.install.kiosk.environments import kde
+
+    config = make_kiosk_config(desktop_environment="kde")
+    files = kde.Kde5Environment().files(config)
+
+    assert kde.LOOK_AND_FEEL_METADATA in files, "пакета оформления нет"
+    assert kde.LOOK_AND_FEEL_DEFAULTS in files
+    assert "poa-kiosk" in files[kde.LOOK_AND_FEEL_METADATA][0]
+
+    settings = kde.kdeglobals(config)
+    assert f"LookAndFeelPackage={kde.LOOK_AND_FEEL_NAME}" in settings, (
+        "Plasma не узнает, откуда брать раскладку"
+    )
+
+
+def test_widgets_are_locked_by_a_restriction_not_by_a_file_that_may_not_exist():
+    """Запрет читает сама оболочка при запуске -- ему не нужен чужой файл.
+
+    `plasma/plasmashell/unlockedDesktop=false` запрещает разблокировать
+    виджеты, добавлять и убирать панели и менять избранное в меню. В отличие
+    от `immutability=2` в конфигурации пользователя, он действует с первого
+    входа.
+    """
+    from portable_os_admin.install.kiosk.environments import kde
+
+    settings = kde.kdeglobals(make_kiosk_config(desktop_environment="kde"))
+
+    assert "plasma/plasmashell/unlockedDesktop=false" in settings
+    # И он в неизменяемой группе -- иначе это лишь умолчание.
+    restrictions = settings[settings.index("[KDE Action Restrictions][$i]"):]
+    assert "plasma/plasmashell/unlockedDesktop=false" in restrictions
+
+
+def test_the_panel_pins_the_allowed_applications_and_nothing_else():
+    """В панели закрепляется то, что установил администратор.
+
+    По умолчанию Plasma закрепляет «Параметры системы» и «Центр приложений»:
+    и то, и другое в киоске недопустимо, и увидели мы их на живом носителе, а
+    не вывели рассуждением.
+    """
+    from portable_os_admin.install.kiosk.environments import kde
+
+    script = kde.plasma_layout_script(make_kiosk_config(desktop_environment="kde"))
+
+    assert "org.kde.plasma.icontasks" in script
+    assert "writeConfig('launchers'" in script
+    assert "$APPLETSRC_LAUNCHERS" in script, "список должен приходить из вычисленного"
+    assert "systemsettings.desktop,applications:org.kde.discover" not in script
+    # Переключателя рабочих мест нет: место одно, а виджет -- лишняя дверь.
+    assert "org.kde.plasma.pager" not in script
+
+
+def test_the_desktop_container_is_named_explicitly():
+    """Чем рисуется рабочий стол -- решение, а не умолчание дистрибутива."""
+    from portable_os_admin.install.kiosk.environments import kde
+
+    defaults = kde.look_and_feel_defaults()
+
+    assert "Containment=org.kde.plasma.folder" in defaults, (
+        "стол должен показывать ярлыки разрешённых приложений"
+    )
+    assert "Containment=org.kde.panel" in defaults
+
+
 def test_the_generations_do_not_share_a_settings_tree():
     """Разделы у Plasma 5 и 6 разные, и перепутать их дорого.
 
