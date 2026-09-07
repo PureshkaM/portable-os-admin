@@ -1939,15 +1939,18 @@ def test_the_menu_favourites_are_written_where_plasma_reads_them():
     (задача 8), избранное осталось с ней один на один.
 
     Флаг `favoritesPortedToKAstats` намеренно не выставляется: по умолчанию
-    он false (проверено по main.xml плазмоида kickoff), и Plasma сама
-    переносит написанное в KAStats при первом запуске. Сказать «уже
-    перенесено» значило бы отдать меню пустой набор KAStats.
+    он false (проверено по main.xml плазмоида), и Plasma сама переносит
+    написанное в KAStats при первом запуске. Сказать «уже перенесено»
+    значило бы отдать меню пустой набор KAStats.
+
+    Ключ называется `favoriteApps`: меню киоска -- kicker, а не kickoff (см.
+    задачу 29), и схема у него своя.
     """
     from portable_os_admin.install.kiosk.environments import kde
 
     script = kde.plasma_layout_script(make_kiosk_config(desktop_environment="kde"))
 
-    assert "menu.writeConfig('favorites'" in script, "избранное не задаётся в раскладке"
+    assert "menu.writeConfig('favoriteApps'" in script, "избранное не задаётся в раскладке"
     assert "$FAVOURITES" in script, "избранное не берётся из вычисленного списка"
     assert "menu.writeConfig('favoritesPortedToKAstats'" not in script, (
         "флаг переноса выставлен -- меню возьмёт пустой KAStats"
@@ -1974,3 +1977,145 @@ def test_the_install_log_names_the_restrictions_that_are_in_force():
     # «что оказалось на носителе».
     assert "/etc/xdg/kdeglobals" in fragment
 
+
+
+# ----------------------------------------------------------------------
+# Задача 29: места и служебные разделы
+# ----------------------------------------------------------------------
+def test_the_places_list_hides_every_group():
+    """Список мест пуст, и наполнить его заново KIO не может.
+
+    Прогон 04.09.2026 показал в меню Plasma «Home», «Desktop», «Trash»,
+    «Network», «Recent» и служебный раздел носителя `POA_EXCHANGE`. Их даёт
+    `KFilePlacesModel`, и закрывается он не поштучно, а группами: фильтр меню
+    (`computermodel.cpp:53`) спрашивает `isHidden()`, а тот -- «скрыт элемент
+    или скрыта его группа» (`kfileplacesmodel.cpp:486`). Групповой ключ живёт
+    в метаданных корня и действует на записи, которых в файле ещё нет, -- в
+    том числе на устройство, которое подключат завтра.
+
+    Два условия проверяются здесь потому, что нарушение любого возвращает
+    список целиком:
+
+    * скрыты все семь групп, а не те, что вспомнились;
+    * в файле есть закладка и объявлена версия выше той, которую KIO чинит.
+      Файл без закладок считается новым (`newFile = root.first().isNull()`),
+      а файл со старой версией KIO дополняет умолчаниями по своему списку.
+    """
+    from portable_os_admin.install.kiosk.environments import kde
+
+    places = kde.user_places(make_kiosk_config(desktop_environment="kde"))
+
+    for group in ("Places", "Remote", "RecentlySaved", "SearchFor",
+                  "Devices", "RemovableDevices", "Tags"):
+        assert f"<GroupState-{group}-IsHidden>true</GroupState-{group}-IsHidden>" in places, (
+            f"группа {group} осталась видимой"
+        )
+    assert "<bookmark href=" in places, (
+        "в файле нет ни одной закладки -- KIO сочтёт его новым и наполнит умолчаниями"
+    )
+    assert kde.PLACES_VERSION > 4, (
+        "версия не выше той, что KIO чинит (в 6.13 s_currentVersion = 4)"
+    )
+    assert f"<kde_places_version>{kde.PLACES_VERSION}</kde_places_version>" in places
+
+
+def test_the_places_list_reaches_the_account_that_already_exists():
+    """Файл мест кладётся и в /etc/skel, и в готовые домашние каталоги.
+
+    Тот же разрыв, на котором дважды обжигались панель (задача 8) и избранное
+    (задача 31): при установке домашнего каталога может ещё не быть -- тогда
+    работает /etc/skel, -- а может уже быть, и тогда `useradd -m` файл не
+    копировал, потому что в /etc/skel его на тот момент не было.
+    """
+    from portable_os_admin.install.kiosk.environments import kde
+
+    config = make_kiosk_config(desktop_environment="kde")
+    files = kde.Kde5Environment().files(config)
+    script = kde.plasma_layout_script(config)
+
+    assert kde.USER_PLACES_PATH in files, "файл мест не попадает на носитель"
+    assert kde.USER_PLACES_PATH.startswith("etc/skel/"), "файл мимо /etc/skel"
+    assert f'cp "/{kde.USER_PLACES_PATH}"' in script, (
+        "готовые домашние каталоги остаются со своим списком мест"
+    )
+
+
+def test_the_menu_has_no_places_tab():
+    """Меню киоска -- kicker: у kickoff вкладку мест отключить нечем.
+
+    Ключа нет ни в одном поколении: прочитано в `contents/config/main.xml`
+    плазмоида из самих образов -- Plasma 5.27.11 РЕД ОС и 6.3.6 Debian, --
+    вкладка задана прямо в `Footer.qml`. У kicker её нет вовсе: ни `Places`,
+    ни `ComputerModel` в его QML не встречаются, проверено в обоих
+    поколениях.
+
+    Kickoff при этом удаляется из системы. Сам он не вернётся -- панель
+    собирается нашим сценарием, а виджеты заперты, -- но пока он лежит на
+    месте, он остаётся тем меню, которое покажет служебный раздел носителя,
+    стоит раскладке однажды не примениться.
+    """
+    from portable_os_admin.install.kiosk.environments import kde
+
+    script = kde.plasma_layout_script(make_kiosk_config(desktop_environment="kde"))
+
+    assert "panel.addWidget('org.kde.plasma.kicker')" in script, "меню без вкладки мест не поставлено"
+    assert "panel.addWidget('org.kde.plasma.kickoff')" not in script, "в панель ставится меню с местами"
+    assert "org.kde.plasma.kickoff" in kde.REMOVED_PLASMOIDS, "меню с местами остаётся в системе"
+
+
+def test_the_menu_does_not_remember_what_was_launched():
+    """Недавние приложения и документы в киоске не показываются.
+
+    Носитель переходит из рук в руки, и список «что открывали» -- это
+    сведения о предыдущем пользователе, выданные следующему. У kickoff таких
+    ключей нет вовсе; у kicker есть, и это вторая причина, по которой меню
+    именно он.
+
+    `useExtraRunners` -- о том же, но про строку поиска: с ним она подключает
+    krunner_shell и три других runner'а (умолчание прочитано в main.xml).
+    Сам shell-runner в киоске молчит -- он спрашивает `run_command` и
+    `shell_access`, а оба запрещены (`shellrunner.cpp:31`), -- но запрет не
+    должен быть единственным, что стоит между поиском и запуском команды.
+    """
+    from portable_os_admin.install.kiosk.environments import kde
+
+    script = kde.plasma_layout_script(make_kiosk_config(desktop_environment="kde"))
+
+    assert "menu.writeConfig('showRecentApps', 'false')" in script
+    assert "menu.writeConfig('showRecentDocs', 'false')" in script
+    assert "menu.writeConfig('useExtraRunners', 'false')" in script
+
+
+def test_service_volumes_are_hidden_from_the_desktop():
+    """Служебные разделы носителя не показываются рабочим столом.
+
+    Прогон 04.09.2026: раздел `POA_EXCHANGE` лежал в «Removable Devices»
+    меню Plasma. Закрывается там, где рабочий стол берёт список, -- в
+    Solid/udisks2, а не в каждой оболочке отдельно: Solid считает том
+    незначащим по `HintIgnore`, а тот приходит из udev-переменной
+    `UDISKS_IGNORE`.
+
+    **Проверено на стенде 07.09.2026** без сеанса Plasma: том с меткой
+    `POA_TESTLBL` показывал `HintIgnore: false`, после правила и `udevadm
+    trigger` -- `HintIgnore: true`.
+
+    Правило по метке, а не по имени устройства: `/dev/sdb5` зависит от того,
+    куда воткнули носитель, а метку ставим мы при разметке.
+
+    В /etc, в отличие от запрета USB, ему место: правило ничего не
+    деавторизует, поэтому coldplug при переходе из initramfs ему безразличен.
+    """
+    from portable_os_admin.install import kiosk as kiosk_mode
+    from portable_os_admin.install.kiosk import common
+
+    rules = common.hidden_volumes_udev_rules()
+
+    assert 'ENV{UDISKS_IGNORE}="1"' in rules, "переменная, по которой udisks ставит HintIgnore, не задана"
+    assert 'ENV{ID_FS_LABEL}=="POA_*"' in rules, "правило не по метке носителя"
+    assert "authorized" not in rules, "правило что-то деавторизует -- носитель отключит сам себя"
+
+    files = kiosk_mode.config_files(make_kiosk_config(desktop_environment="kde"))
+    assert common.HIDDEN_VOLUMES_RULES_PATH in files, "правило не попадает на носитель"
+    assert common.HIDDEN_VOLUMES_RULES_PATH.startswith("etc/udev/rules.d/"), (
+        "правило не в /etc: положенное в /run оно переживёт только текущую загрузку"
+    )

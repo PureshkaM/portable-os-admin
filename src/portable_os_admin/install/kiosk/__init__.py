@@ -49,6 +49,7 @@ from .common import (
     DESKTOP_MATE,
     EXCHANGE_DIR,
     HARDENED_OPTS,
+    HIDDEN_VOLUMES_RULES_PATH,
     LAUNCHER_PATH,
     LOGIND_CONF_PATH,
     OVERRIDE_DIR,
@@ -61,6 +62,7 @@ from .common import (
     autostart_entry,
     desktop_of,
     hardening_fstab_rows,
+    hidden_volumes_udev_rules,
     is_enabled,
     launcher_script,
     logind_conf,
@@ -124,6 +126,11 @@ def config_files(config: InstallConfig, image=None) -> dict[str, tuple[str, int 
         POLKIT_RULES_PATH: (polkit_rules(config), None),
         APPLY_SCRIPT_PATH: (apply_script(config, image), 0o755),
         LAUNCHER_PATH: (launcher_script(), 0o755),
+        # Служебные разделы носителя -- мимо глаз рабочего стола. В /etc, а не
+        # в /run, потому что правило ничего не деавторизует: оно помечает том
+        # переменной, и coldplug, на котором обжигался запрет USB, ему
+        # безразличен.
+        HIDDEN_VOLUMES_RULES_PATH: (hidden_volumes_udev_rules(), None),
     }
     session_path, session_content = session_entry(config)
     files[session_path] = (session_content, 0o644)
