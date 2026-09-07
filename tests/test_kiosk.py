@@ -2119,3 +2119,40 @@ def test_service_volumes_are_hidden_from_the_desktop():
     assert common.HIDDEN_VOLUMES_RULES_PATH.startswith("etc/udev/rules.d/"), (
         "правило не в /etc: положенное в /run оно переживёт только текущую загрузку"
     )
+
+
+def test_the_kde_desktop_shortcut_is_a_link_to_the_system_entry():
+    """Ярлык KDE -- ссылка на системную запись, а не её копия.
+
+    Прогон 07.09.2026, живая загрузка: двойной щелчок по копии спрашивал
+    «This will start the program…», а после согласия отвечал «You are not
+    authorized to execute this file». Главный подозреваемый прошлого разбора
+    -- `shell_access` -- **проверен и отвергнут**: запрет сняли прямо на
+    носителе, загрузились снова, и отказ остался слово в слово.
+
+    Настоящий механизм прочитан в исходниках: доверие к `.desktop` решает
+    `KDesktopFile::isAuthorizedDesktopFile` (kf6-kconfig 6.13,
+    `kdesktopfile.cpp:98`), и первый её критерий -- лежит ли **канонический**
+    путь файла в каталоге приложений XDG. Символическая ссылка на
+    `/usr/share/applications/…` проходит эту проверку; копия в домашнем
+    каталоге до неё не доходит и попадает в путь с предупреждением о
+    недоверенной программе (`applicationlauncherjob.cpp:145`) и повторной
+    проверкой уже после согласия (`kprocessrunner.cpp:238`).
+
+    У MATE ответ обратный, и это не непоследовательность: Caja запускает
+    ярлык, если файл исполняемый, а ссылку на удалённый пакетом файл он
+    показывает битой.
+    """
+    from portable_os_admin.install.kiosk import script
+    from portable_os_admin.install.kiosk.environments import kde, mate
+
+    assert kde.Kde5Environment.desktop_shortcuts_are_links is True
+    assert mate.MateEnvironment.desktop_shortcuts_are_links is False
+
+    kde_script = script.apply_script(make_kiosk_config(desktop_environment="kde"))
+    assert 'DESKTOP_SHORTCUT_LINKS="1"' in kde_script, "KDE кладёт ярлык копией"
+    assert 'ln -s "$src"' in kde_script, "в сценарии нет ссылки"
+
+    mate_script = script.apply_script(make_kiosk_config(desktop_environment="mate"))
+    assert 'DESKTOP_SHORTCUT_LINKS=""' in mate_script, "MATE кладёт ярлык ссылкой"
+    assert 'cp "$src"' in mate_script, "копия убрана из сценария целиком"

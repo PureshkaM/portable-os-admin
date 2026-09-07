@@ -53,6 +53,13 @@ class DesktopEnvironment:
         """
         return True
 
+    #: Чем ярлык на рабочем столе должен быть: копией записи или ссылкой на неё.
+    #:
+    #: Умолчание -- копия: так ярлык переживает удаление пакета, а MATE
+    #: запускает его, если файл исполняемый и помечен доверенным. KDE считает
+    #: иначе, поэтому у него ответ свой -- см. `Kde5Environment`.
+    desktop_shortcuts_are_links = False
+
 
 def for_config(config: InstallConfig, image=None) -> DesktopEnvironment:
     """Среда, которой строится этот киоск.
