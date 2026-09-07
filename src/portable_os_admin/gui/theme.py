@@ -223,6 +223,13 @@ def apply(root: tk.Misc) -> ttk.Style:
         background=ACCENT,
         foreground=TEXT_ON_ACCENT,
         bordercolor=ACCENT,
+        # Рамка фокуса -- светлая, иначе её нет вовсе: производные стили
+        # наследуют `focuscolor` от `TButton`, а там он равен ACCENT, то есть
+        # фону этой самой кнопки. Проверено на живом Tk: до правки
+        # `lookup("Accent.TButton", "focuscolor")` возвращал тот же #2c5fb8, и
+        # пользователь, дошедший до главной кнопки табом, не видел, что стоит
+        # на ней.
+        focuscolor=TEXT_ON_ACCENT,
         padding=(SPACE_MD, SPACE_SM),
         font=FONT_SECTION,
     )

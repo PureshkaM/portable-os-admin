@@ -23,8 +23,9 @@ from ...admin.service_volumes import ServiceVolumeError, open_exchange
 from ...errors import ExchangeError, InsufficientSpaceError
 from .. import theme
 from ..widgets import (
+    Column,
     MessageBar,
-    TablePlaceholder,
+    data_table,
     run_in_background,
     section_card,
     section_header,
@@ -69,20 +70,22 @@ class ExchangeFrame(ttk.Frame):
             side="left", padx=(theme.SPACE_SM, 0)
         )
 
-        self.files_table = ttk.Treeview(card, columns=("name", "size"), show="headings", height=8)
-        self.files_table.heading("name", text="файл")
-        self.files_table.heading("size", text="размер (байт)")
         # Числа -- по правому краю: так разряды стоят под разрядами и размеры
-        # сравниваются взглядом, без чтения каждой цифры.
-        self.files_table.column("name", anchor="w")
-        self.files_table.column("size", anchor="e")
-        self.files_table.pack(fill="both", expand=True)
-        self.files_table.bind("<<TreeviewSelect>>", self._on_row_selected)
-        # Пусто здесь значит разное: носитель ещё не подключён или на разделе
-        # обмена нет файлов. Ответы разные, поэтому текст уточняется на месте.
-        self.placeholder = TablePlaceholder(
-            self.files_table, "Подключите носитель, чтобы увидеть файлы."
+        # сравниваются взглядом, без чтения каждой цифры. `numeric` в
+        # описании колонки и означает это выравнивание.
+        self.files_table, self.placeholder = data_table(
+            card,
+            (
+                Column("name", "файл", 320, 160, stretch=True),
+                Column("size", "размер (байт)", 150, 120, numeric=True),
+            ),
+            height=8,
+            # Пусто здесь значит разное: носитель ещё не подключён или на
+            # разделе обмена нет файлов. Ответы разные, поэтому текст
+            # уточняется на месте.
+            empty_text="Подключите носитель, чтобы увидеть файлы.",
         )
+        self.files_table.bind("<<TreeviewSelect>>", self._on_row_selected)
         self.placeholder.show()
 
         # Поле и кнопки -- двумя строками, а не одной.

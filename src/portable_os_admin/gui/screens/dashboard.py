@@ -6,7 +6,7 @@ from tkinter import simpledialog, ttk
 
 from ...admin import media_detect
 from .. import theme
-from ..widgets import MessageBar, TablePlaceholder, section_card, section_header
+from ..widgets import Column, MessageBar, data_table, section_card, section_header
 
 
 class DashboardFrame(ttk.Frame):
@@ -64,47 +64,32 @@ class DashboardFrame(ttk.Frame):
         # «чей он», а список из десяти строк читают именно ради второго.
         # Столбец «Подключён» заполняется сам: носитель, воткнутый в порт,
         # узнаётся по UUID своих томов, без пароля и без монтирования.
-        columns = ("name", "connected", "media_id", "os", "config", "created")
-        headings = {
-            "name": "Носитель",
-            "connected": "Подключён",
-            "media_id": "Идентификатор",
-            "os": "ОС",
-            "config": "Конфигурация",
-            "created": "Создан",
-        }
-        # Сумма ширин влезает в область содержимого при окне минимальной
-        # ширины: до 02.09.2026 она была больше, и колонка «Создан» уходила за
-        # край -- дата создания носителя не читалась вовсе.
         # Ширина проверяется по заголовку, а не по значению: идентификатор --
         # восемь знаков и в сотню пикселей помещается, а слово
         # «Идентификатор» над ним обрезалось до «Идентификат».
-        widths = {
-            "name": 170,
-            "connected": 110,
-            "media_id": 130,
-            "os": 70,
-            "config": 130,
-            "created": 150,
-        }
-        self.table = ttk.Treeview(card, columns=columns, show="headings", height=10)
-        for col in columns:
-            self.table.heading(col, text=headings[col])
-            self.table.column(col, width=widths[col], anchor="w")
-        self.table.pack(side="left", fill="both", expand=True)
-        scroll = ttk.Scrollbar(card, orient="vertical", command=self.table.yview)
-        self.table.configure(yscrollcommand=scroll.set)
-        scroll.pack(side="right", fill="y")
+        #
+        # Сумма ширин влезает в область содержимого при окне минимальной
+        # ширины: до 02.09.2026 она была больше, и колонка «Создан» уходила за
+        # край -- дата создания носителя не читалась вовсе. Минимумы держат
+        # то же обещание в окне уже минимального: ниже них колонки не
+        # сжимаются, а таблица получает горизонтальную прокрутку.
+        self.table, self.placeholder = data_table(
+            card,
+            (
+                Column("name", "Носитель", 120, 120, stretch=True),
+                Column("connected", "Подключён", 110, 105),
+                Column("media_id", "Идентификатор", 145, 140),
+                Column("os", "ОС", 60, 55),
+                Column("config", "Конфигурация", 130, 130),
+                Column("created", "Создан", 125, 120),
+            ),
+            height=10,
+            empty_text="Носителей пока нет.\nНачните с «Установка ОС».",
+        )
         # Проверка целостности относится к одному носителю, а не к контейнеру
         # вообще, поэтому она открывается со строки, а не кнопкой: седьмая
         # кнопка в ряд уже не помещается, и это ловит тест ширины.
         self.table.bind("<Double-1>", self._open_selected_integrity)
-        # Пустая сетка со шапкой читается как несработавший экран; объяснение
-        # стоит внутри таблицы и говорит, с чего начать.
-        self.placeholder = TablePlaceholder(
-            self.table, "Носителей пока нет.\nНачните с «Установка ОС»."
-        )
-
         # Действия над конкретным носителем стоят под таблицей, а не в общем
         # ряду: они относятся к выбранной строке, и место рядом с ней говорит
         # об этом лучше любой подписи.

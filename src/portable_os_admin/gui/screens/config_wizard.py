@@ -28,7 +28,15 @@ from ...errors import RepoBrowseError
 from ...install import machine_binding
 from ...install.emulation import probe as probe_emulation
 from .. import theme
-from ..widgets import KNOWN_ERRORS, WizardFrame, add_choice, add_field, run_in_background
+from ..widgets import (
+    KNOWN_ERRORS,
+    Column,
+    WizardFrame,
+    add_choice,
+    add_field,
+    data_table,
+    run_in_background,
+)
 
 def _distributions() -> "dict[str, type]":
     """Семейства, которые умеет ставить программа, из реестра бэкендов.
@@ -698,28 +706,24 @@ class ConfigWizardFrame(WizardFrame):
         # selectmode="extended" is what makes Ctrl-click and Shift-click work;
         # the default "browse" allows exactly one row, which meant adding
         # twenty packages took twenty round trips through the button.
-        self.catalog_table = ttk.Treeview(
-            left, columns=("name", "version", "summary"), show="headings", height=10, selectmode="extended"
+        self.catalog_table, _catalog_empty = data_table(
+            left,
+            (
+                Column("name", "пакет", 130, 90),
+                Column("version", "версия", 90, 70),
+                Column("summary", "описание", 170, 120, stretch=True),
+            ),
+            height=10,
+            selectmode="extended",
         )
-        # Ширины подобраны так, чтобы обе половины шага помещались в карточку
-        # при окне наименьшего размера (1040x700, с которым программа
-        # открывается). До 04.09.2026 сумма была больше: правая половина с
-        # кнопкой «Добавить выбранные» уходила за край, и шаг оказывался
-        # неработоспособным, пока окно не растянут вручную.
-        #
-        # `minwidth` не даёт колонке сжаться до нечитаемого, а `stretch` --
-        # растянуться за счёт соседей: описание длиннее любой ширины, и без
-        # этого оно отбирало место у имени пакета.
-        for col, text, width, minimum, stretch in (
-            ("name", "пакет", 130, 90, False),
-            ("version", "версия", 90, 70, False),
-            ("summary", "описание", 170, 120, True),
-        ):
-            self.catalog_table.heading(col, text=text, command=lambda c=col: self._sort_catalog(c))
-            self.catalog_table.column(
-                col, width=width, minwidth=minimum, stretch=stretch, anchor="w"
-            )
-        self.catalog_table.pack(fill="both", expand=True)
+        # Щелчок по заголовку сортирует. Ширины и минимумы заданы выше, в
+        # описании колонок: они подобраны так, чтобы обе половины шага
+        # помещались в карточку при окне наименьшего размера (1040x700, с
+        # которым программа открывается). До 04.09.2026 сумма была больше:
+        # правая половина с кнопкой «Добавить выбранные» уходила за край, и
+        # шаг оказывался неработоспособным, пока окно не растянут вручную.
+        for col in ("name", "version", "summary"):
+            self.catalog_table.heading(col, command=lambda c=col: self._sort_catalog(c))
         ttk.Label(
             left,
             text="Ctrl — по одному, Shift — диапазоном.",
@@ -1416,22 +1420,18 @@ class ConfigWizardFrame(WizardFrame):
             ).pack(anchor="w")
             return
 
-        table = ttk.Treeview(
+        table, _empty = data_table(
             frame,
-            columns=("field", "before", "after"),
-            show="headings",
+            (
+                Column("field", "Параметр", 260, 150),
+                Column("before", "Было", 150, 110),
+                Column("after", "Стало", 220, 130, stretch=True),
+            ),
             height=min(len(changes), 8),
+            expand=False,
         )
-        for column, title, width in (
-            ("field", "Параметр", 260),
-            ("before", "Было", 150),
-            ("after", "Стало", 220),
-        ):
-            table.heading(column, text=title)
-            table.column(column, width=width, anchor="w")
         for label, before, after in changes:
             table.insert("", "end", values=(label, before, after))
-        table.pack(fill="x")
         ttk.Label(
             frame,
             text=f"Изменений: {len(changes)}.",

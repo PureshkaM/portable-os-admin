@@ -14,7 +14,7 @@ import threading
 import tkinter as tk
 from contextlib import contextmanager
 from tkinter import ttk
-from typing import Callable
+from typing import Callable, NamedTuple
 
 from ..config.validator import ConfigValidationUnavailableError
 from ..errors import PortableOSAdminError
@@ -88,6 +88,218 @@ def wrap_to_width(label: ttk.Label, padding: int = 0) -> ttk.Label:
 
     parent.bind("<Configure>", _resize, add="+")
     return label
+
+
+class Column(NamedTuple):
+    """Одна колонка таблицы: всё, что о ней нужно знать, в одном месте.
+
+    `minimum` -- ширина, ниже которой колонка не сжимается. Без неё узкое
+    окно съедало заголовок до нечитаемого («Идентификат» вместо
+    «Идентификатор»), а значение обрезалось молча.
+
+    `stretch` -- кому достаётся лишнее место. Растягивать имеет смысл ровно
+    одну колонку на таблицу, ту, где текст длиннее любой ширины: иначе
+    свободное место делится поровну и отбирается у соседей.
+
+    `numeric` -- выравнивание вправо. Числа сравнивают столбиком, по
+    последней цифре, и левое выравнивание эту возможность отнимает.
+    """
+
+    key: str
+    title: str
+    width: int
+    minimum: int = 80
+    stretch: bool = False
+    numeric: bool = False
+
+
+def data_table(
+    parent: tk.Widget,
+    columns: "tuple[Column, ...]",
+    *,
+    height: int = 10,
+    selectmode: str = "browse",
+    empty_text: str = "",
+    expand: bool = True,
+    pady: "tuple[int, int] | int" = 0,
+) -> "tuple[ttk.Treeview, TablePlaceholder]":
+    """Таблица со всем, что у таблицы должно быть одинаково.
+
+    Третий помощник рядом с `section_header` и `section_card`, и по той же
+    причине: разъезжается то, что каждый экран набирает сам. До этого девять
+    таблиц задавали ширины, выравнивание и прокрутку каждая по-своему -- одна
+    знала про `minwidth`, остальные нет, а размер в байтах выравнивался
+    вправо ровно в одной из трёх.
+
+    Что здесь собрано:
+
+    * ширины, минимумы и растяжение -- из описания колонок;
+    * вертикальная прокрутка -- всегда, горизонтальная -- когда сумма
+      минимумов перестаёт помещаться, и она же убирается, когда место
+      возвращается. Полоса, висящая под таблицей всё время, съедает строку
+      там, где в ней нет нужды;
+    * пустое состояние -- если сказано, чем его объяснить;
+    * видимый фокус. ttk не рисует его у `Treeview` вовсе: пользователь,
+      дошедший до таблицы табом, не понимал, где он. Приход фокуса выделяет
+      первую строку, если ничего не выбрано, -- и видно, и стрелки с
+      кнопками над строкой сразу работают.
+
+    Возвращает саму таблицу и её пустое состояние: экраны работают со
+    строками, а не с обёрткой.
+    """
+    frame = ttk.Frame(parent)
+    frame.pack(fill="both", expand=expand, pady=pady)
+    frame.rowconfigure(0, weight=1)
+    frame.columnconfigure(0, weight=1)
+
+    # Растягивающаяся таблица просит одну строку, а не `height`, и место
+    # получает от упаковщика.
+    #
+    # Иначе она отнимает его у соседей: запрошенная высота учитывается
+    # первой, а `expand` делит только то, что осталось. При окне наименьшего
+    # размера (900x600) суммарный запрос экрана превышал окно, и рядам кнопок
+    # под таблицей доставался остаток -- на экране обмена кнопки «Куда
+    # сохранить…», «Прочитать» и «Удалить» сжимались до одного пикселя, то
+    # есть исчезали, а на главном экране рисовались пустыми прямоугольниками
+    # без подписей. Снято в приложении 07.09.2026.
+    #
+    # На окне побольше разницы нет: лишнее место всё равно достаётся
+    # единственному растягивающемуся виджету, то есть таблице.
+    table = ttk.Treeview(
+        frame, columns=[c.key for c in columns], show="headings",
+        height=(1 if expand else height), selectmode=selectmode,
+    )
+    for column in columns:
+        anchor = "e" if column.numeric else "w"
+        table.heading(column.key, text=column.title, anchor=anchor)
+        table.column(
+            column.key,
+            width=column.width,
+            minwidth=column.minimum,
+            stretch=column.stretch,
+            anchor=anchor,
+        )
+    table.grid(row=0, column=0, sticky="nsew")
+
+    vertical = ttk.Scrollbar(frame, orient="vertical", command=table.yview)
+    vertical.grid(row=0, column=1, sticky="ns")
+    horizontal = ttk.Scrollbar(frame, orient="horizontal", command=table.xview)
+    table.configure(yscrollcommand=vertical.set, xscrollcommand=horizontal.set)
+
+    shown = False
+
+    def _fit(_event: "tk.Event | None" = None) -> None:
+        """Полоса нужна ровно тогда, когда правый край перестал помещаться.
+
+        Считается по текущим ширинам колонок, а не по сумме минимумов, и это
+        разница не арифметическая: минимум -- предел сжатия, а прячет правый
+        край Tk гораздо раньше, как только колонок в сумме больше, чем места.
+        Первая версия сравнивала с минимумами, и на снимке штатного окна
+        1040x700 колонка «Создан» была обрезана, а полосы не было.
+        """
+        nonlocal shown
+        occupied = sum(int(table.column(column.key, "width")) for column in columns)
+        needed = table.winfo_width() < occupied
+        if needed and not shown:
+            horizontal.grid(row=1, column=0, sticky="ew")
+            shown = True
+        elif not needed and shown:
+            horizontal.grid_remove()
+            shown = False
+
+    table.bind("<Configure>", _fit, add="+")
+
+    def _show_focus(_event: "tk.Event") -> None:
+        if table.selection():
+            return
+        rows = table.get_children()
+        if rows:
+            table.selection_set(rows[0])
+            table.focus(rows[0])
+
+    table.bind("<FocusIn>", _show_focus, add="+")
+
+    placeholder = TablePlaceholder(table, empty_text)
+    return table, placeholder
+
+
+def button_row(
+    parent: tk.Widget,
+    buttons: "tuple[tuple[str, Callable[[], None]], ...]",
+    *,
+    style: str = "",
+    accent_first: bool = False,
+    side: str = "top",
+    pady: "tuple[int, int] | int" = 0,
+) -> "tuple[ttk.Frame, list[ttk.Button]]":
+    """Ряд кнопок, который переносится, когда перестаёт помещаться.
+
+    Кнопка, вышедшая за край, не сжимается и не сокращает подпись -- Tk
+    просто перестаёт её рисовать: на экране конфигураций «Назад» оставалось
+    37 пикселей от нужных 126, а на экране журналов «Сохранить в файл…» не
+    хватало восьми. Дефект появляется только в узком окне, поэтому ловится
+    последним -- и в этом проекте ловился уже трижды, каждый раз одинаково
+    (кнопки обмена, шаг пакетов, действия над носителем).
+
+    Лечится не сокращением подписей и не подбором ширин под один размер
+    окна, а переносом: не поместившееся уходит на следующую строку. Тогда
+    ряд верен при любой ширине, а не при той, под которую подбирали.
+    """
+    row = ttk.Frame(parent, style=style) if style else ttk.Frame(parent)
+    row.pack(side=side, fill="x", pady=pady)
+    widgets: list[ttk.Button] = []
+    for index, (text, command) in enumerate(buttons):
+        button_style = "Accent.TButton" if (accent_first and index == 0) else ""
+        widgets.append(
+            ttk.Button(row, text=text, command=command, style=button_style)
+            if button_style
+            else ttk.Button(row, text=text, command=command)
+        )
+
+    gap = theme.SPACE_SM
+    placed_for = -1
+
+    def _layout(_event: "tk.Event | None" = None) -> None:
+        nonlocal placed_for
+        available = row.winfo_width()
+        # Раскладка только при изменившейся ширине: сама она меняет высоту
+        # ряда, а это опять `<Configure>` -- и без этой проверки перекладка
+        # вызывала бы себя без конца.
+        if available == placed_for or available <= 1:
+            return
+        placed_for = available
+        line = column = used = 0
+        for button in widgets:
+            needed = button.winfo_reqwidth() + gap
+            if column and used + needed > available:
+                line += 1
+                column = used = 0
+            button.grid(
+                row=line, column=column, sticky="w",
+                padx=(0, gap), pady=(gap if line else 0, 0),
+            )
+            used += needed
+            column += 1
+
+    row.bind("<Configure>", _layout, add="+")
+    return row, widgets
+
+
+def _is_disabled(widget: tk.Widget) -> bool:
+    """Выключен ли виджет -- одинаково для ttk и обычного tk.
+
+    Спрашивается по-разному: у ttk состояние это флаги (`state()`), у tk --
+    опция (`cget("state")`), и у `Treeview` опции `state` нет вовсе -- запрос
+    к ней падает с «unknown option "-state"».
+    """
+    try:
+        return "disabled" in widget.state()  # type: ignore[attr-defined]
+    except (AttributeError, tk.TclError):
+        pass
+    try:
+        return str(widget.cget("state")) == "disabled"
+    except tk.TclError:
+        return False
 
 
 class TablePlaceholder:
@@ -637,17 +849,22 @@ class WizardFrame(ttk.Frame):
         # packer serves whoever asks first, so a step too tall for the window
         # scrolls inside its own area instead of pushing the navigation buttons
         # off the bottom edge, where they became unreachable.
-        footer = ttk.Frame(self, style="Window.TFrame")
-        footer.pack(side="bottom", fill="x", padx=theme.SPACE_LG, pady=(0, theme.SPACE_LG))
+        self._footer = ttk.Frame(self, style="Window.TFrame")
+        self._footer.pack(side="bottom", fill="x", padx=theme.SPACE_LG, pady=(0, theme.SPACE_LG))
         # Leaving, back, forward -- and only the one that continues the work is
         # accented. Three equally weighted buttons make the user read all three
         # every time.
-        self.cancel_btn = ttk.Button(footer, text="Отмена", style="Quiet.TButton", command=self._cancel)
+        self.cancel_btn = ttk.Button(self._footer, text="Отмена", style="Quiet.TButton", command=self._cancel)
         self.cancel_btn.pack(side="left")
-        self.next_btn = ttk.Button(footer, text="Далее", style="Accent.TButton", command=self._go_next)
+        self.next_btn = ttk.Button(self._footer, text="Далее", style="Accent.TButton", command=self._go_next)
         self.next_btn.pack(side="right")
-        self.back_btn = ttk.Button(footer, text="Назад", command=self._go_back)
+        self.back_btn = ttk.Button(self._footer, text="Назад", command=self._go_back)
         self.back_btn.pack(side="right", padx=(0, theme.SPACE_SM))
+        # Tab внутри подвала идёт слева направо, как читают: «Отмена», «Назад»,
+        # «Далее». Порядок обхода в Tk -- это порядок виджетов у родителя, а
+        # не расположение на экране, и «Далее» создаётся раньше «Назад», чтобы
+        # упаковаться правее. Поднятие возвращает его в конец.
+        self.next_btn.lift()
 
         self.message_bar = MessageBar(self)
         self.message_bar.pack(side="bottom", fill="x", padx=theme.SPACE_LG, pady=(0, theme.SPACE_SM))
@@ -696,6 +913,13 @@ class WizardFrame(ttk.Frame):
         )
         self.body = self._scroller.content
 
+        # Подвал создан раньше содержимого -- иначе слишком высокий шаг
+        # выталкивал бы кнопки за нижний край, -- и по обходу Tab он оказывался
+        # впереди: первым, что получал фокус в мастере, была кнопка «Отмена», а
+        # поля, ради которых шаг существует, -- последними. Поднятие ставит
+        # навигацию туда, где её ждут: после содержимого шага.
+        self._footer.lift()
+
         self.step_keys = [str(i) for i in range(len(self.step_titles))]
         if self.supports_modes:
             self._apply_step_plan()
@@ -741,6 +965,52 @@ class WizardFrame(ttk.Frame):
         self.back_btn.configure(state=("normal" if self.step_index > 0 else "disabled"))
         is_last = self.step_index == total - 1
         self.next_btn.configure(text=(self.finish_label if is_last else "Далее"))
+        self._focus_safely()
+
+    def _focus_safely(self) -> None:
+        """Фокус при открытии шага -- на его содержимом, а не на кнопке.
+
+        Пробелом и Enter мастер пролистывают, и это делает важным, на чём
+        стоит фокус в первый момент. На кнопке подвала он означает, что
+        случайное нажатие уводит с шага, а на последнем шаге -- запускает
+        работу; на поле он не делает ничего.
+
+        Поэтому берётся первый принимающий фокус виджет содержимого. Если шаг
+        состоит из одних кнопок, фокус идёт на «Назад»: это единственное
+        действие мастера, которое ничего не портит и всегда обратимо. Шаг,
+        который сам знает, куда поставить фокус (поле повтора пути перед
+        стиранием), делает это в `build_step` и перекрывает выбор здесь --
+        своё знание точнее общего правила.
+        """
+        # Шаг, который сам знает, куда поставить фокус, уже сделал это в
+        # `build_step`, и его знание точнее общего правила: на шаге стирания
+        # это поле повтора пути, а не первое поле сверху. Проверяется по
+        # тому, где фокус оказался, а не по флагу, который шаг мог бы забыть
+        # выставить.
+        current = self.focus_get()
+        if current is not None and str(current).startswith(str(self.body)):
+            return
+        target = self._first_focusable(self.body)
+        if target is None:
+            target = self.back_btn if self.step_index > 0 else self.cancel_btn
+        target.focus_set()
+
+    @staticmethod
+    def _first_focusable(parent: tk.Widget) -> "tk.Widget | None":
+        """Первый виджет содержимого, который вообще берёт фокус.
+
+        Обход в порядке размещения, вглубь: `takefocus` у ttk-виджетов бывает
+        пустой строкой -- «решает сам виджет», -- поэтому отдельно
+        перечислены те классы, которые принимают ввод.
+        """
+        takes = ("TEntry", "TCombobox", "TSpinbox", "TCheckbutton", "TRadiobutton", "Treeview", "Text")
+        for child in parent.winfo_children():
+            if child.winfo_class() in takes and not _is_disabled(child):
+                return child
+            found = WizardFrame._first_focusable(child)
+            if found is not None:
+                return found
+        return None
 
     def _on_mode_toggled(self) -> None:
         """Переключение объёма вопросов без потери введённого.

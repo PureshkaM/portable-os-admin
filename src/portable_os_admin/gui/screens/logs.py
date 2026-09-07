@@ -23,6 +23,7 @@ from .. import theme
 from ..widgets import (
     MessageBar,
     add_field,
+    button_row,
     run_in_background,
     section_card,
     section_header,
@@ -57,16 +58,19 @@ class LogsFrame(ttk.Frame):
         self.filter_var = tk.StringVar()
         add_field(form, 1, "Фильтр (необязательно):", self.filter_var, width=40)
 
-        actions = ttk.Frame(card)
-        actions.pack(fill="x", pady=theme.SPACE_SM)
-        self.load_btn = ttk.Button(actions, text="Загрузить журналы", command=self._load)
-        self.load_btn.pack(side="left")
-        ttk.Button(actions, text="Обновить список носителей", command=self._refresh_media).pack(
-            side="left", padx=(theme.SPACE_SM, 0)
+        # Три кнопки в строку помещаются не в любом окне: при наименьшем
+        # (900x600) «Сохранить в файл…» не хватало восьми пикселей, и подпись
+        # не рисовалась вовсе. Ряд переносит не поместившееся на свою строку.
+        _actions, buttons = button_row(
+            card,
+            (
+                ("Загрузить журналы", self._load),
+                ("Обновить список носителей", self._refresh_media),
+                ("Сохранить в файл…", self._save_to_file),
+            ),
+            pady=theme.SPACE_SM,
         )
-        ttk.Button(actions, text="Сохранить в файл…", command=self._save_to_file).pack(
-            side="left", padx=(theme.SPACE_SM, 0)
-        )
+        self.load_btn = buttons[0]
 
         self.message_bar = MessageBar(card, on_card=True)
         self.message_bar.pack(fill="x")

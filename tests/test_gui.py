@@ -1518,6 +1518,11 @@ def test_every_table_explains_itself_when_empty():
 
     Текст обязан говорить, что сделать, а не только что пусто, -- поэтому
     проверяется и наличие заглушки, и то, что в ней есть глагол.
+
+    Задаётся она теперь одним местом -- `empty_text` помощника `data_table`,
+    -- потому что и сама таблица собирается им: до 07.09.2026 каждый экран
+    строил её сам, и заглушка была одной из вещей, которые при этом легко
+    забыть.
     """
     import pathlib
     import re
@@ -1525,9 +1530,9 @@ def test_every_table_explains_itself_when_empty():
     screens = pathlib.Path("src/portable_os_admin/gui/screens")
     for name in ("dashboard.py", "configs_list.py", "exchange.py"):
         text = (screens / name).read_text(encoding="utf-8")
-        assert "TablePlaceholder(" in text, f"{name}: у таблицы нет объяснения пустоты"
-        said = re.findall(r"TablePlaceholder\(\s*[^,]+,\s*(.+?)\)", text, re.S)
-        assert said, f"{name}: объяснение пустоты без текста"
+        said = re.findall(r'empty_text="(.+?)"', text, re.S)
+        assert said, f"{name}: у таблицы нет объяснения пустоты"
+        assert all(word.strip() for word in said), f"{name}: объяснение пустоты без текста"
 
 
 def test_the_empty_table_hint_appears_and_disappears(gui_app, tmp_path):
@@ -1596,3 +1601,238 @@ def test_the_erase_button_stays_disabled_until_the_path_is_repeated(gui_app, tmp
     wizard.confirm_device_var.set("/dev/sdz")
     app.update()
     assert str(wizard.start_btn["state"]) == "normal", "верный повтор не включил кнопку"
+
+
+# ----------------------------------------------------------------------
+# Пункт 23: поведение -- таблицы, обход по Tab, фокус
+# ----------------------------------------------------------------------
+def test_every_table_is_built_by_the_same_helper(gui_app):
+    """Таблицы собирает `data_table`, а не каждый экран по-своему.
+
+    Та же болезнь, что лечили `section_header` и `section_card`: девять
+    таблиц задавали ширины, выравнивание и прокрутку каждая сама, и знание
+    расходилось. `minwidth` знала одна из девяти, размер в байтах
+    выравнивался вправо в одной из трёх.
+
+    Проверяется по исходному тексту, потому что проверяется именно это --
+    что экран не строит таблицу сам.
+    """
+    import pathlib
+
+    screens = pathlib.Path("src/portable_os_admin/gui/screens")
+    offenders = [
+        path.name
+        for path in screens.glob("*.py")
+        if "ttk.Treeview(" in path.read_text(encoding="utf-8")
+    ]
+    assert not offenders, "таблица собрана мимо data_table: " + ", ".join(offenders)
+
+
+def test_narrow_columns_keep_a_minimum_and_get_a_scrollbar(gui_app, tmp_path):
+    """Узкое окно не съедает колонку до нечитаемого.
+
+    До 04.09.2026 заголовок «Идентификатор» обрезался до «Идентификат», и
+    это чинили подбором ширин. Ширина помогает, пока окно не станет уже той,
+    под которую подбирали, -- поэтому у каждой колонки есть минимум, а когда
+    сумма минимумов не помещается, снизу появляется горизонтальная прокрутка.
+
+    Проверяется на живой таблице: минимум объявлен, полоса создана и
+    привязана к `xview` -- то есть прокручивает, а не украшает.
+    """
+    app = gui_app
+    _open_container(app, tmp_path)
+    app.show_dashboard()
+    app.update()
+    table = app._current_frame.table
+
+    # Минимум меряется не на глаз, а шрифтом заголовка: ровно этот дефект и
+    # ловится -- «Идентификатор» обрезался до «Идентификат». Запас в 16
+    # пикселей -- отступы ячейки по обе стороны.
+    import tkinter.font as tkfont
+
+    heading_font = tkfont.Font(font=theme.FONT_SECTION)
+    for column in table["columns"]:
+        title = table.heading(column, "text")
+        minimum = int(table.column(column, "minwidth"))
+        needed = heading_font.measure(title) + 16
+        assert minimum >= needed, (
+            f"«{title}»: минимум {minimum} меньше самого заголовка ({needed}) -- он обрежется"
+        )
+
+    frame = table.master
+    bars = [
+        child for child in frame.winfo_children()
+        if child.winfo_class() == "TScrollbar" and str(child.cget("orient")) == "horizontal"
+    ]
+    assert bars, "горизонтальной прокрутки нет -- в узком окне правый край не дочитать"
+    assert table.cget("xscrollcommand"), "полоса не связана с таблицей"
+
+
+def test_numbers_are_aligned_right(gui_app, tmp_path):
+    """Числа стоят разрядом под разрядом.
+
+    Левое выравнивание отнимает у столбца чисел единственное, ради чего его
+    читают столбиком, -- возможность сравнить размеры взглядом, не читая
+    каждую цифру.
+    """
+    app = gui_app
+    _open_container(app, tmp_path)
+    app.show_section("exchange")
+    app.update()
+    table = app._current_frame.files_table
+
+    # str(): Tk возвращает выравнивание объектом-индексом, а не строкой.
+    assert str(table.column("size", "anchor")) == "e", "размер выровнен не по правому краю"
+    assert str(table.heading("size", "anchor")) == "e", (
+        "заголовок числовой колонки смотрит в другую сторону"
+    )
+    assert str(table.column("name", "anchor")) == "w", "текст должен остаться слева"
+
+
+def test_a_focused_table_shows_where_the_focus_is(gui_app, tmp_path):
+    """Таблица, получившая фокус, выделяет первую строку.
+
+    ttk не рисует фокус у `Treeview` вовсе -- в его раскладке нет элемента
+    фокуса, проверено на живом Tk. Пользователь, дошедший до таблицы табом,
+    не видел, где он, и стрелки казались неработающими.
+
+    Выделение не навязывается поверх выбранного: если строка уже выбрана,
+    приход фокуса ничего не меняет.
+    """
+    app = gui_app
+    _open_container(app, tmp_path)
+    app.show_dashboard()
+    app.update()
+    table = app._current_frame.table
+    table.insert("", "end", values=("первый", "", "aaaa", "", "", ""))
+    second = table.insert("", "end", values=("второй", "", "bbbb", "", "", ""))
+
+    table.event_generate("<FocusIn>")
+    app.update()
+    assert table.selection() == (table.get_children()[0],), "фокус не виден: строка не выделена"
+
+    table.selection_set(second)
+    table.event_generate("<FocusIn>")
+    app.update()
+    assert table.selection() == (second,), "приход фокуса переставил выбор пользователя"
+
+
+def test_the_wizard_footer_comes_after_the_step_in_tab_order(gui_app, tmp_path):
+    """Tab идёт по содержимому шага, а потом по кнопкам, а не наоборот.
+
+    Подвал создаётся раньше содержимого намеренно -- иначе слишком высокий
+    шаг выталкивает кнопки за нижний край, -- а порядок обхода в Tk это
+    порядок виджетов у родителя. Из-за этого первым, что получало фокус в
+    мастере, была «Отмена».
+
+    Внутри подвала порядок тоже свой: «Далее» упакована правее и создана
+    раньше «Назад», поэтому её поднимают в конец -- чтобы Tab шёл так, как
+    читают, слева направо.
+    """
+    app = gui_app
+    _open_container(app, tmp_path)
+    app.show_frame(ConfigWizardFrame)
+    wizard = app._current_frame
+    app.update()
+
+    order = wizard.winfo_children()
+    body_area = wizard._scroller.master.master
+    assert order.index(wizard._footer) > order.index(body_area), (
+        "подвал обходится раньше содержимого шага"
+    )
+    footer_order = wizard._footer.winfo_children()
+    assert footer_order.index(wizard.next_btn) > footer_order.index(wizard.back_btn), (
+        "«Далее» обходится раньше «Назад»"
+    )
+
+
+def test_the_wizard_opens_with_focus_off_the_buttons(gui_app, tmp_path):
+    """Фокус при открытии шага стоит на содержимом, а не на кнопке.
+
+    Мастер пролистывают пробелом и Enter, и это делает важным, на чём стоит
+    фокус в первый момент: на кнопке подвала случайное нажатие уводит с
+    шага, а на последнем шаге запускает работу.
+    """
+    app = gui_app
+    _open_container(app, tmp_path)
+    app.show_frame(ConfigWizardFrame)
+    wizard = app._current_frame
+    # Окно показывается намеренно: в спрятанном Tk фокус не назначается
+    # вовсе -- виджеты не выведены на экран, и `focus_set` откладывается.
+    # Проверять здесь нечего без дисплея, и это ровно тот случай, ради
+    # которого прогон идёт под Xvfb.
+    app.deiconify()
+    app.update()
+    _pump(app, lambda: app.focus_get() is not None, timeout=5.0)
+
+    focused = str(app.focus_get())
+    assert focused not in (str(wizard.next_btn), str(wizard.cancel_btn)), (
+        "фокус на кнопке: пробел уводит с шага, а на последнем шаге -- запускает работу"
+    )
+    assert focused.startswith(str(wizard.body)), f"фокус вне содержимого шага: {focused}"
+
+
+def test_the_accent_button_shows_its_focus(gui_app):
+    """Рамка фокуса на главной кнопке видима.
+
+    Производные стили наследуют `focuscolor` от `TButton`, а там он равен
+    ACCENT -- то есть фону самой акцентной кнопки. Фокус на ней был
+    нарисован её же цветом, и пользователь, дошедший до неё табом, этого не
+    видел.
+    """
+    from tkinter import ttk
+
+    from portable_os_admin.gui import theme
+
+    style = ttk.Style()
+    assert style.lookup("Accent.TButton", "focuscolor") != style.lookup("Accent.TButton", "background"), (
+        "рамка фокуса цвета фона -- то есть её нет"
+    )
+    assert style.lookup("Accent.TButton", "focuscolor") == theme.TEXT_ON_ACCENT
+
+
+def test_no_control_is_squashed_at_the_smallest_window(gui_app, tmp_path):
+    """Ни одна кнопка не обрезана в окне наименьшего размера.
+
+    Кнопка, которой не хватило места, не сжимается и не сокращает подпись --
+    Tk перестаёт её рисовать. Выглядит это как пустой прямоугольник или как
+    отсутствующая кнопка, и в этом проекте ловилось уже трижды, каждый раз
+    глазами и каждый раз в другом месте.
+
+    Проверка идёт по всем разделам сразу и в том размере, который назначен
+    минимальным (900x600): именно там дефект и появляется, а в окне, с
+    которым программа открывается, его не видно.
+
+    Найденное этой проверкой 07.09.2026: на главном экране ряд действий над
+    носителем сжимался по высоте до 27 пикселей вместо 42 -- кнопки
+    рисовались пустыми прямоугольниками; на экране обмена три кнопки
+    схлопывались до одного пикселя; «Назад» на экране конфигураций получала
+    37 пикселей от нужных 126; «Сохранить в файл…» на экране журналов не
+    хватало восьми.
+    """
+    app = gui_app
+    _open_container(app, tmp_path)
+    app.geometry("900x600")
+    app.deiconify()
+
+    def squashed(widget, found):
+        for child in widget.winfo_children():
+            if child.winfo_class() in ("TButton", "TEntry", "TCombobox"):
+                if (child.winfo_height() < child.winfo_reqheight()
+                        or child.winfo_width() < child.winfo_reqwidth()):
+                    label = child.cget("text") if "text" in child.keys() else child.winfo_class()
+                    found.append(f"«{label}» {child.winfo_width()}x{child.winfo_height()} "
+                                 f"вместо {child.winfo_reqwidth()}x{child.winfo_reqheight()}")
+            squashed(child, found)
+        return found
+
+    complaints = []
+    for section in ("media", "configs", "logs", "exchange", "recovery", "maintenance"):
+        app.show_section(section)
+        _pump(app, lambda: app._current_frame.winfo_width() > 1, timeout=5.0)
+        app.update_idletasks()
+        app.update()
+        for problem in squashed(app._current_frame, []):
+            complaints.append(f"{section}: {problem}")
+
+    assert not complaints, "обрезано в окне 900x600:\n" + "\n".join(complaints)

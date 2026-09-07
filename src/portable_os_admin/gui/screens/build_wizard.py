@@ -16,7 +16,16 @@ from tkinter import filedialog, ttk
 from ...config.schema import InstallConfig
 from ...install import OSInstaller
 from .. import theme
-from ..widgets import KNOWN_ERRORS, UiMailbox, WizardFrame, add_field, run_in_background, widget_alive
+from ..widgets import (
+    KNOWN_ERRORS,
+    Column,
+    UiMailbox,
+    WizardFrame,
+    add_field,
+    data_table,
+    run_in_background,
+    widget_alive,
+)
 
 
 class BuildWizardFrame(WizardFrame):
@@ -81,18 +90,16 @@ class BuildWizardFrame(WizardFrame):
 
     # -- step 1: configuration ---------------------------------------------
     def _build_step_config(self, body: ttk.Frame) -> None:
-        self.config_table = ttk.Treeview(
-            body, columns=("name", "os", "profile", "state"), show="headings", height=8
+        self.config_table, _empty = data_table(
+            body,
+            (
+                Column("name", "Конфигурация", 240, 150, stretch=True),
+                Column("os", "ОС", 90, 70),
+                Column("profile", "Режим", 160, 110),
+                Column("state", "Состояние", 150, 120),
+            ),
+            height=8,
         )
-        for column, title, width in (
-            ("name", "Конфигурация", 240),
-            ("os", "ОС", 90),
-            ("profile", "Режим", 160),
-            ("state", "Состояние", 150),
-        ):
-            self.config_table.heading(column, text=title)
-            self.config_table.column(column, width=width, anchor="w")
-        self.config_table.pack(fill="both", expand=True)
 
         # Показываются все конфигурации, а непроверенные -- с пометкой.
         #
@@ -166,13 +173,14 @@ class BuildWizardFrame(WizardFrame):
         было нельзя: код установки существовал с самого начала и не был
         подключён ни к одной кнопке.
         """
-        self.packages_table = ttk.Treeview(
-            body, columns=("name", "size"), show="headings", height=7
+        self.packages_table, _packages_empty = data_table(
+            body,
+            (
+                Column("name", "Файл", 420, 200, stretch=True),
+                Column("size", "Размер", 120, 100, numeric=True),
+            ),
+            height=7,
         )
-        for column, title, width in (("name", "Файл", 420), ("size", "Размер", 120)):
-            self.packages_table.heading(column, text=title)
-            self.packages_table.column(column, width=width, anchor="w")
-        self.packages_table.pack(fill="both", expand=True)
 
         buttons = ttk.Frame(body)
         buttons.pack(anchor="w", fill="x", pady=(theme.SPACE_SM, 0))

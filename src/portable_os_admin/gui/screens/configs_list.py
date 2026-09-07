@@ -12,7 +12,15 @@ from tkinter import ttk
 
 from ...config.validator import ConfigValidationUnavailableError
 from .. import theme
-from ..widgets import MessageBar, TablePlaceholder, error_guard, section_card, section_header
+from ..widgets import (
+    Column,
+    MessageBar,
+    button_row,
+    data_table,
+    error_guard,
+    section_card,
+    section_header,
+)
 
 
 class ConfigsListFrame(ttk.Frame):
@@ -29,30 +37,39 @@ class ConfigsListFrame(ttk.Frame):
 
         card = section_card(self)
 
-        columns = ("file", "target_os", "release", "status")
-        headings = {"file": "файл", "target_os": "цель", "release": "релиз", "status": "статус проверки"}
-        self.table = ttk.Treeview(card, columns=columns, show="headings", height=12)
-        for col in columns:
-            self.table.heading(col, text=headings[col])
-            self.table.column(col, width=160, anchor="w")
-        self.table.pack(fill="both", expand=True)
-        self.table.bind("<Double-1>", lambda _event: self._edit_selected())
-        self.placeholder = TablePlaceholder(
-            self.table,
-            "Конфигураций пока нет.\nНажмите «Создать новую конфигурацию».",
+        # Имя файла тянется за счёт свободного места: оно длиннее остальных
+        # колонок и единственное, чего в узком окне жаль.
+        self.table, self.placeholder = data_table(
+            card,
+            (
+                Column("file", "файл", 220, 140, stretch=True),
+                Column("target_os", "цель", 120, 90),
+                Column("release", "релиз", 120, 90),
+                Column("status", "статус проверки", 180, 140),
+            ),
+            height=12,
+            empty_text="Конфигураций пока нет.\nНажмите «Создать новую конфигурацию».",
         )
+        self.table.bind("<Double-1>", lambda _event: self._edit_selected())
 
         create_row = ttk.Frame(card)
         create_row.pack(fill="x", pady=(theme.SPACE_SM, theme.SPACE_XS))
         ttk.Button(create_row, text="Создать новую конфигурацию", command=self._create_new).pack(side="left")
 
-        action_row = ttk.Frame(card)
-        action_row.pack(fill="x", pady=(0, theme.SPACE_SM))
-        ttk.Button(action_row, text="Редактировать", command=self._edit_selected).pack(side="left")
-        ttk.Button(action_row, text="Проверить", command=self._validate_selected).pack(side="left", padx=(theme.SPACE_SM, 0))
-        ttk.Button(action_row, text="Установить…", command=self._install_selected).pack(side="left", padx=(theme.SPACE_SM, 0))
-        ttk.Button(action_row, text="Удалить", command=self._delete_selected).pack(side="left", padx=(theme.SPACE_SM, 0))
-        ttk.Button(action_row, text="Назад", command=self.app.show_dashboard).pack(side="left", padx=(theme.SPACE_SM, 0))
+        # Пять кнопок в строку помещаются не в любом окне: при наименьшем
+        # (900x600) «Назад» оставалось 37 пикселей от нужных 126, то есть её
+        # не было видно. Ряд переносит не поместившееся на следующую строку.
+        button_row(
+            card,
+            (
+                ("Редактировать", self._edit_selected),
+                ("Проверить", self._validate_selected),
+                ("Установить…", self._install_selected),
+                ("Удалить", self._delete_selected),
+                ("Назад", self.app.show_dashboard),
+            ),
+            pady=(0, theme.SPACE_SM),
+        )
 
         self.message_bar = MessageBar(card, on_card=True)
         self.message_bar.pack(fill="x")

@@ -30,7 +30,16 @@ from ...install.emulation import probe as probe_emulation
 from ...install.installer import IMAGE_FAMILY
 from ..elevate import invoking_user_home
 from .. import theme
-from ..widgets import KNOWN_ERRORS, UiMailbox, WizardFrame, add_field, run_in_background, widget_alive
+from ..widgets import (
+    KNOWN_ERRORS,
+    Column,
+    UiMailbox,
+    WizardFrame,
+    add_field,
+    data_table,
+    run_in_background,
+    widget_alive,
+)
 from .device_step import (
     DANGER_COLOR,
     NOT_ROOT_MESSAGE,
@@ -81,21 +90,20 @@ class InstallWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
             ).pack(anchor="w", pady=(0, 6))
 
         ttk.Label(body, text="Проверенные конфигурации:").pack(anchor="w")
-        self.config_table = ttk.Treeview(
-            body, columns=("file", "target_os", "fits"), show="headings", height=8
+        self.config_table, _empty = data_table(
+            body,
+            (
+                Column("file", "файл", 220, 140),
+                Column("target_os", "рассчитана на", 150, 125),
+                Column("fits", "подходит образу", 260, 150, stretch=True),
+            ),
+            height=8,
+            pady=(4, 8),
         )
-        for col, text, width in (
-            ("file", "файл", 220),
-            ("target_os", "рассчитана на", 150),
-            ("fits", "подходит образу", 260),
-        ):
-            self.config_table.heading(col, text=text)
-            self.config_table.column(col, width=width, anchor="w")
         # Unsuitable rows stay visible rather than being hidden: seeing that a
         # configuration exists but does not fit the chosen image is information;
         # silently omitting it looks like the configuration was lost.
         self.config_table.tag_configure("unfit", foreground=theme.TEXT_DISABLED)
-        self.config_table.pack(fill="both", expand=True, pady=(4, 8))
 
         all_paths = self.app.config_manager.list_configs(self.app.configs_dir)
         self._valid_paths = []

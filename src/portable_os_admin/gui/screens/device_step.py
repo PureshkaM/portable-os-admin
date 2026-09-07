@@ -19,7 +19,7 @@ from tkinter import ttk
 
 from ...install import BlockDevice, DeviceLister, leftovers
 from .. import theme
-from ..widgets import add_field, run_in_background, widget_alive
+from ..widgets import Column, add_field, data_table, run_in_background, widget_alive
 
 #: Используется для текста «это будет уничтожено». Обычный красный, а не цвет
 #: темы: предупреждение должно читаться как предупреждение под любой ttk-темой,
@@ -55,11 +55,20 @@ class DeviceStepMixin:
             justify="left",
         ).pack(anchor="w", pady=(6, 8))
 
-        self.devices_table = ttk.Treeview(body, columns=("path", "model", "size"), show="headings", height=6)
-        for col, text in (("path", "устройство"), ("model", "модель"), ("size", "размер (байт)")):
-            self.devices_table.heading(col, text=text)
-            self.devices_table.column(col, width=180, anchor="w")
-        self.devices_table.pack(fill="both", expand=False, pady=(0, 8))
+        # Модель тянется за счёт свободного места: имена вроде «Kingston
+        # DataTraveler 3.0» длиннее любой разумной ширины, а путь и размер
+        # известной длины.
+        self.devices_table, _empty = data_table(
+            body,
+            (
+                Column("path", "устройство", 180, 130),
+                Column("model", "модель", 180, 130, stretch=True),
+                Column("size", "размер (байт)", 150, 120, numeric=True),
+            ),
+            height=6,
+            expand=False,
+            pady=(0, 8),
+        )
         self.devices_table.bind("<<TreeviewSelect>>", self._on_device_row_selected)
 
         form = ttk.Frame(body)
