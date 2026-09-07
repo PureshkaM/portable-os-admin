@@ -1836,3 +1836,49 @@ def test_no_control_is_squashed_at_the_smallest_window(gui_app, tmp_path):
             complaints.append(f"{section}: {problem}")
 
     assert not complaints, "обрезано в окне 900x600:\n" + "\n".join(complaints)
+
+
+def test_the_deploy_wizard_remembers_the_distribution_for_the_next_stick(gui_app, tmp_path, monkeypatch):
+    """Тираж не начинается с пустого поля на каждой флешке.
+
+    Один и тот же дистрибутив уходит на два десятка носителей, а мастер
+    развёртывания начинал с чистого поля каждый раз: путь набирался заново на
+    каждую флешку. Найдено проходом по сценариям администратора (пункт 21).
+
+    Запоминается ровно каталог. Пароль и устройство -- нет, и по разным
+    причинам: первый секрет и в файле настроек ему не место, второе меняется
+    от флешки к флешке, а подставленное устройство здесь означает стёртый не
+    тот диск.
+    """
+    from portable_os_admin.gui import preferences
+    from portable_os_admin.gui.screens.deploy_wizard import (
+        DISTRIBUTION_PREFERENCE_KEY,
+        DeployWizardFrame,
+    )
+
+    store = {}
+    monkeypatch.setattr(preferences, "get", lambda key, default=None: store.get(key, default))
+    monkeypatch.setattr(preferences, "set_value", lambda key, value: store.__setitem__(key, value))
+
+    app = gui_app
+    _open_container(app, tmp_path)
+    app.show_frame(DeployWizardFrame)
+    wizard = app._current_frame
+    app.update()
+
+    assert wizard.directory_var.get() == "", "мастер начал не с пустого поля"
+    wizard.directory_var.set(str(tmp_path / "dist"))
+    wizard._save_step_distribution()
+    assert store.get(DISTRIBUTION_PREFERENCE_KEY) == str(tmp_path / "dist")
+
+    # Следующая флешка: тот же дистрибутив уже подставлен.
+    app.show_frame(DeployWizardFrame)
+    again = app._current_frame
+    app.update()
+    assert again.directory_var.get() == str(tmp_path / "dist"), "путь не запомнился"
+
+    # Пароль -- никогда.
+    assert again.passphrase == "", "пароль запомнился между запусками"
+    assert not any("passphrase" in key or "пароль" in key for key in store), (
+        "секрет попал в файл настроек"
+    )

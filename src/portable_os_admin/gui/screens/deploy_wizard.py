@@ -27,6 +27,7 @@ from ...install.command_runner import InstallAborted
 from ...install import OSInstaller, distribution, leftovers
 from .. import theme
 from ..elevate import invoking_user_home
+from .. import preferences
 from ..widgets import KNOWN_ERRORS, UiMailbox, WizardFrame, add_field, run_in_background, widget_alive
 from .device_step import (
     DANGER_COLOR,
@@ -35,6 +36,10 @@ from .device_step import (
     TerminationGuardMixin,
     is_root,
 )
+
+
+#: Где запоминается каталог дистрибутива между запусками мастера.
+DISTRIBUTION_PREFERENCE_KEY = "deploy.distribution_directory"
 
 
 def _split_digest(digest: str) -> str:
@@ -46,7 +51,15 @@ def _split_digest(digest: str) -> str:
 class DeployWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
     def __init__(self, parent: tk.Widget, app):
         self.app = app
-        self.directory = ""
+        # Каталог дистрибутива запоминается между запусками, и только он.
+        #
+        # Тираж -- это один и тот же дистрибутив на два десятка флешек, а
+        # мастер начинался с чистого поля каждый раз: путь набирался заново на
+        # каждую. Пароль и устройство не запоминаются намеренно и по разным
+        # причинам: первый -- секрет, которому не место в файле настроек, а
+        # второе меняется от флешки к флешке, и подставленное устройство здесь
+        # означает стёртый не тот диск.
+        self.directory = str(preferences.get(DISTRIBUTION_PREFERENCE_KEY, "") or "")
         self.device_path = ""
         self.device_size_gb = ""
         self.passphrase = ""
@@ -100,6 +113,7 @@ class DeployWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
 
     def _save_step_distribution(self) -> None:
         self.directory = self.directory_var.get().strip()
+        preferences.set_value(DISTRIBUTION_PREFERENCE_KEY, self.directory)
 
     def _validate_step_distribution(self) -> bool:
         if not self.directory:
