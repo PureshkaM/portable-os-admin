@@ -245,7 +245,12 @@ class BuildWizardFrame(WizardFrame):
     def _build_step_destination(self, body: ttk.Frame) -> None:
         form = ttk.Frame(body)
         form.pack(anchor="w", fill="x")
-        self.destination_var = tk.StringVar(value=self.destination or str(self.app.configs_dir))
+        # Умолчание -- каталог рядом с контейнером администратора: там же, где
+        # он работает, и туда точно есть право писать. Каталог `configs/` для
+        # этого больше не годится -- конфигурации живут в контейнере, и такого
+        # каталога может не быть вовсе.
+        default = str(self.app.container_path.parent) if self.app.container_path else ""
+        self.destination_var = tk.StringVar(value=self.destination or default)
         add_field(
             form,
             0,

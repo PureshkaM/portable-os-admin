@@ -2011,3 +2011,36 @@ def test_configurations_travel_between_administrators_through_the_screen(gui_app
     assert [record.name for record in on_disk.list_configs()] == ["stick1"]
     on_disk.close()
     colleague.close()
+
+
+def test_the_build_wizard_offers_a_place_to_put_the_distribution(gui_app, tmp_path):
+    """Шаг «Куда сохранить» предлагает каталог, который существует.
+
+    Умолчанием был `configs/` рядом с контейнером — каталог, которого после
+    переезда конфигураций внутрь контейнера может не быть вовсе. Мастер тогда
+    падал на построении шага: `configs_dir` исчез вместе с ним.
+    """
+    from portable_os_admin.gui.screens.build_wizard import BuildWizardFrame
+
+    app = gui_app
+    _open_container(app, tmp_path)
+    _make_validated_debian_config(app)
+
+    app.show_frame(BuildWizardFrame)
+    wizard = app._current_frame
+    app.update()
+    wizard.image_var.set(_throwaway_image(app))
+    wizard._go_next()
+    app.update()
+    wizard.config_table.selection_set(wizard.config_table.get_children()[0])
+    wizard._go_next()
+    app.update()
+    while wizard.step_titles[wizard.step_index] != "Куда сохранить":
+        wizard._go_next()
+        app.update()
+
+    import pathlib
+
+    offered = wizard.destination_var.get()
+    assert offered, "мастер не предлагает никакого каталога"
+    assert pathlib.Path(offered).is_dir(), f"предложенного каталога не существует: {offered}"
