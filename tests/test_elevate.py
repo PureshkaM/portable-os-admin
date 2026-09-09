@@ -147,3 +147,50 @@ def test_the_session_display_is_handed_to_the_packaged_launcher(monkeypatch):
     )
     assert argv[:2] == ["pkexec", elevate.PACKAGED_LAUNCHER]
     assert argv[2:] == [":1", "/run/user/1000/xauth", "wayland-0", "/run/user/1000"]
+
+
+def test_an_agent_is_found_though_the_kernel_truncated_its_name(tmp_path):
+    """Имя в `comm` обрезано ядром, и агент терялся именно на этом.
+
+    `TASK_COMM_LEN` -- пятнадцать знаков, поэтому
+    `polkit-kde-authentication-agent-1` виден там как `polkit-kde-auth`, а
+    `polkit-gnome-authentication-agent-1` -- как `polkit-gnome-au`. Прежняя
+    проверка требовала в имени и «polkit», и «agent», читала только `comm` --
+    и на живой сессии Plasma (09.09.2026) объявляла, что агента нет, при
+    работающем агенте: программа отказывалась запускаться из меню вовсе.
+
+    Старый тест этого не ловил, потому что писал в поддельный `comm` полное
+    имя -- то, чего ядро туда никогда не кладёт. Здесь подделка честная:
+    обрезанный `comm` и полный `cmdline` рядом, как в /proc.
+    """
+    for index, (full, comm) in enumerate((
+        ("/usr/lib/aarch64-linux-gnu/libexec/polkit-kde-authentication-agent-1", "polkit-kde-auth"),
+        ("/usr/libexec/polkit-gnome-authentication-agent-1", "polkit-gnome-au"),
+        ("/usr/libexec/polkit-mate-authentication-agent-1", "polkit-mate-aut"),
+        ("/usr/bin/lxqt-policykit-agent", "lxqt-policykit-"),
+    )):
+        directory = tmp_path / str(2000 + index)
+        directory.mkdir()
+        (directory / "comm").write_text(comm + "\n", encoding="utf-8")
+        (directory / "cmdline").write_bytes(full.encode() + b"\0")
+
+        assert elevate.authentication_agent_running(str(tmp_path)) is True, full
+
+        (directory / "comm").unlink()
+        (directory / "cmdline").unlink()
+        directory.rmdir()
+
+
+def test_the_agents_own_helper_is_not_mistaken_for_the_agent(tmp_path):
+    """`polkit-agent-helper-1` содержит оба слова, но агентом не является.
+
+    Его запускает сам агент на время проверки пароля. Принять его за агента
+    значило бы решить, что диалог будет показан, ровно тогда, когда его уже
+    показывает кто-то другой, -- а в сеансе без агента он не появится вовсе.
+    """
+    directory = tmp_path / "3000"
+    directory.mkdir()
+    (directory / "comm").write_text("polkit-agent-he\n", encoding="utf-8")
+    (directory / "cmdline").write_bytes(b"/usr/lib/polkit-1/polkit-agent-helper-1\0")
+
+    assert elevate.authentication_agent_running(str(tmp_path)) is False

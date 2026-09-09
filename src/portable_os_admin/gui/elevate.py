@@ -83,12 +83,73 @@ def current_desktop() -> str:
     return ""
 
 
+def _process_names(proc_dir: str, pid: str) -> "tuple[str, ...]":
+    """Как процесс называется -- по обоим источникам, какие даёт ядро.
+
+    `comm` обрезан до пятнадцати знаков (`TASK_COMM_LEN` в ядре), и агенты
+    именно на этом и теряются: `polkit-kde-authentication-agent-1` виден там
+    как `polkit-kde-auth`, а `polkit-gnome-…` -- как `polkit-gnome-au`. Ни в
+    одном из них нет слова, по которому агента искали.
+
+    Полное имя лежит в `cmdline`, поэтому берутся оба: `cmdline` отвечает на
+    вопрос «что это за программа», `comm` остаётся запасным -- у ядерных
+    потоков `cmdline` пуст.
+    """
+    names = []
+    try:
+        with open(os.path.join(proc_dir, pid, "cmdline"), "rb") as handle:
+            raw = handle.read()
+    except OSError:
+        raw = b""
+    if raw:
+        first = raw.split(b"\0", 1)[0].decode("utf-8", "replace")
+        if first:
+            names.append(os.path.basename(first).lower())
+    try:
+        with open(os.path.join(proc_dir, pid, "comm"), encoding="utf-8", errors="replace") as handle:
+            names.append(handle.read().strip().lower())
+    except OSError:
+        pass
+    return tuple(name for name in names if name)
+
+
+def _is_authentication_agent(name: str) -> bool:
+    """Похоже ли имя процесса на агента аутентификации polkit.
+
+    `auth` наравне с `agent`, потому что обрезанное `comm` до второго слова
+    не доживает.
+    """
+    if "polkit" in name and ("agent" in name or "auth" in name):
+        return True
+    return name.startswith(("xfce-polkit", "lxqt-policykit"))
+
+
+def _is_agent_helper(name: str) -> bool:
+    """`polkit-agent-helper-1` -- не агент, хотя называется почти так же.
+
+    Это вспомогательный процесс, который сам агент запускает на время
+    проверки пароля. Принять его за агента значило бы решить, что диалог
+    будет показан, ровно в тот момент, когда его уже показывает кто-то
+    другой. Сравнение по обрезанному началу: в `comm` от него остаётся
+    `polkit-agent-he`.
+    """
+    return name.startswith("polkit-agent-he")
+
+
 def authentication_agent_running(proc_dir: str = "/proc") -> bool:
     """Whether some polkit authentication agent is alive in this session.
 
     Found by name in /proc rather than over D-Bus: this must work with no
     optional Python packages installed, on both families, and a false negative
     only costs an extra hint in an error message.
+
+    Ложное «нет» стоило дороже, чем здесь было написано. Проверка требовала
+    в имени процесса и `polkit`, и `agent`, а читала только `comm` -- то есть
+    обрезанное ядром до пятнадцати знаков. На живой сессии Plasma
+    (09.09.2026) агент работал, а программа объявляла, что его нет, и
+    отказывалась запускаться из меню вовсе. Тест этого не поймал, потому что
+    писал в поддельный `comm` полное имя -- то, чего ядро туда никогда не
+    кладёт.
 
     `proc_dir` exists so a test can point at a directory of its own instead of
     monkeypatching os.listdir and open, which would affect every other thing
@@ -99,14 +160,13 @@ def authentication_agent_running(proc_dir: str = "/proc") -> bool:
     except OSError:
         return False
     for pid in pids:
-        try:
-            with open(os.path.join(proc_dir, pid, "comm"), encoding="utf-8", errors="replace") as handle:
-                comm = handle.read().strip().lower()
-        except OSError:
+        names = _process_names(proc_dir, pid)
+        # Решение принимается по процессу целиком, а не по каждому имени в
+        # отдельности: у вспомогательного процесса обрезанное имя выглядит
+        # как агентское, и отвергнуть его можно только зная полное.
+        if any(_is_agent_helper(name) for name in names):
             continue
-        if "polkit" in comm and "agent" in comm:
-            return True
-        if comm in ("xfce-polkit", "lxqt-policykit-agent"):
+        if any(_is_authentication_agent(name) for name in names):
             return True
     return False
 
