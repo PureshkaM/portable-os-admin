@@ -1217,6 +1217,12 @@ class InstallBackend(ABC):
         files.update(kiosk_mode.config_files(config, image))
         files.update(autoupdate.config_files(config, self))
         files.update(self.machine_binding_files(config, layout))
+        # Хуки, собирающие корень из образа и слоя изменений. Пишутся только
+        # при развёртывании (есть раскладка) и только если система на носителе
+        # хранится образом: в эталонном корне дистрибутива им делать нечего --
+        # там ещё нет ни тома, ни имени его отображения.
+        if layout is not None and getattr(config.disk, "system_image", True):
+            files.update(self.overlay_boot_files(layout))
         return files
 
     def machine_binding_files(

@@ -93,3 +93,25 @@ def test_the_rpm_source_archive_carries_the_files_the_spec_installs():
     script = _read("packaging/build-rpm.sh")
     stage_line = next(line for line in script.splitlines() if line.startswith("cp -r src"))
     assert "packaging" in stage_line
+
+
+def test_the_tests_run_against_the_repository_and_not_a_stray_copy():
+    """Проверяется код репозитория, а не копия, лежащая рядом.
+
+    09.09.2026 в корне рабочего каталога на стенде оказалась копия пакета --
+    остаток давней сборки `.deb`. Каталог с этим именем стоит в пути раньше
+    `src/`, поэтому pytest час гонял старый код: правка была на диске, тест
+    её не видел, а падение выглядело как ошибка в новой логике.
+
+    Проверка дешёвая и однозначная: модуль обязан лежать внутри `src/` этого
+    репозитория.
+    """
+    import pathlib
+
+    import portable_os_admin
+
+    module = pathlib.Path(portable_os_admin.__file__).resolve()
+    root = pathlib.Path(__file__).resolve().parent.parent
+    assert module.parent.parent == root / "src", (
+        f"тесты импортируют {module}, а не код репозитория из {root / 'src'}"
+    )

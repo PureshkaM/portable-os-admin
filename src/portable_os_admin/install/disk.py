@@ -78,6 +78,17 @@ class MediaLayout:
     exchange_luks_uuid: str = ""
 
     @property
+    def container_root(self) -> str:
+        """Куда монтируется сам том, когда система хранится сжатым образом.
+
+        При overlay корнем становится не том, а конструкция поверх него, и
+        точки нужны две: тому -- эта, собранной системе -- `mount_root`.
+        Соседний каталог, а не подкаталог корня: подкаталог оказался бы
+        внутри overlay, то есть внутри того, что сам же и держит.
+        """
+        return f"{self.mount_root}-container"
+
+    @property
     def logs_mapper_name(self) -> str:
         return f"{self.mapper_name}-logs"
 

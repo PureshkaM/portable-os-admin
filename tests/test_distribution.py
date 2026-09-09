@@ -333,8 +333,12 @@ def test_deploying_generates_the_encryption_afresh(session, kiosk_config, big_de
 
     commands = [" ".join(r.argv) for r in result.plan.results]
     assert any("luksFormat" in c for c in commands), "шифрование не создаётся заново"
-    assert any("mount" in c and "squashfs" in c for c in commands), "эталон не монтируется"
-    assert any(c.startswith("cp -a") for c in commands), "система не копируется на носитель"
+    assert any("mount" in c and "squashfs" in c for c in commands), "образ не монтируется"
+    # Система кладётся на носитель одним файлом: `cp` образа в контейнер, а не
+    # раскладка дерева. Дерево остаётся способом на случай `system_image=нет`.
+    assert any("system.squashfs" in c and c.startswith("cp ") for c in commands), (
+        "образ системы не попадает в контейнер"
+    )
     # And the medium gets its own identity.
     assert result.media_record.media_id
     # Код восстановления в записи не хранится: он выводится из секрета
@@ -379,14 +383,20 @@ def test_service_volumes_are_mounted_before_the_system_is_copied(
     )
     commands = [" ".join(r.argv) for r in result.plan.results]
 
-    copy = next(i for i, c in enumerate(commands) if c.startswith("cp -a"))
+    # Корень собирается overlay поверх образа, и служебные разделы
+    # подключаются к уже собранному корню -- но обязательно до того, как в
+    # него что-нибудь записано. Первая такая запись -- настройка носителя.
+    built = next(i for i, c in enumerate(commands) if c.startswith("mount -t overlay"))
+    written = next(i for i, c in enumerate(commands) if "chroot" in c or "initramfs" in c)
     for mountpoint in ("/boot", "/var/log"):
         mounts = [
             i for i, c in enumerate(commands)
             if c.startswith("mount ") and c.rstrip().endswith(mountpoint)
         ]
         assert mounts, f"{mountpoint} не подключается вовсе"
-        assert min(mounts) < copy, f"{mountpoint} подключается после копирования"
+        assert built < min(mounts) < written, (
+            f"{mountpoint} подключается не между сборкой корня и записью в него"
+        )
 
 
 def test_two_deployments_get_different_identities(session, kiosk_config, big_device, tmp_path):
@@ -512,7 +522,13 @@ def test_boot_partition_is_mounted_before_the_system_is_copied(session, kiosk_co
     ядро, initramfs, записи загрузчика — оказывалось спрятано под пустым
     разделом. По содержимому корня это не видно: файлы на месте, просто не на
     том разделе, а носитель не загружается.
+
+    Проверяется способ «распакованным деревом»: он остаётся на случай, когда
+    администратор выключил `disk.system_image`. Порядок при системе из
+    образа -- в тесте про служебные тома: там корень собирается overlay, и
+    разделы подключаются к уже собранному.
     """
+    kiosk_config.disk.system_image = False
     directory = tmp_path / "dist"
     directory.mkdir()
     archive = directory / distribution.ARCHIVE_NAME

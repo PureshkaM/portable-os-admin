@@ -150,3 +150,143 @@ def test_the_kernel_modules_are_put_into_the_image_explicitly():
     # dracut не включает модуль просто потому, что он есть.
     conf = get_backend("redos").overlay_boot_files(layout)["etc/dracut.conf.d/50-poa-overlay.conf"][0]
     assert "add_dracutmodules" in conf
+
+
+# ----------------------------------------------------------------------
+# Развёртывание: система кладётся образом, а не деревом
+# ----------------------------------------------------------------------
+import pytest
+
+
+@pytest.fixture
+def session(tmp_path):
+    from portable_os_admin.container import ContainerManager
+    from portable_os_admin.session import AdminSession
+
+    return AdminSession(ContainerManager().create(tmp_path / "admin.container", "CorrectHorse123"))
+
+
+@pytest.fixture
+def kiosk_config():
+    from portable_os_admin.config import ConfigManager, InstallConfig
+    from portable_os_admin.config.schema import KioskConfig
+
+    config = InstallConfig.create_baseline("kiosk-stick", "debian")
+    config.release = "trixie"
+    config.packages = ["mate-calc"]
+    config.kiosk = KioskConfig(enabled=True)
+    ConfigManager().validate(config)
+    return config
+
+
+@pytest.fixture
+def big_device():
+    from portable_os_admin.install import BlockDevice
+
+    return BlockDevice(
+        name="sdb", path="/dev/sdb", size_bytes=32_000_000_000, model="Cruzer",
+        removable=True, mountpoints=(None,),
+    )
+
+
+@pytest.fixture
+def layout():
+    from portable_os_admin.config import InstallConfig
+    from portable_os_admin.install.disk import build_media_layout, plan_partitions
+
+    config = InstallConfig.create_default("stick", "debian")
+    return build_media_layout(
+        plan_partitions("/dev/sdz", config.disk), mapper_name="poa-abc123", mount_root="/mnt/poa"
+    )
+
+
+def _deployed_commands(session, config, device, tmp_path):
+    """Команды развёртывания из собранного дистрибутива, без записи на диск."""
+    from portable_os_admin.install import distribution
+    from portable_os_admin.install.installer import OSInstaller
+
+    directory = tmp_path / "dist"
+    directory.mkdir()
+    archive = directory / distribution.ARCHIVE_NAME
+    archive.write_bytes(b"not a real image")
+    metadata = distribution.DistributionMetadata.for_config(
+        config, release="trixie", arch="amd64", rootfs_bytes=1024, emulated=False
+    )
+    metadata.sha256 = distribution.sha256_of(str(archive))
+    distribution.write_metadata(str(directory), metadata)
+
+    result = OSInstaller(session).deploy_distribution(
+        device, str(directory), b"user-passphrase", dry_run=True, confirm_device="/dev/sdb"
+    )
+    return [" ".join(r.argv) for r in result.plan.results]
+
+
+def test_the_system_reaches_the_medium_as_one_file(session, kiosk_config, big_device, tmp_path):
+    """Один файл вместо миллиона -- ради этого overlay и делался.
+
+    Замер, из-за которого: тестовая флешка держит 2,9 МБ/с последовательной
+    записи, а раскладка распакованным деревом шла 0,49--0,88 МБ/с. Здесь
+    проверяется, что на носитель уходит именно образ, а дерево не
+    раскладывается вовсе.
+    """
+    commands = _deployed_commands(session, kiosk_config, big_device, tmp_path)
+
+    assert any(c.startswith("cp ") and c.endswith("system.squashfs") for c in commands), (
+        "образ системы не кладётся в контейнер"
+    )
+    assert not any(c.startswith("cp -a") for c in commands), (
+        "система всё ещё раскладывается деревом"
+    )
+
+
+def test_the_root_is_an_overlay_over_the_image(session, kiosk_config, big_device, tmp_path):
+    """Корень собирается поверх образа, и порядок сборки -- единственно верный.
+
+    Нижний слой подключается раньше overlay, а том смонтирован как контейнер
+    ещё раньше: overlay держит нижний слой, нижний слой -- петлевое
+    устройство, петля -- файл в контейнере.
+    """
+    commands = _deployed_commands(session, kiosk_config, big_device, tmp_path)
+
+    container = next(i for i, c in enumerate(commands) if c.endswith("-container"))
+    lower = next(i for i, c in enumerate(commands) if "-t squashfs" in c)
+    root = next(i for i, c in enumerate(commands) if c.startswith("mount -t overlay"))
+    assert container < lower < root, "порядок сборки корня нарушен"
+    assert "lowerdir=" in commands[root] and "upperdir=" in commands[root]
+
+
+def test_the_medium_learns_to_assemble_that_root_at_boot(kiosk_config, layout):
+    """Носитель должен уметь собрать этот корень сам, без машины администратора.
+
+    Хуки initramfs пишутся только при развёртывании: в эталонном корне
+    дистрибутива им делать нечего -- там ещё нет ни тома, ни имени его
+    отображения. Проверяется, что при развёртывании они на носитель попадают,
+    а при сборке дистрибутива -- нет.
+    """
+    from portable_os_admin.install.backends import get_backend
+
+    backend = get_backend("debian")
+    deployed = backend.scripted_files(kiosk_config, layout)
+    built = backend.scripted_files(kiosk_config, None)
+
+    assert any("poa-overlay" in path for path in deployed), (
+        "носитель не получает хуков, собирающих корень"
+    )
+    assert not any("poa-overlay" in path for path in built), (
+        "хуки попали в эталонный корень, где нет ни тома, ни его имени"
+    )
+
+
+def test_the_administrator_can_turn_the_image_off(session, kiosk_config, big_device, tmp_path):
+    """Прежний способ остаётся -- на случай сравнения или отказа overlay.
+
+    Тогда система раскладывается деревом, как раньше, и никакого overlay на
+    носителе нет: иначе выключатель обещал бы больше, чем делает.
+    """
+    kiosk_config.disk.system_image = False
+    commands = _deployed_commands(session, kiosk_config, big_device, tmp_path)
+
+    assert any(c.startswith("cp -a") for c in commands), "система не разложена деревом"
+    assert not any(c.startswith("mount -t overlay") for c in commands), (
+        "overlay собирается вопреки настройке"
+    )

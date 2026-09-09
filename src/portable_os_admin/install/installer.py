@@ -36,7 +36,7 @@ from .backends.base import (
     SERVICE_KEY_PATH,
 )
 from .command_runner import BOOTSTRAP_TIMEOUT, CommandPlan, CommandResult, CommandRunner
-from . import distribution
+from . import distribution, overlay
 from . import integrity
 from .devices import BlockDevice, busy_holders, check_install_eligible
 from .disk import DiskManager, MediaLayout, build_media_layout, plan_partitions
@@ -707,8 +707,12 @@ class OSInstaller:
     ) -> tuple[str, bytes, bytes]:
         run = lambda argv, **kw: self._run(argv, plan, dry_run, confirm_device, **kw)  # noqa: E731
 
+        archive = distribution.archive_path(directory, metadata)
+        overlay_root = self._overlay_root(config, metadata)
+
         recovery_code, recovery_salt, service_key, boot_key = self._prepare_medium(
-            device, config, layout, media_id, user_passphrase, plan, state, dry_run, confirm_device
+            device, config, layout, media_id, user_passphrase, plan, state, dry_run, confirm_device,
+            overlay_root=overlay_root,
         )
 
         # Разделы подключаются ДО копирования, а не после. Иначе всё, что
@@ -718,13 +722,26 @@ class OSInstaller:
         # это по содержимому корня нельзя: файлы на месте, просто не на том
         # разделе. ESP подключается отдельно, ниже: на FAT нет владельцев, и
         # `cp -a` на нём спотыкается о невозможность их сохранить.
-        self._progress.step("Подключение служебных разделов")
-        self._mount_boot_partition(layout, state, plan, dry_run, confirm_device)
-        self._mount_logs_volume(layout, state, plan, dry_run, confirm_device)
+        #
+        # При системе из сжатого образа порядок обратный, и по той же
+        # причине: корня ещё нет. Том смонтирован как контейнер, а корень --
+        # overlay поверх образа, и собрать его можно только после того, как
+        # образ оказался в контейнере. Служебные разделы подключаются к уже
+        # собранному корню, ниже.
+        if not overlay_root:
+            self._progress.step("Подключение служебных разделов")
+            self._mount_boot_partition(layout, state, plan, dry_run, confirm_device)
+            self._mount_logs_volume(layout, state, plan, dry_run, confirm_device)
 
         self._progress.step("Копирование системы на носитель")
-        archive = distribution.archive_path(directory, metadata)
-        if distribution.is_squashfs(metadata.archive):
+        if overlay_root:
+            source = self._deploy_system_image(
+                archive, layout, media_id, state, plan, dry_run, confirm_device
+            )
+            self._progress.step("Подключение служебных разделов")
+            self._mount_boot_partition(layout, state, plan, dry_run, confirm_device)
+            self._mount_logs_volume(layout, state, plan, dry_run, confirm_device)
+        elif distribution.is_squashfs(metadata.archive):
             # Эталон монтируется только на чтение, и система копируется из него
             # в уже открытый том. Копия сохраняет владельцев, права, ACL и
             # xattr — без последних перестают работать программы с
@@ -1389,7 +1406,8 @@ class OSInstaller:
 
 
     def _prepare_medium(
-        self, device, config, layout, media_id, user_passphrase, plan, state, dry_run, confirm_device
+        self, device, config, layout, media_id, user_passphrase, plan, state, dry_run,
+        confirm_device, overlay_root: bool = False,
     ) -> tuple[str, bytes, bytes, bytes]:
         """Erases the medium and builds its encrypted, empty structure.
 
@@ -1548,7 +1566,14 @@ class OSInstaller:
 
         self._progress.step("Монтирование носителя")
         # Mount the target tree, outermost first.
-        run(["mkdir", "-p", layout.mount_root])
+        #
+        # Куда монтируется сам том, зависит от того, как на носителе будет
+        # лежать система. Распакованным деревом -- том и есть корень. Сжатым
+        # образом -- том становится контейнером, в котором лежат образ и слой
+        # изменений, а корнем будет overlay поверх него, и собирается он
+        # позже, когда образ уже на месте.
+        volume_mount = layout.container_root if overlay_root else layout.mount_root
+        run(["mkdir", "-p", volume_mount])
         # Параметры монтирования — только на время записи; в fstab носителя
         # попадают другие. `noatime` убирает запись метки времени на каждое
         # чтение, `commit=600` заставляет журнал сбрасываться раз в десять
@@ -1559,11 +1584,59 @@ class OSInstaller:
         # дешёвой флешке измеримый.
         run([
             "mount", "-o", "noatime,commit=600,barrier=0",
-            layout.mapper_path, layout.mount_root,
+            layout.mapper_path, volume_mount,
         ])
-        state.mounts.append(layout.mount_root)
+        state.mounts.append(volume_mount)
 
         return recovery_code, recovery_salt, service_key, boot_key
+
+    def _deploy_system_image(
+        self, archive, layout, media_id, state, plan, dry_run, confirm_device
+    ) -> str:
+        """Кладёт образ в контейнер и собирает поверх него корень.
+
+        Возвращает точку, где смонтирован сам образ: файлы загрузчика для ESP
+        берутся оттуда же, откуда брались из смонтированного эталона раньше.
+
+        Порядок размонтирования обратный порядку сборки, и он важен: overlay
+        держит нижний слой, нижний слой держит петлевое устройство, петля
+        держит файл в контейнере. Список `state.mounts` разбирается с конца,
+        поэтому здесь достаточно добавлять по мере сборки.
+        """
+        run = lambda argv, **kw: self._run(argv, plan, dry_run, confirm_device, **kw)  # noqa: E731
+
+        container = layout.container_root
+        # Один файл вместо миллиона: это и втрое меньше байт, и
+        # последовательная запись вместо разбросанной.
+        run(overlay.copy_image_command(archive, container), timeout=BOOTSTRAP_TIMEOUT)
+        for argv in overlay.prepare_commands(container):
+            run(argv)
+        # sync до сборки overlay: дальше работа пойдёт поверх образа, и
+        # дописывать его в это время нельзя.
+        run(["sync"], timeout=BOOTSTRAP_TIMEOUT)
+
+        run(["mkdir", "-p", overlay.LOWER_MOUNT])
+        run(overlay.lower_mount_command(container))
+        state.mounts.append(overlay.LOWER_MOUNT)
+
+        run(["mkdir", "-p", layout.mount_root])
+        run(overlay.mount_command(container, layout.mount_root))
+        state.mounts.append(layout.mount_root)
+        return overlay.LOWER_MOUNT
+
+    def _overlay_root(self, config, metadata) -> bool:
+        """Хранить ли систему сжатым образом со слоем изменений.
+
+        Два условия, и оба обязательны. Первое -- администратор этого не
+        запретил (`disk.system_image`). Второе -- есть что класть: образ
+        берётся из собранного дистрибутива. Установка прямо с установочного
+        DVD собирает дерево на месте, и там способ один -- обычный корень;
+        поэтому решение принимается только там, где метаданные дистрибутива
+        уже прочитаны, и передаётся дальше явно.
+        """
+        if not getattr(config.disk, "system_image", True):
+            return False
+        return distribution.is_squashfs(metadata.archive)
 
     def _run_bootstrap(self, backend, config, layout, image_url, release, plan, dry_run, confirm_device) -> None:
         argv = backend.bootstrap_command(layout.mount_root, config, image_url, release)
