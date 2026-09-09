@@ -1939,3 +1939,75 @@ def test_a_configuration_survives_closing_and_reopening_the_container(gui_app, t
     reopened = app.config_manager.open(app.container, "stick1")
     assert reopened.packages == ["mate-calc"]
     assert reopened.target_os == "redos"
+
+
+def test_configurations_travel_between_administrators_through_the_screen(gui_app, tmp_path, monkeypatch):
+    """Путь «отправить — принять» проходится через сам экран, а не через модуль.
+
+    Конфигурации живут в контейнере, поэтому отдать одну коллеге можно только
+    посылкой: зашифрованной его кодом и подписанной своим. Проверяется весь
+    путь целиком — от кнопки до записи в чужом контейнере, — потому что
+    именно на стыке экрана и крипты теряются такие вещи, как «забыл сохранить
+    контейнер после приёма».
+    """
+    from portable_os_admin.config import exchange
+    from portable_os_admin.container import ContainerManager
+
+    app = gui_app
+    _open_container(app, tmp_path)
+    config = app.config_manager.create(app.container, "stick1", "debian")
+    config.packages = ["mate-calc"]
+    app.config_manager.save(app.container, config)
+    app.save_container()
+
+    # Второй администратор — отдельный контейнер со своим паролем.
+    colleague_manager = ContainerManager()
+    colleague = colleague_manager.create(tmp_path / "colleague.container", "CorrectHorse456")
+    # Код заводит семя в контейнере, и его надо сохранить: иначе при
+    # следующем открытии файла семя окажется другим, а посылка -- не для
+    # этого контейнера. В приложении это делает кнопка «Мой код обмена…».
+    colleague_code = exchange.identity_of(colleague).code
+    colleague_manager.save(colleague)
+    parcel = tmp_path / ("parcel" + exchange.EXCHANGE_SUFFIX)
+
+    app.show_frame(ConfigsListFrame)
+    screen = app._current_frame
+    monkeypatch.setattr(
+        "tkinter.simpledialog.askstring",
+        lambda *a, **k: colleague_code,
+    )
+    monkeypatch.setattr("tkinter.filedialog.asksaveasfilename", lambda *a, **k: str(parcel))
+    screen.table.selection_set(screen.table.get_children()[0])
+    screen._send_selected()
+    app.update()
+
+    assert parcel.exists(), screen.message_bar.var.get()
+    # В самой посылке ничего не читается открытым текстом.
+    assert b"mate-calc" not in parcel.read_bytes()
+
+    # Приём — со стороны коллеги: тот же экран, другой контейнер.
+    app.close_session()
+    startup = app._current_frame
+    startup.path_var.set(str(tmp_path / "colleague.container"))
+    startup.password_var.set("CorrectHorse456")
+    startup._open()
+    app.update()
+    app.show_frame(ConfigsListFrame)
+    receiver = app._current_frame
+    monkeypatch.setattr("tkinter.filedialog.askopenfilename", lambda *a, **k: str(parcel))
+    monkeypatch.setattr("tkinter.messagebox.askyesno", lambda *a, **k: True)
+    receiver._receive()
+    app.update()
+
+    assert app.config_manager.list_configs(app.container) == ["stick1"]
+    received = app.config_manager.open(app.container, "stick1")
+    assert received.packages == ["mate-calc"]
+
+    # И то же самое — на диске, до закрытия сеанса. Закрытие сеанса
+    # сохраняет контейнер само, поэтому проверять после него бесполезно:
+    # «забыл сохранить после приёма» так и осталось бы незамеченным до
+    # первого падения программы с непринятой посылкой.
+    on_disk = ContainerManager().open(tmp_path / "colleague.container", "CorrectHorse456")
+    assert [record.name for record in on_disk.list_configs()] == ["stick1"]
+    on_disk.close()
+    colleague.close()

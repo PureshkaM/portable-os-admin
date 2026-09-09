@@ -167,6 +167,14 @@ class AdminContainerData:
     #: носителей организации. Забыл пароль от контейнера — контейнер бесполезен,
     #: и это принятое решение, а не недоработка.
     admin_secret_b64: str = ""
+    #: Семя ключей обмена конфигурациями между администраторами.
+    #:
+    #: Отдельно от секрета восстановления, хотя оба -- случайные 32 байта.
+    #: Тот выводит коды, которые администратор диктует пользователю; это --
+    #: ключи, которыми чужие администраторы шифруют присланное. Смешать их
+    #: значило бы связать две независимые роли одного контейнера: смена одной
+    #: потянула бы за собой другую.
+    exchange_seed_b64: str = ""
 
     def to_dict(self) -> dict:
         return {
@@ -174,6 +182,7 @@ class AdminContainerData:
             "recovery_records": [r.to_dict() for r in self.recovery_records],
             "configs": [c.to_dict() for c in self.configs],
             "admin_secret_b64": self.admin_secret_b64,
+            "exchange_seed_b64": self.exchange_seed_b64,
         }
 
     @classmethod
@@ -185,4 +194,5 @@ class AdminContainerData:
             # пустой список здесь и означает «их ещё не было».
             configs=[ConfigRecord.from_dict(c) for c in data.get("configs", [])],
             admin_secret_b64=data.get("admin_secret_b64", ""),
+            exchange_seed_b64=data.get("exchange_seed_b64", ""),
         )

@@ -63,6 +63,19 @@ class AdminContainer:
                 return record
         return None
 
+    @property
+    def exchange_seed(self) -> bytes:
+        """Семя ключей обмена. Заводится при первом обращении.
+
+        Не при создании контейнера: контейнеры, сделанные раньше, должны
+        получить обмен без пересоздания, а лишнее случайное число в файле,
+        которым никто не пользуется, -- это ещё один секрет, который надо
+        хранить.
+        """
+        if not self.data.exchange_seed_b64:
+            self.data.exchange_seed_b64 = base64.b64encode(os.urandom(32)).decode()
+        return base64.b64decode(self.data.exchange_seed_b64)
+
     # -- configurations -----------------------------------------------------
     def list_configs(self) -> "list[ConfigRecord]":
         """Конфигурации по алфавиту -- порядок списка на экране."""
