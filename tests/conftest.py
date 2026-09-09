@@ -30,3 +30,18 @@ def make_config():
         return InstallConfig.create_default(name, target_os)
 
     return _make
+
+
+@pytest.fixture
+def container(tmp_path):
+    """Открытый контейнер администратора -- хранилище конфигураций.
+
+    С 09.09.2026 конфигурации живут внутри него, а не файлами рядом, поэтому
+    тестам, которые раньше обходились каталогом, нужен контейнер.
+    """
+    from portable_os_admin.container import ContainerManager
+
+    manager = ContainerManager()
+    opened = manager.create(tmp_path / "admin.container", "CorrectHorse123")
+    yield opened
+    opened.close()

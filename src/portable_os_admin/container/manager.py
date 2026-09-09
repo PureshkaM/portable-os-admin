@@ -21,7 +21,7 @@ from ..errors import (
     ContainerCorruptedError,
     WeakPasswordError,
 )
-from .models import AdminContainerData, MediaRecord, RecoveryRecord
+from .models import AdminContainerData, ConfigRecord, MediaRecord, RecoveryRecord, _now_iso
 
 CONTAINER_FORMAT = "portable-os-admin-container"
 CONTAINER_VERSION = 1
@@ -62,6 +62,39 @@ class AdminContainer:
             if record.media_id == media_id:
                 return record
         return None
+
+    # -- configurations -----------------------------------------------------
+    def list_configs(self) -> "list[ConfigRecord]":
+        """Конфигурации по алфавиту -- порядок списка на экране."""
+        return sorted(self.data.configs, key=lambda record: record.name.lower())
+
+    def find_config(self, name: str) -> "ConfigRecord | None":
+        for record in self.data.configs:
+            if record.name == name:
+                return record
+        return None
+
+    def put_config(self, name: str, data: dict) -> "ConfigRecord":
+        """Сохранить конфигурацию под именем, заменив прежнюю с тем же именем.
+
+        Имя -- ключ, потому что оно же показывается администратору: две
+        разные конфигурации с одинаковым именем он всё равно не различит, а
+        отдельный идентификатор пришлось бы где-то показывать.
+        """
+        existing = self.find_config(name)
+        if existing is not None:
+            existing.data = data
+            existing.updated_at = _now_iso()
+            return existing
+        record = ConfigRecord(name=name, data=data)
+        self.data.configs.append(record)
+        return record
+
+    def remove_config(self, name: str) -> bool:
+        """True, если было что удалять."""
+        before = len(self.data.configs)
+        self.data.configs = [r for r in self.data.configs if r.name != name]
+        return len(self.data.configs) != before
 
     # -- recovery records ---------------------------------------------------
     def add_recovery_record(self, record: RecoveryRecord) -> None:

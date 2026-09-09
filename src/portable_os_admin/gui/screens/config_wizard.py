@@ -89,10 +89,12 @@ ARCH_CHOICES = ("amd64", "arm64")
 
 
 class ConfigWizardFrame(WizardFrame):
-    def __init__(self, parent: tk.Widget, app, config_path: Path | None = None):
-        self.config_path = config_path
-        if config_path is not None:
-            self.config = app.config_manager.open(config_path)
+    def __init__(self, parent: tk.Widget, app, config_name: str | None = None):
+        #: Имя правимой конфигурации, если открыт не мастер создания. Имя, а
+        #: не путь: конфигурации живут в контейнере, и адресуются именем.
+        self.config_name = config_name
+        if config_name is not None:
+            self.config = app.config_manager.open(app.container, config_name)
         else:
             # A new configuration starts as the locked-down minimum, not as a
             # blank system. What the wizard opens on is a statement about what
@@ -181,7 +183,7 @@ class ConfigWizardFrame(WizardFrame):
         form.pack(anchor="w", fill="x")
         self.name_var = tk.StringVar(value=self.config.name)
         name_entry, row = add_field(form, 0, "Имя конфигурации:", self.name_var, width=36)
-        if self.config_path is not None:
+        if self.config_name is not None:
             name_entry.configure(state="disabled")
 
         ttk.Label(form, text="Целевая ОС:").grid(row=row, column=0, sticky="ne", padx=(0, 10), pady=(10, 4))
@@ -1551,13 +1553,10 @@ class ConfigWizardFrame(WizardFrame):
                 "или «Вернуть как было» — иначе они не сохранятся."
             )
             return
-        if self.config_path is not None:
-            path = self.config_path
-        else:
-            path = self.app.config_manager._path_for(self.app.configs_dir, self.config.name)
         with_error = False
         try:
-            self.app.config_manager.save(self.config, path)
+            self.app.config_manager.save(self.app.container, self.config)
+            self.app.save_container()
         except KNOWN_ERRORS as exc:
             self.message_bar.error(str(exc))
             with_error = True

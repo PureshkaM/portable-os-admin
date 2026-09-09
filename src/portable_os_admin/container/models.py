@@ -106,9 +106,53 @@ class RecoveryRecord:
 
 
 @dataclass
+class ConfigRecord:
+    """Конфигурация установки, хранимая внутри контейнера.
+
+    Раньше конфигурации лежали рядом с контейнером обычными `*.json`, и это
+    расходилось с замыслом: контейнер задуман как единственное, что
+    администратор носит с собой и защищает паролем. Паролей в конфигурации
+    нет, но есть полное описание защищаемой системы -- имя учётной записи,
+    состав пакетов, что в киоске разрешено и что запрещено, разметка, число
+    машин на носитель, адреса зеркал. Карта того, как устроен носитель,
+    лежала открытым текстом.
+
+    Хранится словарём, а не разобранным `InstallConfig`: контейнер не должен
+    знать схему конфигурации, иначе его формат придётся менять при каждом
+    новом поле. Разбирает и собирает `ConfigManager`.
+    """
+
+    name: str
+    #: Содержимое конфигурации -- то же, что раньше лежало в файле.
+    data: dict = field(default_factory=dict)
+    created_at: str = field(default_factory=_now_iso)
+    updated_at: str = field(default_factory=_now_iso)
+
+    def to_dict(self) -> dict:
+        return {
+            "name": self.name,
+            "data": self.data,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "ConfigRecord":
+        return cls(
+            name=data.get("name", ""),
+            data=data.get("data", {}) or {},
+            created_at=data.get("created_at", _now_iso()),
+            updated_at=data.get("updated_at", data.get("created_at", _now_iso())),
+        )
+
+
+@dataclass
 class AdminContainerData:
     media_records: list[MediaRecord] = field(default_factory=list)
     recovery_records: list[RecoveryRecord] = field(default_factory=list)
+    #: Конфигурации установки. Живут здесь, а не файлами рядом: контейнер --
+    #: единственное, что администратор хранит и защищает паролем.
+    configs: list[ConfigRecord] = field(default_factory=list)
     #: Секрет администратора, из которого выводятся все коды восстановления.
     #:
     #: Он и есть содержимое контейнера, ради которого тот зашифрован. Коды не
@@ -128,6 +172,7 @@ class AdminContainerData:
         return {
             "media_records": [m.to_dict() for m in self.media_records],
             "recovery_records": [r.to_dict() for r in self.recovery_records],
+            "configs": [c.to_dict() for c in self.configs],
             "admin_secret_b64": self.admin_secret_b64,
         }
 
@@ -136,5 +181,8 @@ class AdminContainerData:
         return cls(
             media_records=[MediaRecord.from_dict(m) for m in data.get("media_records", [])],
             recovery_records=[RecoveryRecord.from_dict(r) for r in data.get("recovery_records", [])],
+            # Контейнер, созданный до 09.09.2026, конфигураций не содержит --
+            # пустой список здесь и означает «их ещё не было».
+            configs=[ConfigRecord.from_dict(c) for c in data.get("configs", [])],
             admin_secret_b64=data.get("admin_secret_b64", ""),
         )

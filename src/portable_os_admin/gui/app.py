@@ -62,9 +62,14 @@ class PortableOSAdminGUI(tk.Tk):
         self.show_startup()
 
     @property
-    def configs_dir(self) -> Path:
-        base = self.container_path.parent if self.container_path else Path.cwd()
-        return base / "configs"
+    def container(self) -> "AdminContainer | None":
+        """Открытый контейнер -- единственное хранилище всего, что ведёт
+
+        администратор: носителей, записей восстановления и конфигураций.
+        Каталога `configs/` рядом с файлом больше нет; до 09.09.2026
+        конфигурации лежали там открытым текстом.
+        """
+        return self.session.container if self.session is not None else None
 
     def show_frame(self, frame_cls, **kwargs) -> None:
         """Экран во весь размер окна: начальный экран и мастера.

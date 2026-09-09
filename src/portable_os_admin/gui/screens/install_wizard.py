@@ -50,15 +50,15 @@ from .device_step import (
 
 
 class InstallWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
-    def __init__(self, parent: tk.Widget, app, config_path: Path | None = None):
-        self.preselected_config_path = config_path
-        self.selected_config_path: Path | None = None
+    def __init__(self, parent: tk.Widget, app, config_name: str | None = None):
+        self.preselected_config_name = config_name
+        self.selected_config_name: str | None = None
         self.selected_config = None
         self.device_path = ""
         self.device_size_gb = "16"
         self.image_path = ""
         self.image_info = None
-        self._valid_paths: list[Path] = []
+        self._valid_names: list[str] = []
         self._config_fitness: dict[Path, tuple[bool, str]] = {}
         self._devices: list[BlockDevice] = []
         self._running = False
@@ -105,21 +105,21 @@ class InstallWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
         # silently omitting it looks like the configuration was lost.
         self.config_table.tag_configure("unfit", foreground=theme.TEXT_DISABLED)
 
-        all_paths = self.app.config_manager.list_configs(self.app.configs_dir)
-        self._valid_paths = []
+        all_names = self.app.config_manager.list_configs(self.app.container)
+        self._valid_names = []
         self._config_fitness = {}
-        for path in all_paths:
-            config = self.app.config_manager.open(path)
+        for name in all_names:
+            config = self.app.config_manager.open(self.app.container, name)
             if config.validation_status != "valid":
                 continue
             fits, reason = self._fits_image(config)
-            self._valid_paths.append(path)
-            self._config_fitness[path] = (fits, reason)
+            self._valid_names.append(name)
+            self._config_fitness[name] = (fits, reason)
             self.config_table.insert(
-                "", "end", values=(path.name, config.target_os, reason), tags=() if fits else ("unfit",)
+                "", "end", values=(name, config.target_os, reason), tags=() if fits else ("unfit",)
             )
 
-        if not self._valid_paths:
+        if not self._valid_names:
             ttk.Label(
                 body,
                 text="Нет проверенных конфигураций. Сначала создайте конфигурацию и нажмите «Проверить».",
@@ -130,10 +130,10 @@ class InstallWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
             ttk.Button(body, text="Перейти к конфигурациям", command=self._go_to_configs).pack(anchor="w")
             return
 
-        preselect = self.selected_config_path or self.preselected_config_path
-        if preselect in self._valid_paths:
+        preselect = self.selected_config_name or self.preselected_config_name
+        if preselect in self._valid_names:
             children = self.config_table.get_children()
-            row_id = children[self._valid_paths.index(preselect)]
+            row_id = children[self._valid_names.index(preselect)]
             self.config_table.selection_set(row_id)
             self.config_table.see(row_id)
 
@@ -166,7 +166,7 @@ class InstallWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
         self.app.show_frame(ConfigsListFrame)
 
     def _validate_step_config(self) -> bool:
-        if not self._valid_paths:
+        if not self._valid_names:
             self.message_bar.error("Сначала создайте и проверьте хотя бы одну конфигурацию.")
             return False
         selection = self.config_table.selection()
@@ -174,16 +174,16 @@ class InstallWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
             self.message_bar.error("Выберите конфигурацию в таблице.")
             return False
         index = self.config_table.index(selection[0])
-        path = self._valid_paths[index]
-        fits, reason = self._config_fitness.get(path, (True, ""))
+        name = self._valid_names[index]
+        fits, reason = self._config_fitness.get(name, (True, ""))
         if not fits:
             self.message_bar.error(
                 f"Эта конфигурация не подходит к выбранному образу — {reason}. "
                 "Выберите другую конфигурацию или вернитесь и укажите другой образ."
             )
             return False
-        self.selected_config_path = path
-        self.selected_config = self.app.config_manager.open(path)
+        self.selected_config_name = name
+        self.selected_config = self.app.config_manager.open(self.app.container, name)
         return True
 
     # -- step 1: the installation image -------------------------------------

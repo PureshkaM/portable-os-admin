@@ -204,7 +204,7 @@ def test_config_wizard_creates_and_validates(gui_app, tmp_path):
 
     configs = app._current_frame
     assert isinstance(configs, ConfigsListFrame)
-    assert [p.name for p in configs._paths] == ["stick1.json"]
+    assert configs._names == ["stick1"]
 
 
 def test_config_wizard_final_step_edits_are_applied_or_refused(gui_app, tmp_path):
@@ -240,7 +240,7 @@ def test_config_wizard_final_step_edits_are_applied_or_refused(gui_app, tmp_path
     wizard._go_next()
     app.update()
     assert "неприменённые" in wizard.message_bar.var.get()
-    assert not (app.configs_dir / "stick1.json").exists()
+    assert app.config_manager.list_configs(app.container) == []
 
     wizard._apply_edits()
     app.update()
@@ -252,7 +252,7 @@ def test_config_wizard_final_step_edits_are_applied_or_refused(gui_app, tmp_path
     wizard._run_validation()
     wizard._go_next()
     app.update()
-    saved = app.config_manager.open(app.configs_dir / "stick1.json")
+    saved = app.config_manager.open(app.container, "stick1")
     assert saved.release == "trixie"
 
 
@@ -378,14 +378,18 @@ def test_config_wizard_package_list_sorts_by_any_column(gui_app, tmp_path, monke
 
 
 def _make_validated_debian_config(app, iso_path=None):
-    config = app.config_manager.create(app.configs_dir, "stick1", "debian")
+    """Проверенная конфигурация в контейнере; возвращает её имя.
+
+    Имя, а не путь: с 09.09.2026 конфигурации живут внутри контейнера, и
+    экраны адресуют их именем.
+    """
+    config = app.config_manager.create(app.container, "stick1", "debian")
     # A configuration without an installation image cannot validate: the system
     # is installed from a local image, never downloaded.
     config.image_path = iso_path or _throwaway_image(app)
     app.config_manager.validate(config)
-    path = app.configs_dir / "stick1.json"
-    app.config_manager.save(config, path)
-    return path
+    app.config_manager.save(app.container, config)
+    return config.name
 
 
 class _StubInstaller:
@@ -457,7 +461,7 @@ def _fill_install_wizard(app, wizard, device="/dev/sdb", size="32"):
 
 
 def _throwaway_image(app):
-    path = app.configs_dir.parent / "image.iso"
+    path = app.container_path.parent / "image.iso"
     path.write_bytes(b"not a real image")
     return str(path)
 
@@ -660,7 +664,7 @@ def test_install_wizard_shows_no_valid_configs_guidance(gui_app, tmp_path):
     wizard._go_next()  # image -> configuration
     app.update()
 
-    assert wizard._valid_paths == []
+    assert wizard._valid_names == []
     assert wizard.validate_step(1) is False
     assert "конфигурац" in wizard.message_bar.var.get()
 
@@ -668,8 +672,8 @@ def test_install_wizard_shows_no_valid_configs_guidance(gui_app, tmp_path):
 def test_configs_list_delete(gui_app, tmp_path):
     app = gui_app
     _open_container(app, tmp_path)
-    path = _make_validated_debian_config(app)
-    assert path.exists()
+    name = _make_validated_debian_config(app)
+    assert app.config_manager.list_configs(app.container) == [name]
 
     app.show_frame(ConfigsListFrame)
     configs = app._current_frame
@@ -677,8 +681,8 @@ def test_configs_list_delete(gui_app, tmp_path):
     configs._delete_selected()
     app.update()
 
-    assert not path.exists()
-    assert configs._paths == []
+    assert app.config_manager.list_configs(app.container) == []
+    assert configs._names == []
 
 
 def test_configurations_are_marked_against_the_chosen_image(gui_app, tmp_path, monkeypatch):
@@ -694,7 +698,7 @@ def test_configurations_are_marked_against_the_chosen_image(gui_app, tmp_path, m
     for name, target_os in (("debian-stick", "debian"), ("redos-stick", "redos")):
         config = InstallConfig.create_default(name, target_os)
         app.config_manager.validate(config)
-        app.config_manager.save(config, app.configs_dir / f"{name}.json")
+        app.config_manager.save(app.container, config)
 
     debian_image = ImageInfo(
         path="/images/debian.iso", family="debian", release="trixie",
@@ -718,15 +722,15 @@ def test_configurations_are_marked_against_the_chosen_image(gui_app, tmp_path, m
         wizard.config_table.item(r)["values"][0]: wizard.config_table.item(r)
         for r in wizard.config_table.get_children()
     }
-    assert rows["debian-stick.json"]["values"][2] == "да"
-    assert "нет" in str(rows["redos-stick.json"]["values"][2])
+    assert rows["debian-stick"]["values"][2] == "да"
+    assert "нет" in str(rows["redos-stick"]["values"][2])
     # the unusable one stays visible but marked, rather than vanishing
-    assert "unfit" in rows["redos-stick.json"]["tags"]
+    assert "unfit" in rows["redos-stick"]["tags"]
 
     # and choosing it is refused, with the reason
     redos_row = next(
         r for r in wizard.config_table.get_children()
-        if wizard.config_table.item(r)["values"][0] == "redos-stick.json"
+        if wizard.config_table.item(r)["values"][0] == "redos-stick"
     )
     wizard.config_table.selection_set(redos_row)
     wizard._go_next()
@@ -1199,15 +1203,14 @@ def _build_wizard_with_config(app, tmp_path, target_os="redos"):
     """Мастер сборки с уже выбранной проверенной конфигурацией."""
     from portable_os_admin.gui.screens.build_wizard import BuildWizardFrame
 
-    config = app.config_manager.create(app.configs_dir, "stick1", target_os)
+    config = app.config_manager.create(app.container, "stick1", target_os)
     config.validation_status = "valid"
-    path = app.configs_dir / "stick1.json"
-    app.config_manager.save(config, path)
+    app.config_manager.save(app.container, config)
 
     app.show_frame(BuildWizardFrame)
     app.update()
     frame = app._current_frame
-    frame.selected_config_path = path
+    frame.selected_config_name = config.name
     return frame
 
 
@@ -1882,3 +1885,57 @@ def test_the_deploy_wizard_remembers_the_distribution_for_the_next_stick(gui_app
     assert not any("passphrase" in key or "пароль" in key for key in store), (
         "секрет попал в файл настроек"
     )
+
+
+def test_nothing_about_configurations_is_written_next_to_the_container(gui_app, tmp_path):
+    """Рядом с контейнером не появляется ни одного файла конфигурации.
+
+    До 09.09.2026 они лежали там открытым текстом — `configs/*.json` рядом с
+    зашифрованным контейнером. Паролей в конфигурации нет, но есть полное
+    описание защищаемой системы: учётная запись, состав пакетов, что в киоске
+    разрешено и что запрещено, разметка, число машин на носитель, зеркала.
+
+    Проверяется через приложение, а не вызовом менеджера: путь от кнопки
+    «Создать» до файла на диске и есть то, что разошлось с замыслом.
+    """
+    app = gui_app
+    _open_container(app, tmp_path)
+
+    config = app.config_manager.create(app.container, "secret-stick", "debian")
+    config.account.username = "buhgalter"
+    app.config_manager.save(app.container, config)
+    app.save_container()
+
+    on_disk = [p for p in tmp_path.rglob("*") if p.is_file()]
+    assert [p.name for p in on_disk] == ["admin.container"], on_disk
+    # И самого имени в открытом виде на диске тоже нет: контейнер зашифрован.
+    assert b"buhgalter" not in (tmp_path / "admin.container").read_bytes()
+    assert app.config_manager.list_configs(app.container) == ["secret-stick"]
+
+
+def test_a_configuration_survives_closing_and_reopening_the_container(gui_app, tmp_path):
+    """Конфигурация переживает закрытие сеанса — она часть контейнера.
+
+    Пока хранилищем был каталог, это выполнялось само собой. Теперь запись
+    должна пройти через шифрование и вернуться обратно, и проверять это надо
+    отдельно: забыть `save_container()` после правки — самая дешёвая из
+    возможных ошибок.
+    """
+    app = gui_app
+    _open_container(app, tmp_path)
+    config = app.config_manager.create(app.container, "stick1", "redos")
+    config.packages = ["mate-calc"]
+    app.config_manager.save(app.container, config)
+    app.save_container()
+    app.close_session()
+
+    startup = app._current_frame
+    startup.path_var.set(str(tmp_path / "admin.container"))
+    startup.password_var.set("CorrectHorse123")
+    startup._open()
+    app.update()
+
+    assert app.config_manager.list_configs(app.container) == ["stick1"]
+    reopened = app.config_manager.open(app.container, "stick1")
+    assert reopened.packages == ["mate-calc"]
+    assert reopened.target_os == "redos"

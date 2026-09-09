@@ -8,9 +8,9 @@ from portable_os_admin.config.validator import (
 )
 
 
-def test_create_default_config_is_initially_unchecked(tmp_path):
+def test_create_default_config_is_initially_unchecked(container):
     cm = ConfigManager()
-    config = cm.create(tmp_path, "stick1", "debian")
+    config = cm.create(container, "stick1", "debian")
     assert config.validation_status == "unchecked"
     assert config.target_os == "debian"
 
@@ -50,17 +50,36 @@ def test_config_manager_validate_updates_status_in_place(make_config):
     assert config.validation_status == "valid"
 
 
-def test_save_and_open_round_trip(tmp_path):
+def test_save_and_open_round_trip(container):
+    """Конфигурация возвращается из контейнера такой же, какой ушла.
+
+    Хранилище -- контейнер, а не каталог рядом с ним: с 09.09.2026
+    конфигурации не лежат отдельными файлами, потому что в них описано
+    устройство защищаемой системы.
+    """
     cm = ConfigManager()
-    config = cm.create(tmp_path, "stick1", "debian")
+    config = cm.create(container, "stick1", "debian")
     config.account.username = "ivanov"
     config.packages = ["vim", "htop"]
-    path = tmp_path / "stick1.json"
-    cm.save(config, path)
+    cm.save(container, config)
 
-    reopened = cm.open(path)
+    reopened = cm.open(container, "stick1")
     assert reopened.account.username == "ivanov"
     assert reopened.packages == ["vim", "htop"]
+
+
+def test_a_configuration_is_not_a_file_next_to_the_container(container, tmp_path):
+    """Рядом с контейнером не появляется ни одного файла конфигурации.
+
+    Проверяется именно отсутствие: до 09.09.2026 `configs/*.json` лежали
+    открытым текстом, и заметить это по коду было трудно -- там не было
+    ничего похожего на ошибку, просто другое хранилище.
+    """
+    cm = ConfigManager()
+    cm.create(container, "stick1", "debian")
+
+    assert list(tmp_path.glob("**/*.json")) == []
+    assert [record.name for record in container.list_configs()] == ["stick1"]
 
 
 def test_external_validator_unavailable_when_command_missing():
@@ -70,9 +89,9 @@ def test_external_validator_unavailable_when_command_missing():
         validator.validate(config)
 
 
-def test_list_configs_empty_directory(tmp_path):
+def test_list_configs_is_empty_in_a_fresh_container(container):
     cm = ConfigManager()
-    assert cm.list_configs(tmp_path / "nonexistent") == []
+    assert cm.list_configs(container) == []
 
 
 def test_configuration_is_checked_by_the_distributions_own_tool(make_config, monkeypatch):

@@ -33,8 +33,8 @@ class BuildWizardFrame(WizardFrame):
         self.app = app
         self.image_path = ""
         self.destination = ""
-        self.selected_config_path: Path | None = None
-        self._valid_paths: list[Path] = []
+        self.selected_config_name: str | None = None
+        self._valid_names: list[str] = []
         self.extra_packages: list[str] = []
         self._running = False
         self._result = None
@@ -108,10 +108,10 @@ class BuildWizardFrame(WizardFrame):
         # сохранивший конфигурацию, не находил её здесь и не мог понять,
         # почему. Собирать из непроверенной по-прежнему нельзя -- отказ
         # приходит при попытке выбрать, и он называет причину.
-        self._paths = []
-        self._valid_paths = []
-        for path in self.app.config_manager.list_configs(self.app.configs_dir):
-            config = self.app.config_manager.open(path)
+        self._names = []
+        self._valid_names = []
+        for name in self.app.config_manager.list_configs(self.app.container):
+            config = self.app.config_manager.open(self.app.container, name)
             profile = "киоск" if config.kiosk.enabled else "консоль"
             if config.kiosk.enabled:
                 profile += f" / {config.kiosk.desktop_environment}"
@@ -119,21 +119,21 @@ class BuildWizardFrame(WizardFrame):
                 "valid": "проверена",
                 "invalid": "с ошибками",
             }.get(config.validation_status, "не проверена")
-            self._paths.append((path, config.validation_status))
+            self._names.append((name, config.validation_status))
             if config.validation_status == "valid":
-                self._valid_paths.append(path)
+                self._valid_names.append(name)
             self.config_table.insert(
-                "", "end", values=(path.name, config.target_os, profile, state)
+                "", "end", values=(name, config.target_os, profile, state)
             )
 
-        if not self._paths:
+        if not self._names:
             ttk.Label(
                 body,
                 text="Конфигураций пока нет. Создайте её в разделе «Конфигурации».",
                 style="Warning.TLabel",
                 wraplength=theme.TEXT_WRAP,
             ).pack(anchor="w", pady=(theme.SPACE_SM, 0))
-        elif not self._valid_paths:
+        elif not self._valid_names:
             ttk.Label(
                 body,
                 text="Ни одна конфигурация не проверена. Откройте раздел «Конфигурации» "
@@ -147,18 +147,18 @@ class BuildWizardFrame(WizardFrame):
         if not selection:
             self.message_bar.error("Выберите конфигурацию.")
             return False
-        path, status = self._paths[self.config_table.index(selection[0])]
+        name, status = self._names[self.config_table.index(selection[0])]
         if status != "valid":
             # Причина называется здесь, а не выражается отсутствием строки.
             reason = {
                 "invalid": "она не прошла проверку",
             }.get(status, "она ещё не проверена")
             self.message_bar.error(
-                f"Из «{path.name}» собрать нельзя: {reason}. Откройте раздел «Конфигурации», "
+                f"Из «{name}» собрать нельзя: {reason}. Откройте раздел «Конфигурации», "
                 "нажмите «Проверить» и вернитесь сюда."
             )
             return False
-        self.selected_config_path = path
+        self.selected_config_name = name
         return True
 
     # -- step 2: the administrator's own packages ---------------------------
@@ -197,7 +197,7 @@ class BuildWizardFrame(WizardFrame):
         два списка -- и интерфейс принимал бы файл, который сборка отвергнет
         через полчаса работы.
         """
-        config = self.app.config_manager.open(self.selected_config_path)
+        config = self.app.config_manager.open(self.app.container, self.selected_config_name)
         return OSInstaller.PACKAGE_SUFFIX.get(config.target_os, "")
 
     def _refresh_packages(self) -> None:
@@ -273,12 +273,12 @@ class BuildWizardFrame(WizardFrame):
 
     # -- step 3: build ------------------------------------------------------
     def _build_step_run(self, body: ttk.Frame) -> None:
-        config = self.app.config_manager.open(self.selected_config_path)
+        config = self.app.config_manager.open(self.app.container, self.selected_config_name)
         summary = ttk.Frame(body)
         summary.pack(fill="x")
         for label, value in (
             ("Образ:", Path(self.image_path).name),
-            ("Конфигурация:", self.selected_config_path.name),
+            ("Конфигурация:", self.selected_config_name),
             ("Режим:", "киоск" if config.kiosk.enabled else "консольная система"),
             ("Свои пакеты:", ", ".join(Path(p).name for p in self.extra_packages) or "нет"),
             ("Куда:", self.destination),
@@ -322,7 +322,7 @@ class BuildWizardFrame(WizardFrame):
     def _start(self) -> None:
         if self._running:
             return
-        config = self.app.config_manager.open(self.selected_config_path)
+        config = self.app.config_manager.open(self.app.container, self.selected_config_name)
         self._running = True
         self.start_btn.configure(state="disabled")
         self.back_btn.configure(state="disabled")

@@ -79,19 +79,23 @@ class ConfigsListFrame(ttk.Frame):
     def _refresh_table(self) -> None:
         for item in self.table.get_children():
             self.table.delete(item)
-        self._paths = self.app.config_manager.list_configs(self.app.configs_dir)
-        self.placeholder.update(not self._paths)
-        for path in self._paths:
-            config = self.app.config_manager.open(path)
-            self.table.insert("", "end", values=(path.name, config.target_os, config.release, config.validation_status))
+        # Список берётся из контейнера -- там же, где носители и записи
+        # восстановления. Файлов рядом с ним больше нет.
+        self._names = self.app.config_manager.list_configs(self.app.container)
+        self.placeholder.update(not self._names)
+        for name in self._names:
+            config = self.app.config_manager.open(self.app.container, name)
+            self.table.insert(
+                "", "end",
+                values=(name, config.target_os, config.release, config.validation_status),
+            )
 
-    def _selected_path(self) -> Path | None:
+    def _selected_name(self) -> "str | None":
         selection = self.table.selection()
         if not selection:
             self.message_bar.error("Выберите конфигурацию в таблице.")
             return None
-        index = self.table.index(selection[0])
-        return self._paths[index]
+        return self._names[self.table.index(selection[0])]
 
     def _create_new(self) -> None:
         from .config_wizard import ConfigWizardFrame
@@ -99,50 +103,52 @@ class ConfigsListFrame(ttk.Frame):
         self.app.show_frame(ConfigWizardFrame)
 
     def _edit_selected(self) -> None:
-        path = self._selected_path()
-        if path is None:
+        name = self._selected_name()
+        if name is None:
             return
         from .config_wizard import ConfigWizardFrame
 
-        self.app.show_frame(ConfigWizardFrame, config_path=path)
+        self.app.show_frame(ConfigWizardFrame, config_name=name)
 
     def _validate_selected(self) -> None:
-        path = self._selected_path()
-        if path is None:
+        name = self._selected_name()
+        if name is None:
             return
-        config = self.app.config_manager.open(path)
+        config = self.app.config_manager.open(self.app.container, name)
         try:
             self.app.config_manager.validate(config)
         except ConfigValidationUnavailableError as exc:
             self.message_bar.error(f"Проверка недоступна: {exc}")
             return
-        self.app.config_manager.save(config, path)
+        self.app.config_manager.save(self.app.container, config)
+        self.app.save_container()
         if config.validation_status == "valid":
-            self.message_bar.success(f"«{path.name}»: конфигурация корректна.")
+            self.message_bar.success(f"«{name}»: конфигурация корректна.")
         else:
-            self.message_bar.error(f"«{path.name}»: " + "; ".join(config.validation_errors))
+            self.message_bar.error(f"«{name}»: " + "; ".join(config.validation_errors))
         self._refresh_table()
 
     def _install_selected(self) -> None:
-        path = self._selected_path()
-        if path is None:
+        name = self._selected_name()
+        if name is None:
             return
-        config = self.app.config_manager.open(path)
+        config = self.app.config_manager.open(self.app.container, name)
         if config.validation_status != "valid":
             self.message_bar.error(
-                f"«{path.name}» ещё не прошла проверку (статус: {config.validation_status}). "
+                f"«{name}» ещё не прошла проверку (статус: {config.validation_status}). "
                 "Нажмите «Проверить» перед установкой."
             )
             return
         from .install_wizard import InstallWizardFrame
 
-        self.app.show_frame(InstallWizardFrame, config_path=path)
+        self.app.show_frame(InstallWizardFrame, config_name=name)
 
     def _delete_selected(self) -> None:
-        path = self._selected_path()
-        if path is None:
+        name = self._selected_name()
+        if name is None:
             return
         with error_guard(self.message_bar):
-            path.unlink()
-            self.message_bar.success(f"«{path.name}» удалена.")
+            self.app.config_manager.delete(self.app.container, name)
+            self.app.save_container()
+            self.message_bar.success(f"«{name}» удалена.")
         self._refresh_table()
