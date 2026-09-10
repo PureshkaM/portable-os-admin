@@ -869,7 +869,9 @@ class RedOSInstallBackend(InstallBackend):
         }
         return files
 
-    def bootloader_commands(self, layout: MediaLayout, config: InstallConfig) -> list[list[str]]:
+    def bootloader_commands(
+        self, layout: MediaLayout, config: InstallConfig, *, overlay_root: bool = False
+    ) -> list[list[str]]:
         """Загрузчик ставится копированием, а не grub2-install.
 
         В RHEL-семействе `grub2-install` для EFI отключён патчем Red Hat и
@@ -931,7 +933,14 @@ class RedOSInstallBackend(InstallBackend):
             # На этом я и ошибся: grub2-mkconfig отвечает «нет такого файла»
             # про свой временный grub.cfg.new, и по сообщению не догадаться,
             # что не найден каталог назначения.
-            self.chroot(root, "grub2-mkconfig", "-o", f"/boot/efi/{self.EFI_VENDOR_DIR}/grub.cfg"),
+            # Меню: своё, когда корень собран из образа. `grub2-mkconfig`
+            # спотыкается о то же, что и `update-grub` в Debian, -- он
+            # спрашивает `grub-probe`, на каком устройстве корень, а у
+            # overlay устройства нет. См. `grub_config_script`.
+            self.chroot(root, "sh", "-c", self.grub_config_script(
+                layout, config, f"/boot/efi/{self.EFI_VENDOR_DIR}/grub.cfg"))
+            if overlay_root
+            else self.chroot(root, "grub2-mkconfig", "-o", f"/boot/efi/{self.EFI_VENDOR_DIR}/grub.cfg"),
             # После генерации, а не до: grub2-mkconfig перезаписывает строку
             # `options` в записях BLS, и всё, что дописано раньше, теряется.
             #

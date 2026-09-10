@@ -769,7 +769,17 @@ class DebianInstallBackend(InstallBackend):
             )
         }
 
-    def bootloader_commands(self, layout: MediaLayout, config: InstallConfig) -> list[list[str]]:
+    def bootloader_commands(
+        self, layout: MediaLayout, config: InstallConfig, *, overlay_root: bool = False
+    ) -> list[list[str]]:
+        # Меню пишется своё, когда корень собран из образа: `update-grub`
+        # первым делом спрашивает `grub-probe`, на каком устройстве лежит
+        # корень, а у overlay устройства нет. См. `grub_config_script`.
+        write_menu = (
+            ["sh", "-c", self.grub_config_script(layout, config, "/boot/grub/grub.cfg")]
+            if overlay_root
+            else ["update-grub"]
+        )
         return [
             self.chroot(
                 layout.mount_root,
@@ -785,7 +795,7 @@ class DebianInstallBackend(InstallBackend):
                 "--no-nvram",
                 "--recheck",
             ),
-            self.chroot(layout.mount_root, "update-grub"),
+            self.chroot(layout.mount_root, *write_menu),
         ]
 
     #: В Debian загрузчик собирается на месте, поэтому «сохранённого» пункта

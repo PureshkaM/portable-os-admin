@@ -792,7 +792,7 @@ class OSInstaller:
         run(backend.initramfs_command(layout.mount_root), timeout=BOOTSTRAP_TIMEOUT)
 
         self._progress.step("Установка загрузчика на носитель")
-        for argv in backend.bootloader_commands(layout, config):
+        for argv in backend.bootloader_commands(layout, config, overlay_root=overlay_root):
             run(argv, timeout=BOOTSTRAP_TIMEOUT)
 
         self._progress.step("Запись модуля восстановления")

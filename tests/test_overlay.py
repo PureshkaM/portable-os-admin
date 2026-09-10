@@ -290,3 +290,72 @@ def test_the_administrator_can_turn_the_image_off(session, kiosk_config, big_dev
     assert not any(c.startswith("mount -t overlay") for c in commands), (
         "overlay собирается вопреки настройке"
     )
+
+
+def test_the_boot_menu_is_written_by_us_when_the_root_is_an_image(layout):
+    """Генератор дистрибутива на overlay-корне не работает, и это не мелочь.
+
+    `update-grub` (и `grub2-mkconfig` в RHEL-семействе) первым делом
+    выясняет, на каком устройстве лежит корень:
+    ``GRUB_DEVICE=`grub-probe --target=device /` `` -- присваивание
+    безусловное, подсказать нельзя. У overlay устройства нет, и запись на
+    настоящую флешку 09.09.2026 остановилась на пятнадцатом шаге из
+    восемнадцати с «failed to get canonical path of 'poa-overlay'».
+
+    Поэтому при системе из образа меню пишется своё: у носителя ровно один
+    пункт, и всё, что в нём стоит, известно программе.
+    """
+    from portable_os_admin.config import InstallConfig
+    from portable_os_admin.install.backends import get_backend
+
+    config = InstallConfig.create_default("stick", "debian")
+    layout.boot_uuid = "1111-2222"
+
+    for family in ("debian", "redos"):
+        backend = get_backend(family)
+        commands = [" ".join(c) for c in backend.bootloader_commands(layout, config, overlay_root=True)]
+        joined = "\n".join(commands)
+
+        assert "update-grub" not in joined, f"{family}: зовётся генератор, который тут не работает"
+        assert "grub2-mkconfig" not in joined, f"{family}: то же для RHEL-семейства"
+        assert "1111-2222" in joined, f"{family}: меню не находит /boot по UUID"
+        assert f"root={layout.mapper_path}" in joined, f"{family}: в меню нет корня носителя"
+
+
+def test_the_distributions_own_generator_stays_for_the_plain_root(layout):
+    """Без образа всё как было: конфигурацию собирает сам дистрибутив.
+
+    Свой `grub.cfg` -- вынужденная мера для overlay, а не улучшение вообще:
+    там, где штатный генератор работает, он и остаётся, потому что знает про
+    своё семейство больше, чем мы.
+    """
+    from portable_os_admin.config import InstallConfig
+    from portable_os_admin.install.backends import get_backend
+
+    config = InstallConfig.create_default("stick", "debian")
+
+    debian = " ".join(" ".join(c) for c in get_backend("debian").bootloader_commands(layout, config))
+    redos = " ".join(" ".join(c) for c in get_backend("redos").bootloader_commands(layout, config))
+
+    assert "update-grub" in debian
+    assert "grub2-mkconfig" in redos
+
+
+def test_the_menu_finds_the_kernel_by_name_on_the_medium(layout):
+    """Имя ядра программа не знает и не выдумывает -- ищет на месте.
+
+    Версия ядра приходит с образом, и захардкоженное имя разошлось бы с
+    первым же обновлением дистрибутива. Скрипт берёт последнее по версии и
+    отказывается, если ядра или initramfs нет, -- вместо того чтобы записать
+    меню, которое ничего не загрузит.
+    """
+    from portable_os_admin.config import InstallConfig
+    from portable_os_admin.install.backends import get_backend
+
+    config = InstallConfig.create_default("stick", "debian")
+    script = get_backend("debian").grub_config_script(layout, config, "/boot/grub/grub.cfg")
+
+    assert "ls -1 /boot/vmlinuz-*" in script
+    assert "sort -V | tail -1" in script, "берётся не последняя версия ядра"
+    assert "initrd.img-" in script and "initramfs-" in script, "учтено имя только одного семейства"
+    assert "exit 1" in script, "при отсутствии ядра меню всё равно пишется"
