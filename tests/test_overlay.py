@@ -319,7 +319,26 @@ def test_the_boot_menu_is_written_by_us_when_the_root_is_an_image(layout):
         assert "update-grub" not in joined, f"{family}: зовётся генератор, который тут не работает"
         assert "grub2-mkconfig" not in joined, f"{family}: то же для RHEL-семейства"
         assert "1111-2222" in joined, f"{family}: меню не находит /boot по UUID"
-        assert f"root={layout.mapper_path}" in joined, f"{family}: в меню нет корня носителя"
+        assert f"root={backend.overlay_root_parameter(layout)}" in joined, (
+            f"{family}: в меню нет корня носителя"
+        )
+        assert layout.mapper_path in joined, f"{family}: в меню нет тома носителя"
+
+
+def test_the_root_is_named_the_way_the_family_understands_it(layout):
+    """Одно и то же устройство названо по-разному, и разница не косметическая.
+
+    У initramfs-tools корень монтирует сам образ, а наш скрипт подменяет его
+    после -- поэтому `root=` там обычное устройство. У dracut корень трогать
+    нельзя никому, кроме нашего хука: systemd смонтирует контейнер, следом
+    штатный модуль `rootfs-block` размонтирует чужое монтирование, смонтирует
+    сам, забракует (в контейнере нет ни /proc, ни /sbin/init) и уйдёт в
+    аварийную оболочку. Проверено загрузкой РЕД ОС 10.09.2026.
+    """
+    from portable_os_admin.install.backends import get_backend
+
+    assert get_backend("debian").overlay_root_parameter(layout) == layout.mapper_path
+    assert get_backend("redos").overlay_root_parameter(layout) == f"poa:{layout.mapper_path}"
 
 
 def test_the_distributions_own_generator_stays_for_the_plain_root(layout):
@@ -493,3 +512,62 @@ def test_the_container_is_remounted_writable_before_the_overlay():
     assert script.index("remount,rw") < script.index("lowerdir="), (
         "перемонтирование идёт после сборки overlay -- то есть поздно"
     )
+
+
+def test_dracut_is_told_that_our_root_is_legal(layout):
+    """Модуль объявляет корень `poa:` своим — иначе dracut его не примет.
+
+    Без такого объявления dracut отвечает, что не знает, как обращаться с
+    заданным корнем, и уходит в аварийную оболочку ещё до монтирования.
+    Заодно объявляется ожидание устройства: зашифрованный том появляется
+    позже, а без ожидания очередь initramfs закончится раньше него.
+    """
+    from portable_os_admin.install.backends import get_backend
+
+    files = get_backend("redos").overlay_boot_files(layout)
+    parse = files["usr/lib/dracut/modules.d/50poa-overlay/poa-overlay-parse.sh"][0]
+
+    assert "rootok=1" in parse, "корень не объявлен законным"
+    assert "wait_for_dev" in parse, "устройство корня не ожидается"
+    assert "poa:*" in parse, "разбирается не наш корень"
+
+
+def test_the_dracut_hook_builds_the_root_instead_of_replacing_it(layout):
+    """Хук монтирует контейнер сам и встаёт на место монтирования корня.
+
+    Прежняя версия ждала уже смонтированный корень и подменяла его в
+    `pre-pivot`. На dracut до `pre-pivot` дело не доходило: корень
+    размонтировал и забраковал штатный модуль `rootfs-block` (загрузка
+    РЕД ОС + KDE 10.09.2026, «Can't mount root filesystem»).
+    """
+    from portable_os_admin.install.backends import get_backend
+
+    files = get_backend("redos").overlay_boot_files(layout)
+    setup = files["usr/lib/dracut/modules.d/50poa-overlay/module-setup.sh"][0]
+    hook = files["usr/lib/dracut/modules.d/50poa-overlay/poa-overlay-hook.sh"][0]
+
+    assert "inst_hook mount 90" in setup, "хук не встаёт на монтирование корня"
+    assert "pre-pivot" not in setup, "остался хук, до которого загрузка не доходит"
+    assert f"mount /dev/mapper/{layout.mapper_name}" in hook, "контейнер не монтируется"
+    assert 'mount -o move "$NEWROOT"' not in hook, "хук всё ещё переносит чужое монтирование"
+
+
+def test_the_dracut_hook_does_not_leave_strict_mode_behind(layout):
+    """`set -u` в хуке dracut остаётся включённым и после него.
+
+    Хуки исполняются через `.`, то есть в оболочке самого dracut. Строгий
+    режим пережил бы наш скрипт и уронил бы чужой код на первой необъявленной
+    переменной — отказ выглядел бы как поломка dracut, без всякой связи с
+    нами.
+    """
+    from portable_os_admin.install.backends import get_backend
+    from portable_os_admin.install import overlay
+
+    hook = get_backend("redos").overlay_boot_files(layout)[
+        "usr/lib/dracut/modules.d/50poa-overlay/poa-overlay-hook.sh"
+    ][0]
+
+    assert "set -u" not in hook, "строгий режим утечёт в оболочку dracut"
+    assert "return 0" in hook, "чужой корень не пропускается без выхода из dracut"
+    # У initramfs-tools скрипт запускается сам по себе, и там строгий режим уместен.
+    assert "set -u" in overlay.boot_script("poa-x")
