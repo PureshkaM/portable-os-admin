@@ -319,33 +319,29 @@ def test_the_boot_menu_is_written_by_us_when_the_root_is_an_image(layout):
         assert "update-grub" not in joined, f"{family}: зовётся генератор, который тут не работает"
         assert "grub2-mkconfig" not in joined, f"{family}: то же для RHEL-семейства"
         assert "1111-2222" in joined, f"{family}: меню не находит /boot по UUID"
-        assert f"root={backend.overlay_root_parameter(layout)}" in joined, (
-            f"{family}: в меню нет корня носителя"
+        assert backend.overlay_root_arguments(layout) in joined, (
+            f"{family}: в меню нет описания корня"
         )
-        if backend.overlay_root_parameter(layout) == layout.mapper_path:
-            assert layout.mapper_path in joined, f"{family}: в меню нет тома носителя"
 
 
 def test_the_root_is_named_the_way_the_family_understands_it(layout):
-    """Одно и то же устройство названо по-разному, и разница не косметическая.
+    """Одно и то же устройство описано по-разному, и разница не косметическая.
 
     У initramfs-tools корень монтирует сам образ, а наш скрипт подменяет его
-    после -- поэтому `root=` там обычное устройство. У dracut корень трогать
-    нельзя никому, кроме нашего хука: systemd смонтирует контейнер, следом
-    штатный модуль `rootfs-block` размонтирует чужое монтирование, смонтирует
-    сам, забракует (в контейнере нет ни /proc, ни /sbin/init) и уйдёт в
-    аварийную оболочку. Проверено загрузкой РЕД ОС 10.09.2026.
+    после -- поэтому `root=` там обычное устройство. У dracut корня в
+    командной строке нет вовсе: любое значение `root=` монтирует systemd
+    внутри initramfs, ещё до всякого нашего хука. Три загрузки РЕД ОС
+    10.09.2026 перебрали все варианты -- устройство, `poa:<устройство>`,
+    `poa`, -- и каждый кончался аварийной оболочкой со своим сообщением.
     """
     from portable_os_admin.install.backends import get_backend
 
-    assert get_backend("debian").overlay_root_parameter(layout) == layout.mapper_path
+    debian = get_backend("debian").overlay_root_arguments(layout)
+    assert debian == f"root={layout.mapper_path}"
 
-    redos = get_backend("redos").overlay_root_parameter(layout)
-    assert redos == "poa", "корень dracut назван не одним словом"
-    # Двоеточия быть не должно: `mount` из util-linux разбирает `что-то:путь`
-    # как сетевой ресурс, и загрузка 10.09.2026 остановилась на «unknown
-    # filesystem type 'nfs'» ещё до всякого нашего хука.
-    assert ":" not in redos, "значение с двоеточием mount примет за адрес NFS"
+    redos = get_backend("redos").overlay_root_arguments(layout)
+    assert redos == "rd.poa.overlay=1", "признак корня из образа назван иначе"
+    assert "root=" not in redos, "в командной строке dracut не должно быть root="
 
 
 def test_the_distributions_own_generator_stays_for_the_plain_root(layout):
@@ -536,7 +532,8 @@ def test_dracut_is_told_that_our_root_is_legal(layout):
 
     assert "rootok=1" in parse, "корень не объявлен законным"
     assert "wait_for_dev" in parse, "устройство корня не ожидается"
-    assert "poa)" in parse, "разбирается не наш корень"
+    assert "rd.poa.overlay" in parse, "разбирается не наш признак"
+    assert "/etc/cmdline.d" in parse, "корень не объявлен там, где его увидит dracut"
     assert layout.mapper_name in parse, "ожидается не тот том"
 
 
@@ -577,5 +574,6 @@ def test_the_dracut_hook_does_not_leave_strict_mode_behind(layout):
 
     assert "set -u" not in hook, "строгий режим утечёт в оболочку dracut"
     assert "return 0" in hook, "чужой корень не пропускается без выхода из dracut"
+    assert "rd.poa.overlay" in hook, "хук не проверяет, что корень собирает он"
     # У initramfs-tools скрипт запускается сам по себе, и там строгий режим уместен.
     assert "set -u" in overlay.boot_script("poa-x")
