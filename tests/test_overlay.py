@@ -322,7 +322,8 @@ def test_the_boot_menu_is_written_by_us_when_the_root_is_an_image(layout):
         assert f"root={backend.overlay_root_parameter(layout)}" in joined, (
             f"{family}: в меню нет корня носителя"
         )
-        assert layout.mapper_path in joined, f"{family}: в меню нет тома носителя"
+        if backend.overlay_root_parameter(layout) == layout.mapper_path:
+            assert layout.mapper_path in joined, f"{family}: в меню нет тома носителя"
 
 
 def test_the_root_is_named_the_way_the_family_understands_it(layout):
@@ -338,7 +339,13 @@ def test_the_root_is_named_the_way_the_family_understands_it(layout):
     from portable_os_admin.install.backends import get_backend
 
     assert get_backend("debian").overlay_root_parameter(layout) == layout.mapper_path
-    assert get_backend("redos").overlay_root_parameter(layout) == f"poa:{layout.mapper_path}"
+
+    redos = get_backend("redos").overlay_root_parameter(layout)
+    assert redos == "poa", "корень dracut назван не одним словом"
+    # Двоеточия быть не должно: `mount` из util-linux разбирает `что-то:путь`
+    # как сетевой ресурс, и загрузка 10.09.2026 остановилась на «unknown
+    # filesystem type 'nfs'» ещё до всякого нашего хука.
+    assert ":" not in redos, "значение с двоеточием mount примет за адрес NFS"
 
 
 def test_the_distributions_own_generator_stays_for_the_plain_root(layout):
@@ -529,7 +536,8 @@ def test_dracut_is_told_that_our_root_is_legal(layout):
 
     assert "rootok=1" in parse, "корень не объявлен законным"
     assert "wait_for_dev" in parse, "устройство корня не ожидается"
-    assert "poa:*" in parse, "разбирается не наш корень"
+    assert "poa)" in parse, "разбирается не наш корень"
+    assert layout.mapper_name in parse, "ожидается не тот том"
 
 
 def test_the_dracut_hook_builds_the_root_instead_of_replacing_it(layout):
