@@ -741,6 +741,21 @@ class OSInstaller:
             self._progress.step("Подключение служебных разделов")
             self._mount_boot_partition(layout, state, plan, dry_run, confirm_device)
             self._mount_logs_volume(layout, state, plan, dry_run, confirm_device)
+            # То, что образ держит на этих путях, надо перенести на сами
+            # разделы -- иначе пустой раздел накрывает содержимое образа.
+            #
+            # Те же грабли, что были с раскладкой деревом, но с другой
+            # стороны. Там их обошли порядком: разделы подключали до
+            # копирования, и файлы ложились уже на них. Здесь порядок обратный
+            # по необходимости -- корня до сборки overlay не существует, -- и
+            # обойти нечем: ядро и initramfs лежат в образе, а раздел /boot
+            # приходит пустым и прячет их. Запись на настоящую флешку
+            # 09.09.2026 остановилась именно на этом: генератор меню не нашёл
+            # в /boot ни одного ядра.
+            for path in ("boot", "var/log"):
+                run(["sh", "-c",
+                     f"cp -a {overlay.LOWER_MOUNT}/{path}/. {layout.mount_root}/{path}/ 2>/dev/null || true"],
+                    timeout=BOOTSTRAP_TIMEOUT)
         elif distribution.is_squashfs(metadata.archive):
             # Эталон монтируется только на чтение, и система копируется из него
             # в уже открытый том. Копия сохраняет владельцев, права, ACL и
@@ -820,6 +835,28 @@ class OSInstaller:
             target = f"{layout.mount_root}/{relative}"
             run(["mkdir", "-p", target.rsplit("/", 1)[0]])
             self._write_file(target, content, plan, dry_run, confirm_device)
+
+        # Скрипты, которых не могло быть в образе: они зависят от носителя.
+        #
+        # Всё, что одинаково для всех носителей из одного дистрибутива, уже
+        # лежит в образе -- туда его положила сборка. Но часть скриптов
+        # требует раскладки: имя отображения LUKS, идентификатор носителя.
+        # Такие пишутся здесь, и берётся ровно разница между двумя наборами,
+        # чтобы не переписывать образ поверх самого себя.
+        #
+        # Найдено загрузкой с флешки 10.09.2026: хуки, собирающие корень из
+        # образа, не попадали никуда -- в образ их не кладут (там ещё нет
+        # тома), а развёртывание писало только `config_files`. Носитель дошёл
+        # до аварийной оболочки: том открыт, а собрать из него корень некому.
+        common = backend.scripted_files(config, image=self._image)
+        for relative, (content, mode) in backend.scripted_files(
+            config, layout, image=self._image
+        ).items():
+            if relative in common:
+                continue
+            target = f"{layout.mount_root}/{relative}"
+            run(["mkdir", "-p", target.rsplit("/", 1)[0]])
+            self._write_file(target, content, plan, dry_run, confirm_device, mode=mode)
 
         run(["mkdir", "-p", f"{layout.mount_root}/{SERVICE_KEY_DIR}"])
         self._write_file(

@@ -359,3 +359,103 @@ def test_the_menu_finds_the_kernel_by_name_on_the_medium(layout):
     assert "sort -V | tail -1" in script, "берётся не последняя версия ядра"
     assert "initrd.img-" in script and "initramfs-" in script, "учтено имя только одного семейства"
     assert "exit 1" in script, "при отсутствии ядра меню всё равно пишется"
+
+
+def test_what_the_image_keeps_on_the_service_volumes_is_carried_onto_them(
+    session, kiosk_config, big_device, tmp_path
+):
+    """Пустой раздел не должен накрывать то, что лежит в образе.
+
+    Дважды пройденные грабли, теперь с третьей стороны. При раскладке деревом
+    их обходили порядком: /boot и том журналов подключали до копирования, и
+    файлы ложились уже на них. При системе из образа порядок обратный по
+    необходимости -- корня до сборки overlay не существует, -- и обойти
+    нечем: ядро с initramfs лежат внутри образа, а раздел /boot приходит
+    пустым и прячет их.
+
+    Запись на настоящую флешку 09.09.2026 остановилась именно на этом:
+    генератор меню не нашёл в /boot ни одного ядра, потому что видел пустой
+    раздел. То же самое ждало /var/log -- каталоги auditd и прочих служб
+    остались бы в образе, а том журналов пришёл бы пустым.
+    """
+    commands = _deployed_commands(session, kiosk_config, big_device, tmp_path)
+
+    mounted_boot = next(i for i, c in enumerate(commands) if c.rstrip().endswith("/boot"))
+    copied = [i for i, c in enumerate(commands) if "cp -a" in c and "/run/poa/lower" in c]
+    assert copied, "содержимое образа не переносится на служебные разделы"
+    assert min(copied) > mounted_boot, "перенос идёт до подключения разделов"
+
+    joined = "\n".join(commands[i] for i in copied)
+    assert "/boot/." in joined, "ядро остаётся спрятанным под пустым /boot"
+    assert "/var/log/." in joined, "каталоги служб остаются в образе"
+
+    # И всё это -- до сборки initramfs и меню, которым эти файлы нужны.
+    built = next(i for i, c in enumerate(commands) if "initramfs" in c or "dracut" in c)
+    assert max(copied) < built, "образ переносится после того, как его содержимое уже понадобилось"
+
+
+def test_the_encrypted_root_is_named_in_the_initramfs_explicitly(layout):
+    """Образ должен знать про шифрование, даже когда корень -- overlay.
+
+    cryptsetup-initramfs обычно обходится без подсказки: он смотрит, какое
+    устройство держит корень, находит его в crypttab и включает описание в
+    образ. У носителя с системой из образа корень -- overlay, устройства у
+    него нет, и хук не включает ничего.
+
+    Загрузка с настоящей флешки 10.09.2026 показала это в чистом виде:
+    носитель дошёл до аварийной оболочки initramfs, не спросив пароля, а
+    `/conf/conf.d/cryptroot` в образе отсутствовал. Опция `initramfs` в
+    crypttab -- то самое явное указание, и она описана в crypttab(5).
+    """
+    from portable_os_admin.config import InstallConfig
+    from portable_os_admin.install.backends import get_backend
+
+    config = InstallConfig.create_default("stick", "debian")
+    layout.luks_uuid = "aaaa-bbbb"
+
+    crypttab = get_backend("debian")._crypttab(layout, config)
+    root_line = next(line for line in crypttab.splitlines() if layout.mapper_name in line)
+
+    assert "initramfs" in root_line, "образ не узнает, что корень зашифрован"
+    assert "luks" in root_line and "discard" in root_line, "прежние опции корня потеряны"
+
+
+def test_the_medium_gets_the_scripts_that_could_not_be_in_the_image(
+    session, kiosk_config, big_device, tmp_path
+):
+    """Хуки, собирающие корень, доезжают до носителя.
+
+    В образ их не кладут: там ещё нет ни тома, ни имени его отображения. А
+    развёртывание писало только `config_files` -- и хуки не попадали никуда.
+
+    Загрузка с флешки 10.09.2026 показала это в чистом виде: пароль принят,
+    том открыт, `/dev/mapper/poa-...` на месте -- и аварийная оболочка, потому
+    что собрать из образа корень оказалось некому. В `/scripts/local-bottom`
+    лежали только штатные скрипты дистрибутива.
+    """
+    from portable_os_admin.install.installer import OSInstaller
+
+    directory = tmp_path / "dist"
+    directory.mkdir()
+    from portable_os_admin.install import distribution
+
+    archive = directory / distribution.ARCHIVE_NAME
+    archive.write_bytes(b"not a real image")
+    metadata = distribution.DistributionMetadata.for_config(
+        kiosk_config, release="trixie", arch="amd64", rootfs_bytes=1024, emulated=False
+    )
+    metadata.sha256 = distribution.sha256_of(str(archive))
+    distribution.write_metadata(str(directory), metadata)
+
+    result = OSInstaller(session).deploy_distribution(
+        big_device, str(directory), b"user-passphrase", dry_run=True, confirm_device="/dev/sdb"
+    )
+    written = [" ".join(r.argv) for r in result.plan.results]
+
+    assert any("local-bottom" in c for c in written), (
+        "хук, собирающий корень из образа, не доезжает до носителя"
+    )
+    # А то, что и так лежит в образе, второй раз не пишется.
+    assert not any("poa-kiosk-apply" in c for c in written), (
+        "образ переписывается поверх самого себя"
+    )
