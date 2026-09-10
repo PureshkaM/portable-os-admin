@@ -150,8 +150,21 @@ mkdir -p "$container" "$lower" || fail "не создать точки монт�
 
 # Контейнер уже смонтирован как корень: переносим его, не размонтируя, чтобы
 # не потерять открытые файлы и не зависеть от порядка.
-mount --move "$__ROOTMNT__" "$container" 2>/dev/null || \\
+#
+# `-o move`, а не `--move`: в initramfs команду выполняет BusyBox, а он
+# длинных опций не знает. Проверено загрузкой с флешки 10.09.2026 -- перенос
+# молча не срабатывал (вывод отправлен в /dev/null), а следом попытка
+# смонтировать том второй раз падала с «Device or resource busy», потому что
+# он уже был корнем.
+mount -o move "$__ROOTMNT__" "$container" 2>/dev/null || \\
+    mount --move "$__ROOTMNT__" "$container" 2>/dev/null || \\
     mount /dev/mapper/{mapper_name} "$container" || fail "не смонтировать контейнер"
+
+# Контейнер нужен на запись: слой изменений лежит на нём. Ядро монтирует
+# корень только для чтения (`ro` в командной строке -- так принято, чтобы
+# systemd перемонтировал его сам после проверки), и overlay с таким upperdir
+# просто не соберётся.
+mount -o remount,rw "$container" 2>/dev/null || true
 
 [ -f "$image" ] || fail "в контейнере нет $image"
 
@@ -170,7 +183,8 @@ mount -t overlay poa-overlay \\
 # Контейнер должен остаться доступным изнутри системы: на нём лежит и образ, и
 # слой изменений, и размонтировать его нельзя, пока система работает.
 mkdir -p "$__ROOTMNT__{CONTAINER_MOUNT}"
-mount --move "$container" "$__ROOTMNT__{CONTAINER_MOUNT}" 2>/dev/null || true
+mount -o move "$container" "$__ROOTMNT__{CONTAINER_MOUNT}" 2>/dev/null || \\
+    mount --move "$container" "$__ROOTMNT__{CONTAINER_MOUNT}" 2>/dev/null || true
 """
     return script.replace("__ROOTMNT__", rootmnt_var)
 

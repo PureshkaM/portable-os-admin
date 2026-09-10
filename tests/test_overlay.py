@@ -459,3 +459,37 @@ def test_the_medium_gets_the_scripts_that_could_not_be_in_the_image(
     assert not any("poa-kiosk-apply" in c for c in written), (
         "образ переписывается поверх самого себя"
     )
+
+
+def test_the_boot_script_speaks_busybox():
+    """В initramfs команды выполняет BusyBox, а он длинных опций не знает.
+
+    Загрузка с флешки 10.09.2026: `mount --move` молча не срабатывал -- вывод
+    уходил в /dev/null, -- и следом попытка смонтировать том второй раз
+    падала с «Device or resource busy», потому что он уже был корнем. Носитель
+    оставался в аварийной оболочке при открытом томе и доехавших хуках.
+
+    Тот же класс ошибки, что уже ловили в этом проекте: команда, написанная
+    для полноценной системы и выполненная в initramfs.
+    """
+    script = overlay.boot_script("poa-abc123")
+
+    assert "mount -o move" in script, "перенос точки монтирования не по-BusyBox'овски"
+    move_at = script.index("mount -o move")
+    long_at = script.index("mount --move")
+    assert move_at < long_at, "короткая форма должна идти первой, длинная -- запасной"
+
+
+def test_the_container_is_remounted_writable_before_the_overlay():
+    """Слой изменений лежит на контейнере, а корень ядро монтирует только на чтение.
+
+    `ro` в командной строке -- обычное дело: systemd перемонтирует корень сам
+    после проверки. Но overlay собирается раньше, и upperdir на томе только
+    для чтения не даёт собрать ничего.
+    """
+    script = overlay.boot_script("poa-abc123")
+
+    assert "remount,rw" in script, "контейнер остаётся только для чтения"
+    assert script.index("remount,rw") < script.index("lowerdir="), (
+        "перемонтирование идёт после сборки overlay -- то есть поздно"
+    )
