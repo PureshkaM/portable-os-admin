@@ -80,6 +80,17 @@ def test_the_boot_script_keeps_the_container_reachable():
     script = overlay.boot_script("poa-abc123")
 
     assert f"mount --move \"$container\" \"$rootmnt{overlay.CONTAINER_MOUNT}\"" in script
+    # Нижний слой -- тоже, и это стоило целого прогона 11.09.2026. Носитель
+    # доходил до graphical.target, после чего каждая служба падала с кодом 127,
+    # включая journald: overlay держится на смонтированном squashfs, а тот
+    # оставался в initramfs. Записи в верхний слой шли, уже открытые файлы
+    # работали, а любой новый exec из /usr получал "файла нет".
+    assert f"mount --move \"$lower\" \"$rootmnt{overlay.LOWER_MOUNT}\"" in script, (
+        "образ системы не переносится в новый корень"
+    )
+    # Сперва нижний слой, потом контейнер: оба лежат в /run/poa, и перенос
+    # родителя раньше ребёнка оставил бы ребёнка за бортом.
+    assert script.index('"$lower"') < script.index(f'"$rootmnt{overlay.CONTAINER_MOUNT}"')
 
 
 def test_the_root_is_not_described_in_fstab():
