@@ -99,6 +99,17 @@ def _advance_to(app, wizard, title: str, limit: int = 12):
     )
 
 
+def _descendants(widget):
+    """Все виджеты внутри, на любой глубине.
+
+    Проверять состав экрана по прямым потомкам нельзя: карточка складывается из
+    вложенных рамок, и поле ввода лежит в форме внутри неё, а не рядом.
+    """
+    for child in widget.winfo_children():
+        yield child
+        yield from _descendants(child)
+
+
 def _open_container(app, tmp_path):
     startup = app._current_frame
     assert isinstance(startup, StartupFrame)
@@ -252,6 +263,79 @@ def test_the_handover_step_refuses_a_medium_without_an_owner(gui_app, tmp_path):
     wizard.save_step(wizard.step_index)
     assert wizard.validate_step(wizard.step_index) is True
     assert wizard.media_owner == "Сидоров Пётр Петрович"
+
+
+def test_the_first_screen_asks_what_to_do_not_for_a_path(gui_app):
+    """Сперва действие, потом файл, потом пароль.
+
+    Прежде экран был формой с полем пути, полем пароля и двумя кнопками, и у
+    неё было два изъяна. Акцент стоял на «Открыть существующий» -- на машине,
+    где программу запустили впервые, это единственное невозможное действие.
+    А пустое поле пути означало относительный `admin.container`, то есть файл
+    ложился в текущий каталог процесса, запущенного через polkit от root:
+    администратор создавал контейнер и не знал где.
+    """
+    from portable_os_admin.gui.screens.startup import STAGE_CHOICE
+
+    startup = gui_app._current_frame
+    assert isinstance(startup, StartupFrame)
+    assert startup.stage == STAGE_CHOICE
+    # Поля пароля на первом шаге нет: спрашивать его не к чему, файл ещё не
+    # назван.
+    assert not any(
+        isinstance(widget, ttk.Entry) for widget in _descendants(startup.card)
+    ), "на экране выбора действия снова появились поля ввода"
+
+
+def test_choosing_a_container_moves_on_to_its_password(gui_app, tmp_path):
+    """Пароль спрашивается к уже названному файлу, а не «вообще»."""
+    from portable_os_admin.gui.screens.startup import MODE_OPEN, STAGE_PASSWORD
+
+    startup = gui_app._current_frame
+    target = tmp_path / "чужой.container"
+
+    startup._chosen(target, MODE_OPEN)
+    gui_app.update()
+
+    assert startup.stage == STAGE_PASSWORD
+    assert startup.path_var.get() == str(target)
+    # И путь виден: человек должен убедиться, что открывает то, что выбрал.
+    assert any(
+        str(target) in (widget.cget("text") or "")
+        for widget in _descendants(startup.card)
+        if isinstance(widget, ttk.Label)
+    ), "выбранный файл нигде не показан"
+
+
+def test_a_mistyped_new_password_is_refused_before_the_container_is_made(gui_app, tmp_path):
+    """Опечатка при создании запирает контейнер навсегда.
+
+    Опечатка в пароле к существующему контейнеру обнаруживается сразу -- он
+    просто не откроется. Опечатка при создании не обнаруживается ничем: узнают
+    о ней при следующем запуске, когда в контейнере уже лежит работа.
+    """
+    from portable_os_admin.gui.screens.startup import MODE_CREATE
+
+    app = gui_app
+    startup = app._current_frame
+    target = tmp_path / "новый.container"
+
+    startup._chosen(target, MODE_CREATE)
+    startup.password_var.set("CorrectHorse123")
+    startup.confirm_var.set("CorrectHorse124")
+    startup._confirm()
+    app.update()
+
+    assert app.session is None, "контейнер создан с неподтверждённым паролем"
+    assert not target.exists()
+    assert "не совпадают" in startup.message_bar.var.get()
+
+    startup.confirm_var.set("CorrectHorse123")
+    startup._confirm()
+    app.update()
+
+    assert app.session is not None
+    assert target.exists()
 
 
 def test_startup_wrong_password_shows_error(gui_app, tmp_path):
