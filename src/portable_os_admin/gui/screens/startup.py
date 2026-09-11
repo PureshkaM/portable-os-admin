@@ -90,14 +90,9 @@ class StartupFrame(ttk.Frame):
         self.message_bar.pack(fill="x", pady=(theme.SPACE_MD, 0))
 
     def _render_choice(self) -> None:
-        ttk.Label(self.card, text="Контейнер администратора", style="Title.TLabel").pack(anchor="w")
-        ttk.Label(
-            self.card,
-            text="В нём хранятся сведения о выданных носителях и данные восстановления.",
-            style="Muted.TLabel",
-            wraplength=theme.TEXT_WRAP,
-            justify="left",
-        ).pack(anchor="w", pady=(theme.SPACE_XS, theme.SPACE_LG))
+        ttk.Label(self.card, text="Контейнер администратора", style="Title.TLabel").pack(
+            anchor="w", pady=(0, theme.SPACE_LG)
+        )
 
         buttons = ttk.Frame(self.card)
         buttons.pack(anchor="w")

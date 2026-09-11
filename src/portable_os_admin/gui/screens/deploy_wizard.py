@@ -87,7 +87,7 @@ class DeployWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
                 "",
                 "",
                 "",
-                "Владелец обязателен. Файлы — нет, но здесь это дешевле, чем потом.",
+                "Владелец обязателен.",
                 "",
             ],
             finish_label="К панели",
@@ -203,8 +203,7 @@ class DeployWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
             "Имя носителя:",
             self.media_name_var,
             width=36,
-            hint="Например: «Иванов, бухгалтерия». Хранится в контейнере "
-            "администратора и на носитель не пишется — переименовать можно в любой момент.",
+            hint="например: «Иванов, бухгалтерия»",
         )
         # Владелец спрашивается отдельно от имени и обязателен.
         #
@@ -220,8 +219,6 @@ class DeployWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
             "Владелец (ФИО):",
             self.media_owner_var,
             width=36,
-            hint="Кому носитель выдаётся. Спрашивается при выдаче кода восстановления — "
-            "по этому имени администратор опознаёт звонящего.",
         )
 
         files = ttk.LabelFrame(body, text=" Файлы в раздел обмена ", padding=theme.SPACE_SM)
