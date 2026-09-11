@@ -763,7 +763,7 @@ def test_install_wizard_shows_no_valid_configs_guidance(gui_app, tmp_path):
     assert "конфигурац" in wizard.message_bar.var.get()
 
 
-def test_configs_list_delete(gui_app, tmp_path):
+def test_configs_list_delete(gui_app, tmp_path, monkeypatch):
     app = gui_app
     _open_container(app, tmp_path)
     name = _make_validated_debian_config(app)
@@ -772,11 +772,38 @@ def test_configs_list_delete(gui_app, tmp_path):
     app.show_frame(ConfigsListFrame)
     configs = app._current_frame
     configs.table.selection_set(configs.table.get_children()[0])
+    # С 11.09.2026 удаление спрашивает подтверждение. Без подмены модальный
+    # диалог под Xvfb ждал бы ответа, которого никто не даст: прогон вставал
+    # молча на середине, без единой строки о причине -- так это и выглядело.
+    monkeypatch.setattr("tkinter.messagebox.askyesno", lambda *a, **k: True)
     configs._delete_selected()
     app.update()
 
     assert app.config_manager.list_configs(app.container) == []
     assert configs._names == []
+
+
+def test_a_configuration_survives_a_refused_confirmation(gui_app, tmp_path, monkeypatch):
+    """«Нет» обязано означать «нет».
+
+    Подтверждение, которое спрашивает и удаляет в любом случае, хуже
+    отсутствующего: оно приучает нажимать не глядя. Конфигурацию вернуть
+    неоткуда -- с 09.09.2026 она живёт только внутри контейнера, файла рядом
+    больше нет, -- поэтому проверяется именно отказ, а не согласие.
+    """
+    app = gui_app
+    _open_container(app, tmp_path)
+    name = _make_validated_debian_config(app)
+
+    app.show_frame(ConfigsListFrame)
+    configs = app._current_frame
+    configs.table.selection_set(configs.table.get_children()[0])
+    monkeypatch.setattr("tkinter.messagebox.askyesno", lambda *a, **k: False)
+    configs._delete_selected()
+    app.update()
+
+    assert app.config_manager.list_configs(app.container) == [name], "удалено вопреки отказу"
+    assert configs._names == [name]
 
 
 def test_configurations_are_marked_against_the_chosen_image(gui_app, tmp_path, monkeypatch):
