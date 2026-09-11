@@ -15,10 +15,13 @@ upgrade that ran *before* the session would look to the user like a medium
 that takes ten minutes to start.
 
 **It writes where the administrator can read it.** The log goes to
-/var/log, which on this project's media is a separate unencrypted volume the
-administrator can open with their own key without the user's LUKS passphrase
-(see admin/logs.py). So "did that stick ever take the update?" is answerable
-by plugging it in, which for a fleet is the whole question.
+/var/log, which on this project's media is a separate LUKS volume the
+administrator opens with a service key kept in their own container, without
+the user's LUKS passphrase (see admin/logs.py). Until 11.09.2026 this said
+"a separate unencrypted volume the administrator can open with their own
+key", which contradicted both itself and the code. So "did that stick ever
+take the update?" is answerable by plugging it in, which for a fleet is the
+whole question.
 
 **It refuses to run rather than half-run.** No repository configured, no
 network, another package manager already running -- each is a clean exit with

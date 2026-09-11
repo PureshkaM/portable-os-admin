@@ -1,9 +1,14 @@
 """Log viewer (UC-5 "Просмотр журналов операционной системы").
 
-The log partition (POA_LOGS) is a plain ext4 filesystem outside the LUKS
-container (see install/disk.py) -- it holds plain-text `*.log` files written
-by the portable OS at runtime, so the administrator can read it without ever
-needing the user's LUKS passphrase. Mounted read-only here
+The log partition (POA_LOGS) is a LUKS volume of its own, separate from the
+system one: `installer.py` formats it with a service key that lives in the
+admin container, so the administrator opens it **without the user's LUKS
+passphrase** while the user cannot reach it outside the portable system.
+Until 11.09.2026 this docstring said "a plain ext4 filesystem outside the
+LUKS container", which was how it worked before the service volumes became
+encrypted -- and was the kind of stale claim that invites someone to mount
+the partition directly. This viewer receives an already-opened mapper path;
+opening it is `admin/service_volumes.py`. Mounted read-only here
 ("Пользователь переносной системы не должен иметь возможность изменять
 журналы... штатными средствами" is enforced OS-side by this being a
 read-only bind for the admin tool, and by not exposing the same access to

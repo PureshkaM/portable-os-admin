@@ -335,10 +335,37 @@ class InstallWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
         if not self.passphrase_var.get():
             self.message_bar.error("Введите пользовательский пароль (LUKS).")
             return False
+        # Длина проверяется и здесь, а не только в мастере развёртывания. Через
+        # этот мастер идёт первый сценарий администратора -- «Первый носитель»,
+        # -- и до 11.09.2026 он принимал фразу из одного знака: правку 28.08
+        # внесли в соседний экран и здесь не повторили. Лимит попыток LUKS от
+        # перебора не спасает, он действует только при загрузке носителя, а
+        # тот, у кого носитель в руках, снимает образ заголовка и перебирает
+        # офлайн, где счётчика нет.
+        minimum = self._passphrase_minimum()
+        if len(self.passphrase_var.get()) < minimum:
+            self.message_bar.error(
+                f"Парольная фраза короче {minimum} знаков. Носитель защищён только ею: "
+                "тот, у кого он окажется в руках, будет подбирать фразу на своей машине, "
+                "где счётчик попыток не действует."
+            )
+            return False
         if self.passphrase_var.get() != self.passphrase_confirm_var.get():
             self.message_bar.error("Пароли не совпадают.")
             return False
         return True
+
+    def _passphrase_minimum(self) -> int:
+        """Минимум из выбранной конфигурации, а не из кода этого экрана.
+
+        Шаг выбора конфигурации идёт раньше шага пароля, поэтому она здесь уже
+        есть. Если прочитать не удалось, берётся умолчание схемы -- не ноль:
+        «не смогли прочитать» не повод не проверять вовсе.
+        """
+        from ...config.schema import LuksConfig
+
+        luks = getattr(self.selected_config, "luks", None)
+        return int(getattr(luks, "min_passphrase_length", 0) or LuksConfig().min_passphrase_length)
 
     # -- step 3: what will be destroyed, then install --------------------------
     def _build_step_confirm(self, body: ttk.Frame) -> None:

@@ -120,7 +120,14 @@ def sign(manifest: "dict[str, str]", admin_secret: bytes) -> str:
     памяти.
     """
     payload = json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    return hmac.new(admin_secret, b"poa-boot-integrity\\x00" + payload, hashlib.sha256).hexdigest()
+    # Разделитель домена отделяет эту подпись от всех прочих, что считаются тем
+    # же секретом администратора. До 11.09.2026 здесь стояло "\\x00" -- в
+    # байтовом литерале это не нулевой байт, а четыре знака: обратная косая, x,
+    # ноль, ноль. Работало это потому, что подпись и проверка считаются одной и
+    # той же функцией, и разошлось бы с любой второй реализацией -- например с
+    # проверкой на стороне носителя, если её однажды напишут на shell, где
+    # нулевой байт означает ровно то, что написано.
+    return hmac.new(admin_secret, b"poa-boot-integrity\x00" + payload, hashlib.sha256).hexdigest()
 
 
 def verify(manifest: "dict[str, str]", signature: str, admin_secret: bytes) -> bool:
