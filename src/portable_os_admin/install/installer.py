@@ -570,6 +570,7 @@ class OSInstaller:
         confirm_device: str | None = None,
         on_step: "Callable[[int, int, str], None] | None" = None,
         media_name: str = "",
+        media_owner: str = "",
         exchange_files: "list[str] | tuple[str, ...]" = (),
     ) -> InstallResult:
         """Writes a built distribution onto one medium, with its own encryption.
@@ -663,6 +664,11 @@ class OSInstaller:
             # носитель пойдёт. После записи носитель попадает в список, где
             # строки различаются только идентификаторами.
             name=media_name.strip(),
+            # Владелец -- то, чем восстановление опознаёт человека, а не только
+            # носитель. Мастер выдачи требует это поле; пустым оно остаётся
+            # лишь у носителей, записанных до 11.09.2026, и экран выдачи кода
+            # говорит об этом прямо, а не молчит.
+            owner=media_owner.strip(),
             config_name=config.name,
             target_os=config.target_os,
             service_key_b64=base64.b64encode(service_key).decode("ascii"),

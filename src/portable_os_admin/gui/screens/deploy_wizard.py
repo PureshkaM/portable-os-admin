@@ -66,6 +66,7 @@ class DeployWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
         #: Как назвать носитель в списке -- спрашивается здесь, потому что
         #: здесь администратор и решает, кому носитель пойдёт.
         self.media_name = ""
+        self.media_owner = ""
         #: Файлы и каталоги, которые лягут в раздел обмена сразу при записи.
         self.exchange_files: list[str] = []
         self.metadata = None
@@ -86,7 +87,7 @@ class DeployWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
                 "",
                 "",
                 "",
-                "Необязательно, но здесь это дешевле, чем потом.",
+                "Владелец обязателен. Файлы — нет, но здесь это дешевле, чем потом.",
                 "",
             ],
             finish_label="К панели",
@@ -205,6 +206,23 @@ class DeployWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
             hint="Например: «Иванов, бухгалтерия». Хранится в контейнере "
             "администратора и на носитель не пишется — переименовать можно в любой момент.",
         )
+        # Владелец спрашивается отдельно от имени и обязателен.
+        #
+        # Имя носителя администратор придумывает себе для списка, а владелец --
+        # это тот, кого придётся опознать по телефону, когда с этого носителя
+        # попросят код восстановления. Без владельца опознавать нечем: носитель
+        # показывает код запроса сам, стоит трижды ошибиться паролем, и звонящий
+        # может оказаться кем угодно, кто нашёл флешку.
+        self.media_owner_var = tk.StringVar(value=self.media_owner)
+        add_field(
+            form,
+            2,
+            "Владелец (ФИО):",
+            self.media_owner_var,
+            width=36,
+            hint="Кому носитель выдаётся. Спрашивается при выдаче кода восстановления — "
+            "по этому имени администратор опознаёт звонящего.",
+        )
 
         files = ttk.LabelFrame(body, text=" Файлы в раздел обмена ", padding=theme.SPACE_SM)
         files.pack(fill="both", expand=True, pady=(theme.SPACE_MD, 0))
@@ -264,6 +282,7 @@ class DeployWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
 
     def _save_step_handover(self) -> None:
         self.media_name = self.media_name_var.get().strip()
+        self.media_owner = self.media_owner_var.get().strip()
         self.exchange_files = list(self.exchange_list.get(0, "end"))
 
     def _validate_step_handover(self) -> bool:
@@ -274,6 +293,21 @@ class DeployWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
         отказом копирования там, где носитель уже стёрт.
         """
         import os
+
+        # Владелец обязателен, и это единственное обязательное поле шага.
+        #
+        # Носитель, выданный без владельца, нечем связать с человеком, а связь
+        # нужна ровно в тот момент, когда с этого носителя просят код
+        # восстановления: экран выдачи называет владельца, и администратор
+        # опознаёт звонящего по нему. Спросить постфактум невозможно -- через
+        # полгода никто не помнит, кому ушла двадцатая флешка из тиража.
+        if not self.media_owner_var.get().strip():
+            self.message_bar.error(
+                "Укажите владельца — ФИО сотрудника, которому выдаётся носитель. "
+                "По этому имени вы будете опознавать звонящего, когда с носителя "
+                "запросят код восстановления."
+            )
+            return False
 
         missing = [path for path in self.exchange_files if not os.path.exists(path)]
         if missing:
@@ -515,6 +549,7 @@ class DeployWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
                 confirm_device=confirm_device,
                 on_step=self._on_stage,
                 media_name=self.media_name,
+                media_owner=self.media_owner,
                 exchange_files=self.exchange_files,
             )
 

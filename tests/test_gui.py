@@ -132,6 +132,7 @@ def test_recovery_screen_tells_the_administrator_what_is_being_asked(gui_app, tm
         MediaRecord(
             media_id=media_id, luks_uuid="u-1", label="stick",
             config_name="cfg", target_os="redos",
+            owner="Иванов Иван Иванович",
         )
     )
     for slot in (3, 4):
@@ -146,6 +147,11 @@ def test_recovery_screen_tells_the_administrator_what_is_being_asked(gui_app, tm
     screen = app._current_frame
 
     screen.request_var.set(RecoveryRequest(media_id=media_id, slot=3).encode())
+    # Нажатий два: первое называет владельца, второе выдаёт код. Администратор
+    # обязан услышать имя от звонящего прежде, чем код уйдёт в трубку.
+    screen._issue()
+    app.update()
+    assert "Иванов Иван Иванович" in screen.message_bar.var.get()
     screen._issue()
     app.update()
     assert "забыл пароль" in screen.message_bar.var.get()
@@ -155,9 +161,97 @@ def test_recovery_screen_tells_the_administrator_what_is_being_asked(gui_app, tm
     )
     screen._issue()
     app.update()
+    screen._issue()
+    app.update()
     message = screen.message_bar.var.get()
     assert "исчерпал список машин" in message
     assert "забудет все машины" in message, "администратора не предупредили о последствии"
+
+
+def test_the_code_is_not_issued_until_the_owner_has_been_named(gui_app, tmp_path):
+    """Выдача кода опознаёт человека, а не только носитель.
+
+    До 11.09.2026 код уходил по первому нажатию, и проверялись три вещи:
+    разбирается ли запрос, есть ли запись, свободен ли слот. О звонящем не
+    спрашивалось ничего -- а звонить может любой, кто нашёл чужую флешку:
+    носитель показывает код запроса сам, стоит трижды ошибиться паролем.
+    Проверяется здесь именно то, что стоит денег: recovery-запись после первого
+    нажатия обязана остаться **неиспользованной**, иначе носитель терял бы слот
+    на каждом звонке неизвестно кому.
+    """
+    import base64
+
+    from portable_os_admin import crypto
+    from portable_os_admin.container import MediaRecord, RecoveryRecord
+    from portable_os_admin.gui.screens.recovery import RecoveryFrame
+    from portable_os_admin.recovery.request import RecoveryRequest
+
+    app = gui_app
+    _open_container(app, tmp_path)
+
+    media_id = "abcd1234"
+    app.session.container.add_media_record(
+        MediaRecord(
+            media_id=media_id, luks_uuid="u-1", label="stick",
+            config_name="cfg", target_os="redos",
+            owner="Петрова Анна Сергеевна",
+        )
+    )
+    app.session.container.add_recovery_record(
+        RecoveryRecord(
+            media_id=media_id, slot=3, code=crypto.generate_recovery_code(),
+            salt_b64=base64.b64encode(crypto.new_salt()).decode(),
+        )
+    )
+
+    app.show_frame(RecoveryFrame)
+    screen = app._current_frame
+    screen.request_var.set(RecoveryRequest(media_id=media_id, slot=3).encode())
+
+    screen._issue()
+    app.update()
+    first = screen.message_bar.var.get()
+    assert "Петрова Анна Сергеевна" in first, "администратору не назвали владельца"
+    record = app.session.container.find_recovery(media_id, 3)
+    assert record.status == "available", "слот сожжён до того, как звонящего опознали"
+    assert record.code not in first, "код ушёл раньше опознания"
+
+    screen._issue()
+    app.update()
+    assert app.session.container.find_recovery(media_id, 3).status == "used"
+
+
+def test_the_handover_step_refuses_a_medium_without_an_owner(gui_app, tmp_path):
+    """Владельца спрашивают при выдаче, потому что потом спросить не у кого.
+
+    Через полгода никто не помнит, кому ушла двадцатая флешка из тиража, а
+    именно тогда владелец и понадобится: с носителя попросят код
+    восстановления, и опознать звонящего будет нечем. Поэтому поле обязательное
+    -- единственное обязательное на этом шаге.
+    """
+    from portable_os_admin.gui.screens.deploy_wizard import DeployWizardFrame
+
+    app = gui_app
+    _open_container(app, tmp_path)
+    app.show_frame(DeployWizardFrame)
+    app.update()
+    wizard = app._current_frame
+
+    # Шаг открывается напрямую: проверяется он сам, а не дорога к нему.
+    wizard.step_index = wizard.step_titles.index("Кому и что")
+    wizard._render_step()
+    app.update()
+
+    wizard.media_name_var.set("Иванов, бухгалтерия")
+    wizard.media_owner_var.set("")
+    wizard.save_step(wizard.step_index)
+    assert wizard.validate_step(wizard.step_index) is False, "носитель выдан без владельца"
+    assert "владельц" in wizard.message_bar.var.get().lower()
+
+    wizard.media_owner_var.set("Сидоров Пётр Петрович")
+    wizard.save_step(wizard.step_index)
+    assert wizard.validate_step(wizard.step_index) is True
+    assert wizard.media_owner == "Сидоров Пётр Петрович"
 
 
 def test_startup_wrong_password_shows_error(gui_app, tmp_path):
@@ -1713,7 +1807,11 @@ def test_a_revoked_medium_stays_in_the_list_and_is_told_apart_at_a_glance(gui_ap
 
     assert table.exists("46aed677"), "отозванный носитель пропал из списка"
     values = table.item("46aed677", "values")
-    assert str(values[1]).startswith("отозван"), f"состояние не показано: {values}"
+    # Колонка ищется по имени, а не по номеру: номер сдвигается от каждого
+    # нового столбца, и тест ловил бы не то, ради чего написан -- так и вышло
+    # 11.09.2026, когда перед «Состоянием» встал «Владелец».
+    status_at = list(table["columns"]).index("status")
+    assert str(values[status_at]).startswith("отозван"), f"состояние не показано: {values}"
     assert "revoked" in table.item("46aed677", "tags"), "отозванная строка ничем не отличается"
 
 

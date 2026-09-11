@@ -4,6 +4,7 @@ from __future__ import annotations
 import tkinter as tk
 from tkinter import ttk
 
+from ...errors import MediaNotRegisteredError
 from ...recovery import RecoveryService
 from ...recovery.request import KIND_MACHINES, RecoveryRequest
 from .. import theme
@@ -50,6 +51,42 @@ class RecoveryFrame(ttk.Frame):
         if not request_text:
             self.message_bar.error("Введите запрос восстановления.")
             return
+
+        # Первое нажатие называет владельца, второе выдаёт код.
+        #
+        # До 11.09.2026 код уходил по первому нажатию, и проверялись ровно три
+        # вещи: разбирается ли запрос, есть ли запись, свободен ли слот. О том,
+        # кто звонит, не спрашивалось ничего -- а звонить может любой, кто нашёл
+        # чужую флешку: носитель показывает код запроса сам, стоит трижды
+        # ошибиться паролем. Выдача кода тогда обходит и LUKS, и привязку к
+        # машинам, и длину фразы -- телефонным звонком.
+        #
+        # Здесь не «подтвердите действие» -- такое подтверждение нажимают не
+        # глядя. Здесь называется имя владельца, которого администратор должен
+        # услышать от звонящего, то есть шаг несёт сведения, а не вопрос.
+        # Полностью дыру это не закрывает: опознание процедурное и остаётся на
+        # администраторе. Но спросить ему теперь есть что.
+        if getattr(self, "_confirmed_request", "") != request_text:
+            with error_guard(self.message_bar):
+                request = RecoveryRequest.parse(request_text)
+                record = self.app.session.container.find_media(request.media_id)
+                if record is None:
+                    raise MediaNotRegisteredError(
+                        f"сведения о переносной системе не найдены (media_id={request.media_id})"
+                    )
+                self._confirmed_request = request_text
+                owner = record.owner.strip()
+                whose = (
+                    f"Владелец: {owner}."
+                    if owner
+                    else "Владелец не указан — это носитель, выданный до того, как поле появилось."
+                )
+                self.message_bar.info(
+                    f"Носитель «{record.display_name}». {whose} "
+                    "Убедитесь, что говорите именно с ним, и нажмите «Выдать код» ещё раз."
+                )
+            return
+
         service = RecoveryService(self.app.session)
         with error_guard(self.message_bar):
             # Вид запроса разбирается отдельно и до выдачи: администратор
