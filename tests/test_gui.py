@@ -1842,6 +1842,63 @@ def test_a_revoked_medium_stays_in_the_list_and_is_told_apart_at_a_glance(gui_ap
     assert "revoked" in table.item("46aed677", "tags"), "отозванная строка ничем не отличается"
 
 
+def test_the_integrity_screen_does_not_ask_for_mount_points(gui_app, tmp_path):
+    """Программа монтирует разделы сама.
+
+    Прежде экран спрашивал два готовых пути и объяснял это нежеланием требовать
+    прав root. Объяснение было неверным дважды: программа и так работает от
+    root -- она размечает диски, -- а носитель к этому моменту уже опознан по
+    UUID своих томов. Администратору, которому принесли флешку, предлагалось
+    помнить синтаксис `mount` ради того, что программа могла сделать сама.
+    """
+    from portable_os_admin.gui.screens.integrity_check import IntegrityFrame
+
+    app = gui_app
+    _open_container(app, tmp_path)
+    record = _issue_a_medium(app)
+
+    app.show_frame(IntegrityFrame, media_id=record.media_id)
+    app.update()
+    screen = app._current_frame
+
+    assert not hasattr(screen, "esp_var"), "у администратора снова спрашивают путь"
+    assert not hasattr(screen, "boot_var")
+
+
+def test_the_integrity_check_says_when_the_medium_is_not_plugged_in(gui_app, tmp_path, monkeypatch):
+    """Отсутствие носителя -- не ошибка программы, а сообщение человеку.
+
+    Носитель ищется по UUID своих томов, а не по пути устройства: та же флешка
+    на этой машине `/dev/sdb`, на соседней `/dev/sdc`, и ошибка здесь означала
+    бы сверку описи одного носителя с загрузчиком другого.
+    """
+    import pytest as _pytest
+
+    from portable_os_admin.admin import media_detect as media_detect_module
+    from portable_os_admin.errors import PortableOSAdminError
+    from portable_os_admin.gui.screens.integrity_check import IntegrityFrame
+    from portable_os_admin.install import integrity
+
+    app = gui_app
+    _open_container(app, tmp_path)
+    record = _issue_a_medium(app)
+    # Опись и подпись к ней -- иначе проверка остановится раньше, на «описи нет».
+    record.boot_manifest = {"esp:EFI/BOOT/BOOTX64.EFI": "0" * 64}
+    record.boot_manifest_signature = integrity.sign(
+        record.boot_manifest, app.session.container.admin_secret
+    )
+
+    app.show_frame(IntegrityFrame, media_id=record.media_id)
+    app.update()
+    screen = app._current_frame
+
+    monkeypatch.setattr(media_detect_module, "detect_map", lambda records: {})
+
+    with _pytest.raises(PortableOSAdminError) as caught:
+        screen._compare()
+    assert "не найден среди подключённых" in str(caught.value)
+
+
 def test_a_revocation_can_be_undone_from_the_screen(gui_app, tmp_path):
     """Отозвать можно не ту строку, а «уволенный» сотрудник -- вернуться из
     отпуска. Состояние возвращается, история остаётся."""

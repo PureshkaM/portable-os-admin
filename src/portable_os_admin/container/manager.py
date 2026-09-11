@@ -243,7 +243,7 @@ class ContainerManager:
         if problems:
             raise WeakPasswordError(problems)
 
-        kdf_params = crypto.default_kdf_params()
+        kdf_params = crypto.calibrated_kdf_params()
         key = crypto.derive_key(password, kdf_params)
         # Секрет администратора рождается вместе с контейнером и живёт ровно
         # столько же. Из него выводятся коды восстановления всех носителей,
@@ -312,7 +312,7 @@ class ContainerManager:
         if problems:
             raise WeakPasswordError(problems)
 
-        kdf_params = crypto.default_kdf_params()
+        kdf_params = crypto.calibrated_kdf_params()
         container.rekey(crypto.derive_key(new_password, kdf_params), kdf_params)
         self.save(container)
 
