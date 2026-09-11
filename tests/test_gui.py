@@ -1493,6 +1493,7 @@ def test_sections_use_the_shared_header_and_card():
         "recovery.py",
         "maintenance.py",
         "integrity_check.py",
+        "revoke.py",
     )
     offenders = []
     for name in sections:
@@ -1609,6 +1610,158 @@ def test_the_erase_button_stays_disabled_until_the_path_is_repeated(gui_app, tmp
 # ----------------------------------------------------------------------
 # Пункт 23: поведение -- таблицы, обход по Tab, фокус
 # ----------------------------------------------------------------------
+# ----------------------------------------------------------------------
+# Задача 32: отзыв носителя
+# ----------------------------------------------------------------------
+def _issue_a_medium(app, media_id: str = "46aed677"):
+    """Носитель, выданный этим контейнером, -- то, что отзывают."""
+    from portable_os_admin.container import MediaRecord
+
+    record = MediaRecord(
+        media_id=media_id,
+        luks_uuid="523e0993-4dac-4eee-9f72-a272ce456d34",
+        label="Kingston DT",
+        name="Иванов, бухгалтерия",
+        config_name="kiosk",
+        target_os="debian",
+    )
+    app.session.container.add_media_record(record)
+    return record
+
+
+def _open_revoke(app, media_id: str = "46aed677"):
+    from portable_os_admin.gui.screens.revoke import RevokeFrame
+
+    app.show_frame(RevokeFrame, media_id=media_id)
+    app.update()
+    return app._current_frame
+
+
+def test_the_revoke_screen_does_not_pretend_a_mark_locks_the_medium(gui_app, tmp_path):
+    """Главное на этом экране -- не кнопки, а сказанное между ними.
+
+    Пометка отзыва ничего не запирает: носителя нет у администратора, и он
+    остаётся ровно таким, каким был. Кнопка, которая молча делает вид, что
+    заперла носитель, опаснее отсутствия кнопки -- по ней человек решит, что
+    дело закрыто, и не станет ни менять пароли, ни считать данные утекшими.
+    """
+    app = gui_app
+    _open_container(app, tmp_path)
+    _issue_a_medium(app)
+
+    shown = _visible_text(_open_revoke(app))
+
+    assert "не запирает" in shown, "экран не говорит, что пометка ничего не запирает"
+    assert "не закрывает доступ" in shown
+    # И сказано, что носитель всё-таки защищает: иначе честность превращается
+    # в «мы ничего не можем», что тоже неправда.
+    assert "привязка к машинам" in shown
+    # А про стирание сказано обратное -- что оно необратимо.
+    assert "не открыть ничем" in shown
+
+
+def test_a_mark_without_a_reason_is_refused(gui_app, tmp_path):
+    """Через полгода «отозван» без причины не отвечает ни на один вопрос,
+    ради которого в этот список смотрят."""
+    app = gui_app
+    _open_container(app, tmp_path)
+    record = _issue_a_medium(app)
+    screen = _open_revoke(app)
+
+    screen.reason_var.set("   ")
+    screen._mark()
+    app.update()
+
+    assert "причину" in screen.message_bar.var.get()
+    assert not record.is_revoked, "носитель отозван без причины"
+
+
+def test_marking_a_medium_revoked_records_the_fact_and_says_what_it_did_not_do(gui_app, tmp_path):
+    app = gui_app
+    _open_container(app, tmp_path)
+    record = _issue_a_medium(app)
+    screen = _open_revoke(app)
+
+    screen.reason_var.set("сотрудник уволен 11.09.2026")
+    screen._mark()
+    app.update()
+
+    assert record.is_revoked
+    assert record.revoked_reason == "сотрудник уволен 11.09.2026"
+    # Успех тоже не должен обещать лишнего: сказано ровно то, что случилось.
+    assert "не числится действующим" in screen.message_bar.var.get()
+    assert "работает как работал" in screen.message_bar.var.get()
+
+    journal = app.session.container.journal_for("46aed677")
+    assert [entry.action for entry in journal] == ["media_revoked"]
+
+
+def test_a_revoked_medium_stays_in_the_list_and_is_told_apart_at_a_glance(gui_app, tmp_path):
+    """Отзыв -- факт учёта, а не удаление истории.
+
+    Строка остаётся, но гаснет и называет своё состояние: список выданных
+    носителей не должен редеть оттого, что часть из них отозвана.
+    """
+    app = gui_app
+    _open_container(app, tmp_path)
+    _issue_a_medium(app)
+    app.session.container.revoke_media("46aed677", "сотрудник уволен")
+
+    app.show_dashboard()
+    app.update()
+    table = app._current_frame.table
+
+    assert table.exists("46aed677"), "отозванный носитель пропал из списка"
+    values = table.item("46aed677", "values")
+    assert str(values[1]).startswith("отозван"), f"состояние не показано: {values}"
+    assert "revoked" in table.item("46aed677", "tags"), "отозванная строка ничем не отличается"
+
+
+def test_a_revocation_can_be_undone_from_the_screen(gui_app, tmp_path):
+    """Отозвать можно не ту строку, а «уволенный» сотрудник -- вернуться из
+    отпуска. Состояние возвращается, история остаётся."""
+    app = gui_app
+    _open_container(app, tmp_path)
+    record = _issue_a_medium(app)
+    app.session.container.revoke_media("46aed677", "ошибся строкой")
+    screen = _open_revoke(app)
+
+    screen._restore()
+    app.update()
+
+    assert not record.is_revoked
+    assert [entry.action for entry in app.session.container.journal_for("46aed677")] == [
+        "media_restored",
+        "media_revoked",
+    ]
+    # Журнал показан на том же экране: иначе о нём знал бы только контейнер.
+    assert len(screen.journal_table.get_children()) == 2
+
+
+def test_the_erase_button_stays_disabled_until_the_device_is_repeated(gui_app, tmp_path):
+    """Та же последняя защита, что стоит перед записью носителя.
+
+    Здесь она нужна не меньше: ошибка в устройстве стоит чужих данных, и
+    обратного действия у стирания заголовка нет.
+    """
+    app = gui_app
+    _open_container(app, tmp_path)
+    _issue_a_medium(app)
+    screen = _open_revoke(app)
+
+    screen.device_var.set("/dev/sdz")
+    app.update()
+    assert str(screen.erase_btn["state"]) == "disabled", "экран открылся с готовой кнопкой"
+
+    screen.confirm_var.set("/dev/sda")
+    app.update()
+    assert str(screen.erase_btn["state"]) == "disabled", "чужой путь включил кнопку"
+
+    screen.confirm_var.set("/dev/sdz")
+    app.update()
+    assert str(screen.erase_btn["state"]) == "normal", "верный повтор не включил кнопку"
+
+
 def test_every_table_is_built_by_the_same_helper(gui_app):
     """Таблицы собирает `data_table`, а не каждый экран по-своему.
 

@@ -13,6 +13,17 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+#: Состояния записи носителя.
+#:
+#: Их ровно два, и второе -- запись учёта, а не свойство самого носителя.
+#: Отозванный носитель в руках у постороннего запирается не отметкой, а
+#: привязкой к машинам и стиранием заголовков; отметка говорит только, что
+#: администратор больше не считает его действующим. Интерфейс обязан называть
+#: эту разницу вслух, иначе кнопка «отозвать» обещает защиту, которой нет.
+STATUS_ACTIVE = "active"
+STATUS_REVOKED = "revoked"
+
+
 @dataclass
 class MediaRecord:
     media_id: str
@@ -52,6 +63,17 @@ class MediaRecord:
     #: но подделать обе разом можно только зная пароль и имея контейнер.
     boot_manifest: dict = field(default_factory=dict)
     boot_manifest_signature: str = ""
+    #: Действует носитель или отозван -- и почему.
+    #:
+    #: Отозванная запись не удаляется: сотрудник уволился, а носитель остаётся
+    #: фактом -- на нём стоит `media_id`, по нему приходят запросы
+    #: восстановления, и он числится выданным в отчётности. Удалить запись
+    #: значило бы стереть историю ради того, чтобы список выглядел коротким.
+    #: Причину вводит администратор: через полгода «отозван» без причины не
+    #: отвечает ни на один вопрос, ради которого в этот список смотрят.
+    status: str = STATUS_ACTIVE
+    revoked_at: str = ""
+    revoked_reason: str = ""
 
     @property
     def service_key(self) -> bytes:
@@ -81,6 +103,67 @@ class MediaRecord:
         случае идентификатор, который хотя бы уникален.
         """
         return self.name or self.label or self.media_id
+
+    @property
+    def is_revoked(self) -> bool:
+        return self.status == STATUS_REVOKED
+
+    @property
+    def status_text(self) -> str:
+        """Состояние строкой для списка -- с датой, потому что без неё
+        «отозван» не отличить от «отозван позавчера»."""
+        if not self.is_revoked:
+            return "действует"
+        return f"отозван {self.revoked_at[:10]}" if self.revoked_at else "отозван"
+
+
+#: Действия, которые записываются в журнал контейнера, и как они называются
+#: по-русски. Имя действия хранится ключом, а не готовой фразой: формулировку
+#: потом правят, а записанное в контейнере остаётся навсегда.
+ACTION_REVOKED = "media_revoked"
+ACTION_RESTORED = "media_restored"
+ACTION_ERASED = "media_erased"
+
+ACTION_TITLES = {
+    ACTION_REVOKED: "Помечен отозванным",
+    ACTION_RESTORED: "Отметка отзыва снята",
+    ACTION_ERASED: "Заголовки LUKS стёрты",
+}
+
+
+@dataclass
+class JournalEntry:
+    """Одно событие в журнале контейнера.
+
+    Отзыв -- решение, а не свойство: его принимают, иногда ошибочно, и потом
+    отменяют. Само поле `status` показывает только последнее состояние и не
+    отвечает на вопрос, кто и когда носитель отозвал, а потом вернул в строй.
+    Журнал отвечает, и живёт он там же, где остальное, -- внутри
+    зашифрованного контейнера.
+    """
+
+    at: str
+    action: str
+    media_id: str = ""
+    details: str = ""
+
+    @property
+    def title(self) -> str:
+        return ACTION_TITLES.get(self.action, self.action)
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "JournalEntry":
+        """Те же правила, что у записи носителя: незнакомое отбрасывается.
+
+        Журнал пишет каждая версия программы, а читают его все: событие,
+        заведённое версией новее, не должно мешать открыть контейнер в той,
+        которая о нём не знает.
+        """
+        known = {f.name for f in fields(cls)}
+        return cls(**{key: value for key, value in data.items() if key in known})
 
 
 @dataclass
@@ -153,6 +236,8 @@ class AdminContainerData:
     #: Конфигурации установки. Живут здесь, а не файлами рядом: контейнер --
     #: единственное, что администратор хранит и защищает паролем.
     configs: list[ConfigRecord] = field(default_factory=list)
+    #: Журнал решений администратора о носителях: отзыв, возврат, стирание.
+    journal: list[JournalEntry] = field(default_factory=list)
     #: Секрет администратора, из которого выводятся все коды восстановления.
     #:
     #: Он и есть содержимое контейнера, ради которого тот зашифрован. Коды не
@@ -181,6 +266,7 @@ class AdminContainerData:
             "media_records": [m.to_dict() for m in self.media_records],
             "recovery_records": [r.to_dict() for r in self.recovery_records],
             "configs": [c.to_dict() for c in self.configs],
+            "journal": [e.to_dict() for e in self.journal],
             "admin_secret_b64": self.admin_secret_b64,
             "exchange_seed_b64": self.exchange_seed_b64,
         }
@@ -193,6 +279,10 @@ class AdminContainerData:
             # Контейнер, созданный до 09.09.2026, конфигураций не содержит --
             # пустой список здесь и означает «их ещё не было».
             configs=[ConfigRecord.from_dict(c) for c in data.get("configs", [])],
+            # Контейнер, созданный до 11.09.2026, журнала не содержит -- и
+            # пустой список здесь означает «событий ещё не записывали», а не
+            # «их не было».
+            journal=[JournalEntry.from_dict(e) for e in data.get("journal", [])],
             admin_secret_b64=data.get("admin_secret_b64", ""),
             exchange_seed_b64=data.get("exchange_seed_b64", ""),
         )

@@ -73,10 +73,14 @@ class DashboardFrame(ttk.Frame):
         # край -- дата создания носителя не читалась вовсе. Минимумы держат
         # то же обещание в окне уже минимального: ниже них колонки не
         # сжимаются, а таблица получает горизонтальную прокрутку.
+        # Состояние стоит вторым, сразу за именем: список читают ради вопроса
+        # «чей носитель», а отозванный носитель -- это ответ «уже ничей», и
+        # узнавать его надо тем же взглядом, а не доходя до конца строки.
         self.table, self.placeholder = data_table(
             card,
             (
                 Column("name", "Носитель", 120, 120, stretch=True),
+                Column("status", "Состояние", 130, 110),
                 Column("connected", "Подключён", 110, 105),
                 Column("media_id", "Идентификатор", 145, 140),
                 Column("os", "ОС", 60, 55),
@@ -86,6 +90,11 @@ class DashboardFrame(ttk.Frame):
             height=10,
             empty_text="Носителей пока нет.\nНачните с «Установка ОС».",
         )
+        # Отозванная строка гаснет, а не исчезает: отзыв -- факт учёта, и
+        # история выданных носителей не должна редеть оттого, что часть из них
+        # уже отозвана. Приглушённый цвет отличает её с одного взгляда, не
+        # заставляя читать колонку.
+        self.table.tag_configure("revoked", foreground=theme.TEXT_MUTED)
         # Проверка целостности относится к одному носителю, а не к контейнеру
         # вообще, поэтому она открывается со строки, а не кнопкой: седьмая
         # кнопка в ряд уже не помещается, и это ловит тест ширины.
@@ -104,6 +113,9 @@ class DashboardFrame(ttk.Frame):
         ttk.Button(
             row_actions, text="Переименовать", command=self._rename_selected
         ).pack(side="left", padx=(theme.SPACE_SM, 0))
+        ttk.Button(
+            row_actions, text="Отзыв…", command=self._open_selected_revoke
+        ).pack(side="left", padx=(theme.SPACE_SM, 0))
 
         self._poll_job = None
         self._poll_connected()
@@ -113,6 +125,13 @@ class DashboardFrame(ttk.Frame):
 
 
     def _refresh_table(self) -> None:
+        # Выбор переживает перерисовку: таблица обновляется сама каждые пять
+        # секунд, и без этого строка, на которую человек нажал, теряла
+        # выделение у него под рукой -- ровно между «выбрал» и «нажал кнопку».
+        # Идентификатор строки -- это `media_id`, поэтому вернуть выбор можно
+        # по имени, а не по номеру: номер после перерисовки означал бы другой
+        # носитель.
+        selected = self.table.selection()
         for item in self.table.get_children():
             self.table.delete(item)
         records = self.app.session.container.data.media_records
@@ -123,15 +142,21 @@ class DashboardFrame(ttk.Frame):
             self.table.insert(
                 "",
                 "end",
+                iid=record.media_id,
                 values=(
                     record.display_name,
+                    record.status_text,
                     found.device_path if found else "",
                     record.media_id,
                     record.target_os,
                     record.config_name,
                     record.created_at,
                 ),
+                tags=("revoked",) if record.is_revoked else (),
             )
+        restored = [item for item in selected if self.table.exists(item)]
+        if restored:
+            self.table.selection_set(restored)
 
     def _poll_connected(self) -> None:
         """Опрашивает порты, пока экран открыт.
@@ -155,11 +180,10 @@ class DashboardFrame(ttk.Frame):
         уже выданному, потерянному и даже сломанному -- лишь бы запись о нём
         была здесь.
         """
-        selection = self.table.selection()
-        if not selection:
+        media_id = self._selected_media_id()
+        if not media_id:
             self.message_bar.error("Выберите носитель в списке.")
             return
-        media_id = self.table.item(selection[0], "values")[2]
         record = next(
             (r for r in self.app.session.container.data.media_records if r.media_id == media_id),
             None,
@@ -194,14 +218,38 @@ class DashboardFrame(ttk.Frame):
                 pass
             self._poll_job = None
 
+    def _selected_media_id(self) -> str:
+        """Идентификатор выбранного носителя -- это и есть имя строки.
+
+        Раньше он читался из колонки по номеру, и номер приходилось править в
+        трёх местах при каждой новой колонке. Имя строки от порядка колонок не
+        зависит вовсе.
+        """
+        selection = self.table.selection()
+        return selection[0] if selection else ""
+
     def _open_selected_integrity(self, _event=None) -> None:
         from .integrity_check import IntegrityFrame
 
-        selection = self.table.selection()
-        if not selection:
+        media_id = self._selected_media_id()
+        if not media_id:
             return
-        media_id = self.table.item(selection[0], "values")[2]
         self.app.show_frame(IntegrityFrame, media_id=media_id)
+
+    def _open_selected_revoke(self) -> None:
+        """Отзыв носителя -- отдельный экран, а не вопрос в диалоге.
+
+        Потому что ответов два, разной силы: пометить запись отозванной, если
+        носитель не вернулся, и стереть заголовки, если вернулся. Разницу между
+        ними надо показать рядом, а в диалоге с двумя кнопками её не объяснить.
+        """
+        from .revoke import RevokeFrame
+
+        media_id = self._selected_media_id()
+        if not media_id:
+            self.message_bar.error("Выберите носитель в списке.")
+            return
+        self.app.show_frame(RevokeFrame, media_id=media_id)
 
     def _open_selected_logs(self) -> None:
         """Журналы того носителя, который выбран в таблице.
@@ -209,9 +257,7 @@ class DashboardFrame(ttk.Frame):
         Раздел «Журналы» спрашивает носитель сам; отсюда ответ уже есть, и
         спрашивать второй раз незачем.
         """
-        selection = self.table.selection()
-        media_id = self.table.item(selection[0], "values")[2] if selection else ""
-        self.app.show_section("logs", media_id=media_id)
+        self.app.show_section("logs", media_id=self._selected_media_id())
 
     def _open_build(self) -> None:
         from .build_wizard import BuildWizardFrame

@@ -19,12 +19,32 @@ from ..errors import (
     ContainerAlreadyExistsError,
     ContainerAuthenticationError,
     ContainerCorruptedError,
+    MediaNotRegisteredError,
     WeakPasswordError,
 )
-from .models import AdminContainerData, ConfigRecord, MediaRecord, RecoveryRecord, _now_iso
+from .models import (
+    ACTION_ERASED,
+    ACTION_RESTORED,
+    ACTION_REVOKED,
+    STATUS_ACTIVE,
+    STATUS_REVOKED,
+    AdminContainerData,
+    ConfigRecord,
+    JournalEntry,
+    MediaRecord,
+    RecoveryRecord,
+    _now_iso,
+)
 
 CONTAINER_FORMAT = "portable-os-admin-container"
-CONTAINER_VERSION = 1
+#: Версия формата. Со 2 в ней есть журнал и состояние записи носителя.
+#:
+#: `open` её намеренно не проверяет: контейнер живёт дольше программы, и
+#: отказать в открытии из-за незнакомого номера -- худший из способов сообщить
+#: о разнице версий. Совместимость держится на другом: неизвестные ключи
+#: отбрасываются, отсутствующие берут умолчание, и контейнер версии 1
+#: открывается этим кодом без единой правки файла.
+CONTAINER_VERSION = 2
 
 
 class AdminContainer:
@@ -62,6 +82,67 @@ class AdminContainer:
             if record.media_id == media_id:
                 return record
         return None
+
+    def revoke_media(self, media_id: str, reason: str, *, erased: bool = False) -> MediaRecord:
+        """Пометить носитель отозванным -- и записать это в журнал.
+
+        Пометка ничего не запирает. Носитель, который не вернули, остаётся
+        рабочим: у того, кто его держит, есть пароль или нет его, и отметка в
+        контейнере администратора на это не влияет никак. Она отвечает на
+        другой вопрос -- числится ли носитель действующим, -- и это всё, что
+        администратор может сделать, пока флешки нет у него в руках.
+
+        `erased` отличает две записи в журнале: пометку от настоящего
+        стирания. Состояние после обеих одно, а произошедшее -- разное, и
+        через год по журналу должно быть видно, какой из носителей
+        действительно мёртв.
+        """
+        record = self.find_media(media_id)
+        if record is None:
+            raise MediaNotRegisteredError(
+                f"сведения о носителе не найдены в контейнере (media_id={media_id})"
+            )
+        record.status = STATUS_REVOKED
+        record.revoked_at = _now_iso()
+        record.revoked_reason = reason.strip()
+        self.record_event(
+            ACTION_ERASED if erased else ACTION_REVOKED, media_id, record.revoked_reason
+        )
+        return record
+
+    def restore_media(self, media_id: str) -> MediaRecord:
+        """Снять отметку отзыва.
+
+        Отзыв -- решение человека, а человек ошибается: отозвать можно не ту
+        строку, а сотрудник, которого «уволили», может вернуться из отпуска.
+        Причина отзыва при этом стирается, а журнал остаётся: состояние
+        показывает, как есть сейчас, история -- как было.
+        """
+        record = self.find_media(media_id)
+        if record is None:
+            raise MediaNotRegisteredError(
+                f"сведения о носителе не найдены в контейнере (media_id={media_id})"
+            )
+        record.status = STATUS_ACTIVE
+        record.revoked_at = ""
+        record.revoked_reason = ""
+        self.record_event(ACTION_RESTORED, media_id)
+        return record
+
+    # -- журнал контейнера ---------------------------------------------------
+    def record_event(self, action: str, media_id: str = "", details: str = "") -> JournalEntry:
+        entry = JournalEntry(at=_now_iso(), action=action, media_id=media_id, details=details)
+        self.data.journal.append(entry)
+        return entry
+
+    def journal_for(self, media_id: str) -> "list[JournalEntry]":
+        """События одного носителя, новые сверху.
+
+        Сверху потому, что смотрят в него ради последнего: «что с ним успели
+        сделать», а не «с чего всё начиналось».
+        """
+        found = [entry for entry in self.data.journal if entry.media_id == media_id]
+        return list(reversed(found))
 
     @property
     def exchange_seed(self) -> bytes:

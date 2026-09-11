@@ -215,6 +215,36 @@ class LuksManager:
         self.runner.run(argv, plan, dry_run=dry_run, confirm_device=confirm_device)
         return plan
 
+    def erase_header(
+        self,
+        partition: str,
+        *,
+        dry_run: bool = True,
+        confirm_device: str | None = None,
+        plan: CommandPlan | None = None,
+    ) -> CommandPlan:
+        """Уничтожает все keyslot'ы тома -- то есть сам мастер-ключ.
+
+        Это и есть настоящий отзыв вернувшегося носителя, в отличие от отметки
+        в контейнере. Мастер-ключ нигде не хранится открытым: в заголовке лежат
+        его копии, зашифрованные на каждом слоте, и других копий нет. Уничтожив
+        все слоты, том не открыть ничем -- ни паролем пользователя, ни
+        служебным ключом из контейнера администратора, ни кодом восстановления.
+        Данные после этого не восстанавливаются, и обратного действия у этой
+        команды нет.
+
+        Сам заголовок при этом остаётся, и UUID тома в нём -- тоже. Намеренно:
+        по UUID носитель узнаётся в порту (`admin/media_detect.py`), и стёртая
+        флешка должна по-прежнему называть себя той самой записью, а не
+        превращаться в неопознанную. Затирать сигнатуру целиком (`wipefs`)
+        значило бы усложнить администратору ровно тот случай, ради которого всё
+        и делается: понять, что за носитель ему принесли.
+        """
+        plan = plan if plan is not None else CommandPlan(device=partition)
+        argv = ["cryptsetup", "luksErase", partition, "--batch-mode"]
+        self.runner.run(argv, plan, dry_run=dry_run, confirm_device=confirm_device)
+        return plan
+
     @staticmethod
     def mapper_path(mapper_name: str) -> str:
         return f"/dev/mapper/{mapper_name}"

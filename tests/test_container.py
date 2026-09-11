@@ -1,10 +1,16 @@
+import base64
+import json
+
 import pytest
 
+from portable_os_admin import crypto
 from portable_os_admin.container import ContainerManager, MediaRecord, RecoveryRecord
+from portable_os_admin.container.manager import CONTAINER_FORMAT
 from portable_os_admin.errors import (
     ContainerAlreadyExistsError,
     ContainerAuthenticationError,
     ContainerCorruptedError,
+    MediaNotRegisteredError,
     WeakPasswordError,
 )
 
@@ -147,6 +153,216 @@ def test_a_weak_new_password_is_refused(tmp_path):
 
     # Старый пароль продолжает работать: отказ ничего не менял.
     assert manager.open(path, "CorrectHorse123") is not None
+
+
+# ----------------------------------------------------------------------
+# Отзыв носителя (задача 32)
+# ----------------------------------------------------------------------
+def _issued(container, media_id: str = "46aed677") -> MediaRecord:
+    record = MediaRecord(
+        media_id=media_id,
+        luks_uuid="u-1",
+        label="Kingston DT",
+        name="Иванов, бухгалтерия",
+        config_name="kiosk",
+        target_os="debian",
+    )
+    container.add_media_record(record)
+    return record
+
+
+def test_a_new_record_is_in_service(tmp_path):
+    """Умолчание -- «действует»: отзыв это событие, а не исходное состояние."""
+    container = ContainerManager().create(tmp_path / "admin.container", "CorrectHorse123")
+    record = _issued(container)
+
+    assert not record.is_revoked
+    assert record.status_text == "действует"
+
+
+def test_revoking_keeps_the_record_and_remembers_why(tmp_path):
+    """Отзыв -- факт учёта, а не удаление истории.
+
+    Сотрудник уволился, а носитель остаётся фактом: на нём стоит `media_id`,
+    по нему приходят запросы восстановления, и он числится выданным. Удалить
+    запись значило бы стереть историю ради того, чтобы список выглядел короче.
+    """
+    manager = ContainerManager()
+    path = tmp_path / "admin.container"
+    container = manager.create(path, "CorrectHorse123")
+    _issued(container)
+
+    container.revoke_media("46aed677", "сотрудник уволен 11.09.2026")
+    manager.save(container)
+
+    reopened = manager.open(path, "CorrectHorse123")
+    record = reopened.find_media("46aed677")
+    assert record is not None, "запись исчезла из контейнера"
+    assert record.is_revoked
+    assert record.revoked_reason == "сотрудник уволен 11.09.2026"
+    assert record.revoked_at, "дата отзыва не проставлена"
+    assert record.status_text.startswith("отозван")
+
+
+def test_revocation_can_be_undone_and_both_facts_stay_in_the_journal(tmp_path):
+    """Отзыв -- решение человека, а человек ошибается строкой.
+
+    Состояние после отмены прежнее, но история остаётся: журнал отвечает на
+    вопрос, что с носителем делали, а поле состояния -- только на вопрос, как
+    дела сейчас.
+    """
+    container = ContainerManager().create(tmp_path / "admin.container", "CorrectHorse123")
+    _issued(container)
+
+    container.revoke_media("46aed677", "ошибся строкой")
+    container.restore_media("46aed677")
+
+    record = container.find_media("46aed677")
+    assert not record.is_revoked
+    assert record.revoked_reason == "", "причина пережила снятие отметки"
+
+    # Журнал отдаётся новыми сверху: смотрят в него ради последнего.
+    journal = container.journal_for("46aed677")
+    assert [entry.action for entry in journal] == ["media_restored", "media_revoked"]
+    assert journal[1].details == "ошибся строкой"
+
+
+def test_the_journal_keeps_media_apart(tmp_path):
+    container = ContainerManager().create(tmp_path / "admin.container", "CorrectHorse123")
+    _issued(container, "46aed677")
+    _issued(container, "218d2d33")
+
+    container.revoke_media("46aed677", "уволен")
+
+    assert len(container.journal_for("46aed677")) == 1
+    assert container.journal_for("218d2d33") == []
+
+
+def test_revoking_an_unknown_medium_is_refused(tmp_path):
+    container = ContainerManager().create(tmp_path / "admin.container", "CorrectHorse123")
+
+    with pytest.raises(MediaNotRegisteredError):
+        container.revoke_media("нет такого", "причина")
+    with pytest.raises(MediaNotRegisteredError):
+        container.restore_media("нет такого")
+
+
+# ----------------------------------------------------------------------
+# Совместимость формата: контейнер переживает обновление программы
+# ----------------------------------------------------------------------
+def _write_old_container(path, password: str, payload: dict) -> None:
+    """Пишет контейнер так, как его писала прежняя версия программы.
+
+    Своими руками, а не текущим `save`: смысл проверки в том, что на диске
+    лежит файл **старого** формата. Пропустив его через нынешний код, мы
+    проверили бы лишь то, что он согласуется сам с собой.
+    """
+    kdf = crypto.default_kdf_params()
+    key = crypto.derive_key(password, kdf)
+    nonce, ciphertext = crypto.encrypt(key, json.dumps(payload).encode("utf-8"))
+    path.write_text(
+        json.dumps(
+            {
+                "format": CONTAINER_FORMAT,
+                "version": 1,
+                "kdf": kdf.to_dict(),
+                "cipher": "AES-256-GCM",
+                "nonce": base64.b64encode(nonce).decode("ascii"),
+                "ciphertext": base64.b64encode(ciphertext).decode("ascii"),
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_a_container_written_before_revocation_still_opens(tmp_path):
+    """Контейнеры живут дольше кода, и это в проекте уже обжигали.
+
+    02.09.2026 конфигурации прежней версии перестали открываться после
+    переименования одного поля -- список падал с `TypeError`, а экран
+    оставался пустым. Здесь та же опасность и то же лекарство: незнакомые
+    ключи отбрасываются, отсутствующие берут умолчание.
+    """
+    path = tmp_path / "admin.container"
+    _write_old_container(
+        path,
+        "CorrectHorse123",
+        {
+            # Ровно те поля, что были в записи до 11.09.2026: ни состояния,
+            # ни журнала.
+            "media_records": [
+                {
+                    "media_id": "46aed677",
+                    "luks_uuid": "u-1",
+                    "label": "Kingston DT",
+                    "config_name": "kiosk",
+                    "target_os": "debian",
+                    "created_at": "2026-09-01T10:00:00+00:00",
+                }
+            ],
+            "recovery_records": [],
+            "admin_secret_b64": "c2VjcmV0LXNlY3JldC1zZWNyZXQtc2VjcmV0LTI=",
+        },
+    )
+
+    container = ContainerManager().open(path, "CorrectHorse123")
+
+    record = container.find_media("46aed677")
+    assert record is not None, "запись прежней версии не прочиталась"
+    # Носитель, выданный до появления отзыва, действует: отсутствие отметки
+    # означает именно это, а не «состояние неизвестно».
+    assert not record.is_revoked
+    assert container.data.journal == []
+    # И он отзывается как любой другой -- миграция не оставляет запись
+    # второсортной.
+    container.revoke_media("46aed677", "сотрудник уволен")
+    assert container.find_media("46aed677").is_revoked
+
+
+def test_a_container_from_a_newer_version_still_opens(tmp_path):
+    """Разницу версий нельзя сообщать отказом открыть контейнер.
+
+    Программа старше файла -- обычный случай в организации, где обновляются не
+    все и не сразу. Понятное читается, незнакомое отбрасывается.
+    """
+    path = tmp_path / "admin.container"
+    _write_old_container(
+        path,
+        "CorrectHorse123",
+        {
+            "media_records": [
+                {
+                    "media_id": "46aed677",
+                    "luks_uuid": "u-1",
+                    "label": "Kingston DT",
+                    "config_name": "kiosk",
+                    "target_os": "debian",
+                    "status": "revoked",
+                    "revoked_at": "2026-09-11T10:00:00+00:00",
+                    "revoked_reason": "уволен",
+                    "поле_из_будущего": "что-то ещё",
+                }
+            ],
+            "recovery_records": [],
+            "journal": [
+                {
+                    "at": "2026-09-11T10:00:00+00:00",
+                    "action": "media_revoked",
+                    "media_id": "46aed677",
+                    "details": "уволен",
+                    "кто_именно": "неизвестное поле",
+                }
+            ],
+            "admin_secret_b64": "c2VjcmV0LXNlY3JldC1zZWNyZXQtc2VjcmV0LTI=",
+            "раздел_из_будущего": {"что-то": "ещё"},
+        },
+    )
+
+    container = ContainerManager().open(path, "CorrectHorse123")
+
+    assert container.find_media("46aed677").is_revoked
+    assert [entry.action for entry in container.journal_for("46aed677")] == ["media_revoked"]
 
 
 def test_the_old_key_does_not_stay_in_memory(tmp_path):
