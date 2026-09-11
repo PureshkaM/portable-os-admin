@@ -6,7 +6,7 @@ from tkinter import simpledialog, ttk
 
 from ...admin import media_detect
 from .. import theme
-from ..widgets import Column, MessageBar, data_table, section_card, section_header
+from ..widgets import Column, MessageBar, button_row, data_table, section_card, section_header
 
 
 class DashboardFrame(ttk.Frame):
@@ -102,20 +102,25 @@ class DashboardFrame(ttk.Frame):
         # Действия над конкретным носителем стоят под таблицей, а не в общем
         # ряду: они относятся к выбранной строке, и место рядом с ней говорит
         # об этом лучше любой подписи.
-        row_actions = ttk.Frame(self, style="Window.TFrame")
-        row_actions.pack(side="top", fill="x", padx=theme.SPACE_LG, pady=(theme.SPACE_SM, 0))
-        ttk.Button(
-            row_actions, text="Проверить целостность", command=self._open_selected_integrity
-        ).pack(side="left")
-        ttk.Button(
-            row_actions, text="Журналы носителя", command=self._open_selected_logs
-        ).pack(side="left", padx=(theme.SPACE_SM, 0))
-        ttk.Button(
-            row_actions, text="Переименовать", command=self._rename_selected
-        ).pack(side="left", padx=(theme.SPACE_SM, 0))
-        ttk.Button(
-            row_actions, text="Отзыв…", command=self._open_selected_revoke
-        ).pack(side="left", padx=(theme.SPACE_SM, 0))
+        #
+        # Ряд переносимый, а не сколоченный из `pack(side="left")`: четвёртая
+        # кнопка в окне 900x600 уже не помещается, а Tk её не сжимает -- он
+        # просто перестаёт её рисовать, и «Отзыв…» получал 77 пикселей от
+        # нужных 126. Этот дефект проект ловил трижды, каждый раз одинаково,
+        # и ровно ради него заведён `button_row`.
+        row_host = ttk.Frame(self, style="Window.TFrame")
+        row_host.pack(side="top", fill="x", padx=theme.SPACE_LG)
+        button_row(
+            row_host,
+            (
+                ("Проверить целостность", self._open_selected_integrity),
+                ("Журналы носителя", self._open_selected_logs),
+                ("Переименовать", self._rename_selected),
+                ("Отзыв…", self._open_selected_revoke),
+            ),
+            style="Window.TFrame",
+            pady=(theme.SPACE_SM, 0),
+        )
 
         self._poll_job = None
         self._poll_connected()
