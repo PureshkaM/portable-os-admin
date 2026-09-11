@@ -125,9 +125,20 @@ class StartupFrame(ttk.Frame):
     def _open(self) -> None:
         with error_guard(self.message_bar):
             container = self.app.container_manager.open(self._path(), self.password_var.get())
+            # Запись после успеха, а не до попытки: журнал отвечает на вопрос
+            # «когда с контейнером работали», и неудачный ввод пароля ответом на
+            # него не является. Неудачные попытки -- отдельный вопрос, и писать
+            # их сюда значило бы утверждать, что журнал их видит все, тогда как
+            # подбирать пароль к файлу можно и не запуская эту программу.
+            from .. import app_journal
+
+            app_journal.record(app_journal.CONTAINER_OPENED, self._path())
             self.app.open_session(container, self._path())
 
     def _create(self) -> None:
         with error_guard(self.message_bar):
             container = self.app.container_manager.create(self._path(), self.password_var.get())
+            from .. import app_journal
+
+            app_journal.record(app_journal.CONTAINER_CREATED, self._path())
             self.app.open_session(container, self._path())

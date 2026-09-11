@@ -97,6 +97,19 @@ class RecoveryFrame(ttk.Frame):
             request = RecoveryRequest.parse(request_text)
             code = service.issue_code(request_text)
             self.app.save_container()
+            # Выдача кода -- единственное действие администратора, которое
+            # отдаёт наружу доступ к носителю, и единственное, о котором потом
+            # спрашивают «а кто это выдал». Записывается носитель и владелец,
+            # но не сам код: код открывает носитель, а журнал лежит на диске
+            # открытым текстом.
+            from .. import app_journal
+
+            record = self.app.session.container.find_media(request.media_id)
+            app_journal.record(
+                app_journal.RECOVERY_CODE_ISSUED,
+                details=f"носитель {request.media_id}, владелец: "
+                + ((record.owner or "не указан") if record else "запись не найдена"),
+            )
             if request.kind == KIND_MACHINES:
                 self.message_bar.success(
                     f"Носитель {request.media_id} исчерпал список машин. "
