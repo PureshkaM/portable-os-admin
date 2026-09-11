@@ -1,3 +1,20 @@
+portable-os-admin (0.1.0-2) unstable; urgency=low
+
+  * Install as a system Python package instead of a private virtualenv, so
+    the package no longer downloads anything at install time. Drop the
+    Textual TUI, whose only reason to exist -- textual 0.1.13 in Debian
+    bookworm -- went with it; the GUI is the only interface now.
+  * Ask the desktop for administrator rights through polkit instead of
+    running the application setuid or asking for a password ourselves.
+  * pkexec depends on policykit-1 as an alternative: it only became its own
+    package in Debian 12, and this changelog entry describes what the
+    package looks like now, on a system that may be older.
+  * Add cpio to Recommends: install/image_catalog.py reads a RedOS image's
+    timezone and keyboard layout data through rpm2cpio | cpio directly, with
+    no bsdtar fallback for that particular path.
+
+ -- PureshkaM <xripmax@gmail.com>  Fri, 11 Sep 2026 00:00:00 +0000
+
 portable-os-admin (0.1.0-1) unstable; urgency=low
 
   * Initial packaging: installs the admin TUI plus its Python

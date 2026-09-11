@@ -38,6 +38,8 @@ import re
 import subprocess
 import tempfile
 
+from .tooling import resolve_tool
+
 #: Сколько ждать распаковки одного пакета. Пакеты здесь маленькие -- tzdata и
 #: xkeyboard-config, -- и если распаковка идёт дольше, то что-то не так с
 #: образом, а не с размером.
@@ -45,6 +47,17 @@ UNPACK_TIMEOUT = 60
 
 #: Зоны, которые не предлагаются: служебные каталоги tzdata, а не места.
 _ZONE_NOISE = ("right/", "posix/", "Etc/", "SystemV/", "US/", "Canada/", "Mexico/", "Brazil/")
+
+
+class ExtractionToolMissingError(RuntimeError):
+    """Нужный для распаковки инструмент не найден на этой машине.
+
+    Не то же самое, что "образ не тот" -- отсутствие файла или каталога на
+    образе тихо даёт пустой список (это законный ответ на выбор чужого
+    образа), а отсутствие *инструмента* администратор может исправить сам,
+    поставив пакет, и должен об этом узнать явно, а не получить пустой
+    список неясно почему.
+    """
 
 
 def _find(directory: str, pattern: str) -> "str | None":
@@ -94,9 +107,30 @@ def _unpack(package: str, into: str) -> bool:
 
     Оба семейства -- своим способом, и ни один не требует прав: rpm2cpio и
     dpkg-deb работают с файлом, а не с системой.
+
+    Инструмент проверяется явно, до запуска, а не через отлов исключения
+    после: раньше `FileNotFoundError` от отсутствующего `dpkg-deb` тонуло в
+    общем `except` наравне с битым архивом образа, и кнопка «Прочитать из
+    образа…» в мастере просто возвращала пустой список -- администратор не
+    узнавал, что дело в отсутствующем пакете на его собственной машине, а не
+    в образе. Как и `rpm_extract.unpack`, инструмент называется по имени в
+    сообщении: это единственное, что администратор может исправить сам.
+    Отказ самой распаковки (битый архив, не тот формат) по-прежнему тихо
+    возвращает `False` -- это не то, что человек может исправить установкой
+    пакета.
     """
-    try:
-        if package.endswith(".rpm"):
+    if package.endswith(".rpm"):
+        # У этой ветки, в отличие от install/rpm_extract.py, нет запасного
+        # пути через bsdtar: rpm2cpio и cpio -- единственный способ прочитать
+        # .rpm здесь, поэтому оба обязаны быть на месте, а не быть "одним из".
+        missing = [tool for tool in ("rpm2cpio", "cpio") if resolve_tool(tool) is None]
+        if missing:
+            raise ExtractionToolMissingError(
+                "не найдены утилиты для распаковки .rpm с образа: "
+                + ", ".join(missing)
+                + ". Установите пакет rpm (в него входит rpm2cpio) и пакет cpio."
+            )
+        try:
             with open(package, "rb") as handle:
                 cpio = subprocess.run(
                     ["rpm2cpio"], stdin=handle, capture_output=True, timeout=UNPACK_TIMEOUT
@@ -108,6 +142,19 @@ def _unpack(package: str, into: str) -> bool:
                 capture_output=True, timeout=UNPACK_TIMEOUT,
             )
             return extract.returncode == 0
+        except (OSError, subprocess.SubprocessError):
+            # Инструмент на месте (проверено выше) -- сюда попадают отказы
+            # вроде исчезнувшего файла пакета или битого архива, а не
+            # отсутствующей утилиты, и это по-прежнему повод вернуть пустой
+            # результат, а не уронить мастер конфигурации.
+            return False
+
+    if resolve_tool("dpkg-deb") is None:
+        raise ExtractionToolMissingError(
+            "не найден dpkg-deb -- им читается содержимое .deb с образа. "
+            "Установите пакет dpkg."
+        )
+    try:
         result = subprocess.run(
             ["dpkg-deb", "-x", package, into], capture_output=True, timeout=UNPACK_TIMEOUT
         )
@@ -259,6 +306,15 @@ def _deb_launchers(mountpoint: str, packages: "set[str]") -> "dict[str, list[str
             if package in remaining:
                 archives[package] = os.path.join(directory, name)
                 remaining.discard(package)
+
+    if archives and resolve_tool("dpkg-deb") is None:
+        # Тот же инструмент, что и в `_unpack`, но здесь он вызывается
+        # напрямую (без распаковки), поэтому проверяется отдельно -- иначе
+        # каждый пакет по очереди тихо давал бы пустой список запускателей.
+        raise ExtractionToolMissingError(
+            "не найден dpkg-deb -- им читается оглавление .deb с образа. "
+            "Установите пакет dpkg."
+        )
 
     for package, archive in sorted(archives.items()):
         try:

@@ -1,6 +1,6 @@
 Name:           portable-os-admin
 Version:        0.1.0
-Release:        1%{?dist}
+Release:        3%{?dist}
 Summary:        Admin tool for portable LUKS-encrypted OS media
 
 License:        MIT
@@ -8,15 +8,39 @@ URL:            https://github.com/PureshkaM/portable-os-admin
 Source0:        %{name}-%{version}.tar.gz
 BuildArch:      noarch
 
-# python3-devel supplies this macro on the RHEL family. Defining a fallback
-# lets the spec be built -- and therefore checked -- on a machine that has
-# rpmbuild but not the RHEL Python macros, which is the only way this package
-# gets verified without a RedOS host to hand.
-%{!?python3_sitelib: %global python3_sitelib %(python3 -c "import sysconfig; print(sysconfig.get_paths()['purelib'])")}
+# %{python3_sitelib} comes from python3-rpm-macros (pulled in by
+# python3-devel below): it is how rpm's macro table learns where *this
+# RHEL-family host's* python3 keeps site-packages, e.g.
+# /usr/lib/python3.9/site-packages on RHEL8, a different path on RHEL9 --
+# a fact about the target distribution's own packaging convention.
+#
+# This used to have a fallback that asked the *build host's own* `sysconfig`
+# for that path when the macro was undefined, specifically to let the spec be
+# built -- and so checked -- on a machine with rpmbuild but no RHEL macros.
+# That is exactly the bug it looks like: sysconfig answers for whatever
+# happens to be running rpmbuild, not for the RedOS/RHEL box that will later
+# run `dnf install`. On a Debian host it resolved to
+# /usr/lib/python3/dist-packages, a path no RHEL-family python3 ever
+# searches -- `dnf install` succeeded and `portable-os-admin` then failed
+# with ModuleNotFoundError on first launch.
+#
+# There is no host-independent value to fall back to -- the whole point of
+# the macro is that it is a RHEL-family convention, not a computable fact --
+# so there is no fallback here any more. A build without the real macro must
+# refuse loudly instead of shipping a package that only looks like it works.
+# build-rpm.sh checks for exactly this before invoking rpmbuild at all.
 
 BuildRequires:  python3-devel
 
-Requires:       python3 >= 3.9
+# RHEL-family python3 stays at 3.6 forever; 3.9/3.11/... arrive as separate,
+# differently-named packages. `python3 >= 3.9` therefore either fails to
+# resolve at all or resolves against the wrong interpreter entirely.
+# python3(abi) is the virtual provide rpm itself generates for whichever
+# interpreter python3-devel's macros were computed for on the build host --
+# the same one %{python3_sitelib} above resolves against -- so this tracks
+# the actual build, not a guessed floor.
+Requires:       python3
+Requires:       python3(abi) = %{python3_version}
 Requires:       python3-tkinter
 Requires:       python3-cryptography
 # pkexec, through which the application asks the desktop for administrator
@@ -30,7 +54,11 @@ Requires:       cryptsetup
 Requires:       dosfstools
 Requires:       e2fsprogs
 Requires:       util-linux
-Requires:       systemd-udev
+# udevadm ships in the `systemd` package itself on the RHEL family -- there
+# is no separate systemd-udev subpackage there. install/tooling.py's
+# PROVIDED_BY table says the same thing and is what the installer's own
+# "missing tool" messages quote; the spec has to agree with it, not guess.
+Requires:       systemd
 # Reading RedOS repository metadata: its primary.xml is zstd-compressed.
 Requires:       zstd
 Requires:       squashfs-tools
@@ -39,8 +67,17 @@ Requires:       ca-certificates
 # an installation image. It is part of a RHEL-family base system, but naming it
 # keeps a minimal install from surprising us.
 Requires:       rpm
+# rpm2cpio only unwraps the outer cpio archive; cpio is what actually reads
+# the result. install/image_catalog.py also calls it directly to read
+# tzdata and xkeyboard-config off a RedOS image -- that path has no bsdtar
+# fallback (unlike install/rpm_extract.py's), so this is a hard Requires
+# rather than the Recommends it is on the .deb side.
+Requires:       cpio
 # polkit is desktop-agnostic; the agent that draws the password prompt is not.
-# One per mainstream desktop, so whichever is installed brings its own.
+# One per mainstream desktop, so whichever is installed brings its own. This
+# rich (boolean) dependency needs rpm >= 4.13; RedOS is RHEL8-based
+# (rpm 4.14+), the same base-system assumption install/tooling.py already
+# makes by naming `dnf` unconditionally.
 Recommends:     (polkit-kde or polkit-gnome or mate-polkit or lxqt-policykit)
 # Only needed to build a medium for another architecture. Without it such an
 # install is refused before the medium is touched, so it is not required.
@@ -116,6 +153,19 @@ install -m 755 packaging/polkit/launch-root %{buildroot}/usr/lib/portable-os-adm
 /usr/lib/portable-os-admin/launch-root
 
 %changelog
+* Fri Sep 11 2026 PureshkaM <xripmax@gmail.com> - 0.1.0-3
+- Dropped the sysconfig-based fallback for %{python3_sitelib}: it encoded the
+  build host's own Python layout rather than the target's, which is how a
+  .rpm built on Debian ended up installing to a path no RHEL-family python3
+  searches. build-rpm.sh now refuses to build at all without the real
+  python3-devel macros, and Release is bumped to record that this build's
+  file layout genuinely changed, not just its packaging metadata.
+- Requires now names python3(abi) = %{python3_version} instead of a hardcoded
+  `python3 >= 3.9` floor RHEL's own python3 package never satisfies, and
+  systemd instead of a systemd-udev subpackage that does not exist there.
+- Added cpio, which install/image_catalog.py calls directly to read a RedOS
+  image's tzdata and xkeyboard-config, with no bsdtar fallback for that path.
+
 * Thu Aug 20 2026 PureshkaM <xripmax@gmail.com> - 0.1.0-2
 - Install as a system Python package instead of a private virtualenv, so the
   package no longer downloads anything at install time.
