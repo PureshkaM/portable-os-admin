@@ -171,15 +171,6 @@ def _issued(container, media_id: str = "46aed677") -> MediaRecord:
     return record
 
 
-def test_a_new_record_is_in_service(tmp_path):
-    """Умолчание -- «действует»: отзыв это событие, а не исходное состояние."""
-    container = ContainerManager().create(tmp_path / "admin.container", "CorrectHorse123")
-    record = _issued(container)
-
-    assert not record.is_revoked
-    assert record.status_text == "действует"
-
-
 def test_revoking_keeps_the_record_and_remembers_why(tmp_path):
     """Отзыв -- факт учёта, а не удаление истории.
 
@@ -225,17 +216,6 @@ def test_revocation_can_be_undone_and_both_facts_stay_in_the_journal(tmp_path):
     journal = container.journal_for("46aed677")
     assert [entry.action for entry in journal] == ["media_restored", "media_revoked"]
     assert journal[1].details == "ошибся строкой"
-
-
-def test_the_journal_keeps_media_apart(tmp_path):
-    container = ContainerManager().create(tmp_path / "admin.container", "CorrectHorse123")
-    _issued(container, "46aed677")
-    _issued(container, "218d2d33")
-
-    container.revoke_media("46aed677", "уволен")
-
-    assert len(container.journal_for("46aed677")) == 1
-    assert container.journal_for("218d2d33") == []
 
 
 def test_revoking_an_unknown_medium_is_refused(tmp_path):

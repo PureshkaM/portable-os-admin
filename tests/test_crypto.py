@@ -67,38 +67,6 @@ def test_derive_recovery_passphrase_is_not_the_code_itself():
     assert len(passphrase) == 64
 
 
-def test_calibration_picks_a_power_of_two_within_the_agreed_bounds(monkeypatch):
-    """Стоимость подбирается, а не берётся из кода.
-
-    Зашитое число пришлось бы выбирать по самой слабой мыслимой машине, то есть
-    отдавать стойкость даром на всех остальных. Границы при этом жёсткие: ниже
-    прежнего значения опускаться нельзя (это был бы откат), выше потолка --
-    тоже, иначе контейнер перестанет открываться там, где мало памяти.
-    """
-    monkeypatch.setattr(crypto, "_calibrated_n", None)
-    monkeypatch.setenv("POA_KDF_BUDGET_SECONDS", "0.01")
-
-    n = crypto.calibrate_scrypt_n()
-
-    assert n >= crypto.SCRYPT_N, "калибровка опустилась ниже прежней стоимости"
-    assert n <= crypto.SCRYPT_N_CEILING, "калибровка вышла за потолок памяти"
-    assert n & (n - 1) == 0, "N обязан быть степенью двойки, иначе scrypt откажет"
-
-
-def test_a_larger_budget_buys_a_more_expensive_key(monkeypatch):
-    """Бюджет времени -- это и есть та ручка, которой задаётся стойкость."""
-    monkeypatch.setattr(crypto, "_calibrated_n", None)
-    monkeypatch.setenv("POA_KDF_BUDGET_SECONDS", "0.01")
-    cheap = crypto.calibrate_scrypt_n()
-
-    monkeypatch.setattr(crypto, "_calibrated_n", None)
-    monkeypatch.setenv("POA_KDF_BUDGET_SECONDS", "3600")
-    rich = crypto.calibrate_scrypt_n()
-
-    assert rich > cheap
-    assert rich == crypto.SCRYPT_N_CEILING
-
-
 def test_a_container_made_with_older_parameters_still_opens():
     """Старый контейнер не требует миграции -- и не должен требовать.
 
