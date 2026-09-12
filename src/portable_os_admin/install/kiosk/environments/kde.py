@@ -441,8 +441,32 @@ def plasma_layout_script(config: InstallConfig, paths: "KdePaths | None" = None)
         return ""
 
     paths = paths or KDE5_PATHS
-    # Разрешив настройки, администратор должен дать чем до них дойти.
-    settings_entry = "systemsettings" if config.kiosk.allowed_settings else ""
+    # Разрешив настройки, администратор должен дать чем до них дойти -- но имя
+    # запускателя у «Параметров системы» разное: РЕД ОС кладёт
+    # `kdesystemsettings.desktop`, Plasma 6 в Debian -- `systemsettings.desktop`.
+    #
+    # Прогон 12.09.2026: мы называли второе, на носителе лежало первое. Файла с
+    # таким именем не существовало, поэтому «Параметры системы» не попадали ни
+    # в панель, ни в избранное, ни в меню -- поиск по «settings» и по «system»
+    # не находил ничего, хотя сам `systemsettings` в образе есть.
+    #
+    # Поэтому имя не угадывается, а спрашивается у целевой системы -- тем же
+    # приёмом, которым собирается список разрешённых приложений.
+    settings_probe = (
+        "\n# Запускатель «Параметров системы»: имя разное у семейств, ищем то,\n"
+        "# что действительно лежит на носителе.\n"
+        'SETTINGS_ENTRY=""\n'
+        "for cand in kdesystemsettings systemsettings; do\n"
+        '    if [ -f "/usr/share/applications/$cand.desktop" ]; then\n'
+        '        SETTINGS_ENTRY="$cand"\n'
+        "        break\n"
+        "    fi\n"
+        "done\n"
+        '[ -n "$SETTINGS_ENTRY" ] || echo "poa-kiosk: ВНИМАНИЕ: настройки'
+        ' разрешены, но запускателя «Параметров системы» на носителе нет" >&2\n'
+        if config.kiosk.allowed_settings
+        else ""
+    )
     applet_service_removal = (
         f'    rm -f "{paths.services_dir}/plasma-applet-$plasmoid.desktop"\n'
         if paths.has_applet_services
@@ -457,7 +481,8 @@ def plasma_layout_script(config: InstallConfig, paths: "KdePaths | None" = None)
 # при сборке, и разойтись с действительностью им ничего не мешало.
 APPLETSRC_LAUNCHERS=""
 FAVOURITES=""
-for a in $ALLOWED {settings_entry}; do
+{settings_probe}
+for a in $ALLOWED $SETTINGS_ENTRY; do
     APPLETSRC_LAUNCHERS="${{APPLETSRC_LAUNCHERS:+$APPLETSRC_LAUNCHERS,}}applications:$a.desktop"
     FAVOURITES="${{FAVOURITES:+$FAVOURITES,}}$a.desktop"
 done

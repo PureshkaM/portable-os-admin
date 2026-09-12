@@ -1224,17 +1224,34 @@ def test_the_panel_carries_the_allowed_applications_and_locks_itself():
 
 
 def test_settings_reach_the_panel_only_when_something_is_allowed():
+    """Запускатель настроек ищется на носителе, а не называется из кода.
+
+    Имя у «Параметров системы» разное: РЕД ОС кладёт
+    `kdesystemsettings.desktop`, Plasma 6 в Debian -- `systemsettings.desktop`.
+    Прогон 12.09.2026: мы называли второе, на носителе лежало первое, и
+    настройки не попадали никуда -- ни в панель, ни в избранное, ни в меню;
+    поиск по «settings» и по «system» в живом сеансе не находил ничего, хотя
+    сам `systemsettings` в образе есть.
+    """
     with_settings = kiosk.plasma_layout_script(
         make_kiosk_config(desktop_environment="kde", allowed_apps=["mate-calc"],
                           allowed_settings=["network"])
     )
-    # Имя дописывается к тому же списку: разрешив настройки, администратор
-    # должен дать чем до них дойти.
-    assert "$ALLOWED systemsettings" in with_settings
+    # Имя не вписано, а выбрано из тех, что действительно лежат на носителе.
+    assert "SETTINGS_ENTRY=" in with_settings
+    assert "for cand in kdesystemsettings systemsettings" in with_settings
+    assert '[ -f "/usr/share/applications/$cand.desktop" ]' in with_settings
+    # И попадает в тот же список, что и разрешённые приложения.
+    assert "for a in $ALLOWED $SETTINGS_ENTRY" in with_settings
+    # Если ни одного из имён на носителе нет -- об этом говорится вслух, а не
+    # получается молча пустая панель.
+    assert "запускателя «Параметров системы» на носителе нет" in with_settings
+
     without = kiosk.plasma_layout_script(
         make_kiosk_config(desktop_environment="kde", allowed_apps=["mate-calc"])
     )
-    assert "systemsettings" not in without
+    assert "systemsettings" not in without, "настройки не разрешены -- нечего выносить"
+    assert "SETTINGS_ENTRY=" not in without
 
 
 def test_the_device_notifier_is_removed_rather_than_hidden():
