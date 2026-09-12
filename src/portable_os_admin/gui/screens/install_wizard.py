@@ -58,6 +58,8 @@ class InstallWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
         self.device_size_gb = "16"
         self.image_path = ""
         self.image_info = None
+        self.media_name = ""
+        self.media_owner = ""
         self._valid_names: list[str] = []
         self._config_fitness: dict[Path, tuple[bool, str]] = {}
         self._devices: list[BlockDevice] = []
@@ -66,7 +68,7 @@ class InstallWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
         super().__init__(
             parent,
             app,
-            step_titles=["Образ ОС", "Конфигурация", "Носитель", "Пароль", "Подтверждение и установка"],
+            step_titles=["Образ ОС", "Конфигурация", "Носитель", "Пароль и владелец", "Подтверждение и установка"],
             step_hints=[
                 "",
                 "",
@@ -327,9 +329,27 @@ class InstallWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
         add_field(form, 0, "Пароль пользователя (LUKS):", self.passphrase_var, show="*", width=30)
         self.passphrase_confirm_var = tk.StringVar(value=getattr(self, "passphrase", ""))
         add_field(form, 2, "Повторите пароль:", self.passphrase_confirm_var, show="*", width=30)
+        # Те же два поля, что и в мастере развёртывания, и по той же причине.
+        # Этот мастер тоже заводит запись о носителе, но до 12.09.2026 не
+        # спрашивал ни имени, ни владельца: носитель, собранный первым
+        # сценарием, попадал в список безымянной строкой, а на экране выдачи
+        # кода восстановления опознавать звонящего было нечем.
+        self.media_name_var = tk.StringVar(value=self.media_name)
+        add_field(
+            form,
+            4,
+            "Имя носителя:",
+            self.media_name_var,
+            width=36,
+            hint="например: «Иванов, бухгалтерия»",
+        )
+        self.media_owner_var = tk.StringVar(value=self.media_owner)
+        add_field(form, 6, "Владелец (ФИО):", self.media_owner_var, width=36)
 
     def _save_step_passphrase(self) -> None:
         self.passphrase = self.passphrase_var.get()
+        self.media_name = self.media_name_var.get().strip()
+        self.media_owner = self.media_owner_var.get().strip()
 
     def _validate_step_passphrase(self) -> bool:
         if not self.passphrase_var.get():
@@ -352,6 +372,16 @@ class InstallWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
             return False
         if self.passphrase_var.get() != self.passphrase_confirm_var.get():
             self.message_bar.error("Пароли не совпадают.")
+            return False
+        # Владелец обязателен здесь ровно так же, как в мастере развёртывания:
+        # спросить постфактум невозможно, а без него код восстановления
+        # выдаётся неизвестно кому.
+        if not self.media_owner_var.get().strip():
+            self.message_bar.error(
+                "Укажите владельца — ФИО сотрудника, которому выдаётся носитель. "
+                "По этому имени вы будете опознавать звонящего, когда с носителя "
+                "запросят код восстановления."
+            )
             return False
         return True
 
@@ -592,6 +622,8 @@ class InstallWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
                 dry_run=False,
                 confirm_device=confirm_device,
                 on_step=self._on_stage,
+                media_name=self.media_name,
+                media_owner=self.media_owner,
             )
 
         run_in_background(

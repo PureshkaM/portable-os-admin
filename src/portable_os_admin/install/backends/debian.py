@@ -350,7 +350,6 @@ class DebianInstallBackend(InstallBackend):
         if not files or layout is None or not layout.mapper_name:
             return files
 
-        media_id = layout.mapper_name.rsplit("-", 1)[-1]
         # Хук сборки: кладёт в образ сам скрипт регистрации и cryptsetup,
         # которым тот пишет keyslot. `copy_exec` -- потому что cryptsetup
         # тянет библиотеки, и копирования одного файла мало.

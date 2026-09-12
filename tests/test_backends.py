@@ -867,7 +867,6 @@ def test_redos_carries_the_font_files_themselves():
     from portable_os_admin.config import InstallConfig
     from portable_os_admin.install.backends import get_backend
 
-    config = InstallConfig.create_default("stick", "redos")
     names = get_backend("redos").core_package_names()
     assert "kbd-misc" in names, "шрифтов консоли нет в наборе"
 

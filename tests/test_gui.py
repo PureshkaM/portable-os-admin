@@ -537,7 +537,10 @@ class _StubInstaller:
 
         self._real = OSInstaller(session)
 
-    def run(self, device, config, passphrase, *, image_path="", dry_run, confirm_device, on_step=None):
+    def run(
+        self, device, config, passphrase, *, image_path="", dry_run, confirm_device,
+        on_step=None, media_name="", media_owner="",
+    ):
         _StubInstaller.last_device = device
         _StubInstaller.last_dry_run = dry_run
         _StubInstaller.last_image_path = image_path
@@ -545,6 +548,7 @@ class _StubInstaller:
         return self._real.run(
             device, config, passphrase, image_path=image_path, dry_run=True,
             confirm_device=confirm_device, on_step=on_step,
+            media_name=media_name, media_owner=media_owner,
         )
 
 
@@ -581,6 +585,8 @@ def _fill_install_wizard(app, wizard, device="/dev/sdb", size="32"):
     app.update()
     wizard.passphrase_var.set("user-passphrase-123")
     wizard.passphrase_confirm_var.set("user-passphrase-123")
+    wizard.media_name_var.set("Иванов, бухгалтерия")
+    wizard.media_owner_var.set("Иванов Иван Иванович")
     wizard._go_next()
     app.update()
 
@@ -609,6 +615,9 @@ def test_install_wizard_records_media_and_recovery(gui_app, tmp_path, monkeypatc
     # the wizard asks for a real install -- there is no longer a preview mode
     assert _StubInstaller.last_dry_run is False
     assert len(app.session.container.data.media_records) == 1
+    # Владелец обязателен на обоих путях записи носителя, а не только в
+    # мастере выдачи: по нему на экране восстановления опознают звонящего.
+    assert app.session.container.data.media_records[0].owner == "Иванов Иван Иванович"
     # По записи на каждый recovery-keyslot, а не одна: остаток заголовка LUKS
     # уходит под одноразовые коды целиком, и сколько их -- зависит от того,
     # сколько машин разрешил администратор. Считается из той же функции, что и
@@ -635,7 +644,7 @@ def test_install_wizard_passes_the_real_device_not_the_form_fields(gui_app, tmp_
     """
     from portable_os_admin.install.devices import BlockDevice, Partition
 
-    install_wizard_module = _stub_install(monkeypatch)
+    _stub_install(monkeypatch)
     real_device = BlockDevice(
         name="sdb",
         path="/dev/sdb",
@@ -731,7 +740,7 @@ def test_install_wizard_lists_what_will_be_destroyed(gui_app, tmp_path, monkeypa
     partitions, their sizes and labels are."""
     from portable_os_admin.install.devices import BlockDevice, Partition
 
-    install_wizard_module = _stub_install(monkeypatch)
+    _stub_install(monkeypatch)
     device = BlockDevice(
         name="sdb", path="/dev/sdb", size_bytes=32_000_000_000, model="Cruzer Blade",
         removable=True, mountpoints=("/media/user/photos",),

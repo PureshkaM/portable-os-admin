@@ -230,6 +230,8 @@ class OSInstaller:
         dry_run: bool = True,
         confirm_device: str | None = None,
         on_step: "Callable[[int, int, str], None] | None" = None,
+        media_name: str = "",
+        media_owner: str = "",
     ) -> InstallResult:
         """`image_path` is the installation image the system is taken from.
 
@@ -263,18 +265,11 @@ class OSInstaller:
         # The installer unmounts the medium itself as an explicit, logged step,
         # so an automounted stick is not a hard stop -- the user has already
         # confirmed the device is about to be erased.
-        # До стирания, а не на последнем шаге. Дистрибутив без загрузчика для
-        # RHEL-семейства бесполезен: собрать его на месте нечем, grub2-install
-        # для EFI там отключён. Раньше это выяснялось через час работы, когда
-        # носитель уже стёрт.
-        if backend.bootloader_comes_from_packages and not metadata.has_bootloader:
-            raise InstallError(
-                "в дистрибутиве нет загрузчика, а собрать его на месте для этого "
-                "семейства нельзя: подписанные shim и grub приходят готовыми в "
-                "пакетах.\nДистрибутив собран версией программы, которая их "
-                "выбрасывала, — пересоберите его.\nНоситель не изменён."
-            )
-
+        # Проверки «дистрибутив без загрузчика» здесь нет и быть не может:
+        # дистрибутива здесь нет вовсе. Этот путь ставит систему прямо с
+        # установочного образа, и пакеты с shim и grub приходят в носитель
+        # вместе с остальными. Проверка нужна на пути развёртывания готового
+        # дистрибутива, и она там есть -- см. deploy_distribution.
         self.check_possible(device, config, require_unmounted=False)
 
         media_id = crypto.new_media_id()
@@ -319,6 +314,12 @@ class OSInstaller:
             media_id=media_id,
             luks_uuid=layout.luks_uuid,
             label=device.model or device.path,
+            # Имя и владелец -- то же самое, что и на пути развёртывания, и
+            # заполняются те же поля. Этот путь оставался без них до
+            # 12.09.2026: носитель, собранный «Установить…», попадал в список
+            # безымянной строкой без владельца, хотя записи заводит такие же.
+            name=media_name.strip(),
+            owner=media_owner.strip(),
             config_name=config.name,
             target_os=config.target_os,
             # Without this key the log and exchange volumes of this medium can
