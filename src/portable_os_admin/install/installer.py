@@ -463,22 +463,7 @@ class OSInstaller:
         run(["mkdir", "-p", root])
 
         self._progress.step("Развёртывание базовой системы с образа")
-        argv = backend.bootstrap_command(root, config, image_url, release)
-        run(argv, timeout=BOOTSTRAP_TIMEOUT)
-
-        # A bootstrapper that exits 0 having produced nothing is a real
-        # possibility -- dnf does exactly that when the transaction resolves to
-        # an empty set -- and the failure then surfaces two steps later as a
-        # missing /etc/resolv.conf, which says nothing about the cause. Checked
-        # here, while the command responsible is still the obvious suspect.
-        if not dry_run and not os.path.isdir(os.path.join(root, "etc")):
-            raise InstallError(
-                "развёртывание базовой системы завершилось без ошибки, но система не "
-                f"создана: в {root} нет каталога etc.\n"
-                f"Команда: {' '.join(argv)}\n"
-                "Обычно это значит, что репозиторий образа не содержит запрошенных "
-                "пакетов для выбранной архитектуры."
-            )
+        self._run_bootstrap(backend, config, root, image_url, release, plan, dry_run, confirm)
 
         self._mount_pseudo_filesystems(root, state, plan, dry_run, confirm)
         self._bind_image_into(root, image_url, state, plan, dry_run, confirm)
@@ -1228,7 +1213,9 @@ class OSInstaller:
         )
 
         self._progress.step("Развёртывание базовой системы с образа")
-        self._run_bootstrap(backend, config, layout, image_url, release, plan, dry_run, confirm_device)
+        self._run_bootstrap(
+            backend, config, layout.mount_root, image_url, release, plan, dry_run, confirm_device
+        )
 
         self._progress.step("Подключение служебных разделов")
         run(["mkdir", "-p", f"{layout.mount_root}/boot"])
@@ -1270,21 +1257,17 @@ class OSInstaller:
             run(["mount", "--bind", image_inside, target])
             state.mounts.append(target)
 
-        # Where the target's package manager looks while it is being built.
-        # debootstrap leaves /etc/apt/sources.list empty for a file:// mirror
-        # -- checked on the medium afterwards -- so without this apt in the
-        # chroot has no repository at all and cannot install a kernel.
-        sources = backend.install_time_sources(release, image_url, self._source_components)
-        if sources is not None:
-            relative, content = sources
-            target = f"{layout.mount_root}/{relative}"
-            run(["mkdir", "-p", target.rsplit("/", 1)[0]])
-            self._write_file(target, content, plan, dry_run, confirm_device)
-
-        # A freshly bootstrapped tree has no resolver configuration, so every
-        # package download inside the chroot would fail to resolve a hostname.
-        self._write_file(
-            f"{layout.mount_root}/etc/resolv.conf", _host_resolv_conf(), plan, dry_run, confirm_device
+        # Репозиторий на время установки и резолвер -- тем же вызовом, что и в
+        # сборке дистрибутива.
+        #
+        # Здесь стояла копия этого кода, и она разошлась с оригиналом: в ней не
+        # было `rm -f` перед записью resolv.conf. На РЕД ОС файл -- висячая
+        # ссылка на /run/systemd/resolve/stub-resolv.conf, и запись падала с
+        # «No such file or directory». Прогон 12.09.2026 дошёл до шага 11 из 19
+        # (полчаса под эмуляцией, носитель уже стёрт) и умер именно на этом,
+        # хотя в соседнем пути та же беда была разобрана и закрыта 27.08.
+        self._write_install_time_sources(
+            layout.mount_root, backend, release, image_url, plan, dry_run, confirm_device
         )
 
         temporary_paths = []
@@ -1688,9 +1671,29 @@ class OSInstaller:
             return False
         return distribution.is_squashfs(metadata.archive)
 
-    def _run_bootstrap(self, backend, config, layout, image_url, release, plan, dry_run, confirm_device) -> None:
-        argv = backend.bootstrap_command(layout.mount_root, config, image_url, release)
+    def _run_bootstrap(self, backend, config, root, image_url, release, plan, dry_run, confirm_device) -> None:
+        """Разворачивает базовую систему в `root` -- и на носитель, и в сборку.
+
+        Проверка результата живёт здесь, а не у вызывающего, потому что нужна
+        обоим: раньше она стояла только в сборке дистрибутива, и путь установки
+        на носитель остался без неё.
+        """
+        argv = backend.bootstrap_command(root, config, image_url, release)
         self._run(argv, plan, dry_run, confirm_device, timeout=BOOTSTRAP_TIMEOUT)
+
+        # A bootstrapper that exits 0 having produced nothing is a real
+        # possibility -- dnf does exactly that when the transaction resolves to
+        # an empty set -- and the failure then surfaces two steps later as a
+        # missing /etc/resolv.conf, which says nothing about the cause. Checked
+        # here, while the command responsible is still the obvious suspect.
+        if not dry_run and not os.path.isdir(os.path.join(root, "etc")):
+            raise InstallError(
+                "развёртывание базовой системы завершилось без ошибки, но система не "
+                f"создана: в {root} нет каталога etc.\n"
+                f"Команда: {' '.join(argv)}\n"
+                "Обычно это значит, что репозиторий образа не содержит запрошенных "
+                "пакетов для выбранной архитектуры."
+            )
 
     def _install_recovery_boot(
         self, backend, layout: MediaLayout, config: InstallConfig, media_id: str, recovery_salt: bytes,
