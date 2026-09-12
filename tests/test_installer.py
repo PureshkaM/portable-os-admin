@@ -146,6 +146,28 @@ def test_dangling_resolver_symlink_is_removed_before_it_is_written(session, make
     assert flat.index(removal) < flat.index(write)
 
 
+def test_install_labels_the_whole_tree_on_the_rhel_family(session, make_config):
+    """Метки мандатного контроля ставятся по всему корню, а не по нескольким
+    каталогам.
+
+    Система разворачивается с машины администратора, где SELinux нет вовсе, и
+    файлы приезжают без меток. Проверено на носителе, собранном 12.09.2026: у
+    `/etc/passwd` метка есть (его дописывает установщик и метит самопроверка), а
+    у `/usr/lib/systemd/systemd` и `/bin/bash` нет ни одной. При
+    `SELINUX=enforcing` systemd с непомеченным `/usr` не стартует: загрузка
+    дошла до регистрации машины и осталась чёрным экраном на восемнадцать
+    минут.
+    """
+    argvs, _ = _plan_argvs(session, make_config, target_os="redos")
+    flat = [" ".join(a) for a in argvs]
+
+    labelling = [line for line in flat if "setfiles" in line]
+    assert labelling, "метки не расставляются вовсе"
+    assert any("file_contexts /" in line for line in labelling), (
+        "проход идёт по отдельным каталогам, а по всему дереву — нет"
+    )
+
+
 def test_everything_opened_by_the_install_is_released_afterwards(session, make_config):
     """A medium left mounted cannot be safely unplugged, and a LUKS mapping left
     open collides with the next install."""
