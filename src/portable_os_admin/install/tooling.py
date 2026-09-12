@@ -42,6 +42,7 @@ PROVIDED_BY = {
     "debootstrap": "debootstrap",
     "dnf": "dnf",
     "chroot": "coreutils",
+    "setfattr": "attr",
     "mount": "util-linux",
     "umount": "util-linux",
 }

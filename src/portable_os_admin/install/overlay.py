@@ -48,6 +48,11 @@ from __future__ import annotations
 
 #: Имя образа системы внутри контейнера.
 SYSTEM_IMAGE = "system.squashfs"
+
+#: Контекст SELinux, который обязан быть у корня системы. Значение общее для
+#: всей RHEL-линейки и берётся из её же политики; там, где мандатного контроля
+#: нет, метка лежит неиспользованной и ничему не мешает.
+ROOT_CONTEXT = "system_u:object_r:root_t:s0"
 #: Каталоги overlayfs внутри контейнера.
 UPPER_DIR = "overlay/upper"
 WORK_DIR = "overlay/work"
@@ -99,7 +104,29 @@ def prepare_commands(container_root: str) -> list[list[str]]:
     которому это не очевидно.
     """
     _, upper, work = container_paths(container_root)
-    return [["mkdir", "-p", upper], ["mkdir", "-p", work]]
+    return [
+        ["mkdir", "-p", upper],
+        ["mkdir", "-p", work],
+        # Метка мандатного контроля на самом верхнем слое.
+        #
+        # Корень собранного overlay берёт инод от `upperdir`, а этот каталог
+        # создаётся здесь, на свежем ext4, и метки не имеет. На РЕД ОС с
+        # SELinux в enforcing это означает `/` с контекстом `unlabeled_t` -- и
+        # отказ `search` на корне для каждой службы, которая его коснётся.
+        #
+        # Найдено прогоном 12.09.2026, и найдено дорого: носитель проходил весь
+        # путь до graphical.target, после чего journald, logind, sysctl и sddm
+        # падали один за другим. В журнале -- сорок восемь отказов с
+        # `tcontext=system_u:object_r:unlabeled_t:s0` на `dev="overlay" ino=2`.
+        # До squashfs этого не было: метки лежали на самом ext4-корне, куда их
+        # ставил `setfiles` при сборке эталона, а верхнего слоя не существовало.
+        #
+        # `setfattr`, а не `chcon`: команда выполняется на машине
+        # администратора, где SELinux может быть не собран вовсе, а xattr
+        # пишется в любом случае. Там, где мандатного контроля нет (Debian),
+        # метка просто не используется и ничего не стоит.
+        ["setfattr", "-n", "security.selinux", "-v", ROOT_CONTEXT, upper],
+    ]
 
 
 def copy_image_command(archive: str, container_root: str) -> list[str]:

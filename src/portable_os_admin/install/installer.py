@@ -1846,8 +1846,12 @@ class OSInstaller:
         # Служба при этом не запускается и молчит: в журнале носителя не
         # оказалось ни строчки, хотя и файл, и ссылка на месте. Ровно этим
         # однажды сломался SDDM, не сумевший прочитать собственную настройку.
+        # `/etc` целиком, а не только `/etc/systemd`: прогон 12.09.2026 нашёл
+        # без метки `/etc/fstab` -- его развёртывание дописывает после разметки
+        # эталона, как и crypttab с vconsole.conf. На overlay это ничего не
+        # копирует наверх: `/etc` и так лежит в верхнем слое целиком.
         relabel = backend.restore_labels_command(
-            layout.mount_root, ("/usr/local/sbin", "/etc/systemd", "/var/lib")
+            layout.mount_root, ("/usr/local/sbin", "/etc", "/var/lib")
         )
         if relabel is not None:
             run(relabel, timeout=BOOTSTRAP_TIMEOUT)
