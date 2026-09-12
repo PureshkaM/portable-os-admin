@@ -1929,31 +1929,35 @@ def test_mate_gets_its_gsettings_schemas():
         )
 
 
-def test_the_menu_favourites_are_written_where_plasma_reads_them():
-    """Избранное задаётся сценарием оформления, а не правкой чужого файла.
+def test_the_menu_does_not_pretend_to_have_favourites():
+    """Избранное в раскладке не задаётся, и это решение (задача 31).
 
-    Прогон 04.09.2026: раздел «Favorites» в меню Plasma оказался пуст. Список
-    писался тем же `sed` по
-    `plasma-org.kde.plasma.desktop-appletsrc`, что и раскладка панели, --
-    файлу, которого при установке ещё нет. Панель эту причину уже пережила
-    (задача 8), избранное осталось с ней один на один.
+    Меню киоска -- `kicker` (задача 29, он единственный без вкладки мест), а
+    он избранное **не показывает вовсе**: `globalFavorites` рисуется только в
+    `DashboardRepresentation.qml`, то есть в полноэкранном `kickerdash`.
+    Прогон 07.09.2026 это подтвердил: в меню Office, Utilities, Power /
+    Session -- и ничего больше. Значит запись `favoriteApps` при создании
+    виджета ничего не рисовала, и её убрали 12.09.2026.
 
-    Флаг `favoritesPortedToKAstats` намеренно не выставляется: по умолчанию
-    он false (проверено по main.xml плазмоида), и Plasma сама переносит
-    написанное в KAStats при первом запуске. Сказать «уже перенесено»
-    значило бы отдать меню пустой набор KAStats.
+    Полноэкранное меню ради третьего пути к тем же приложениям не берут:
+    разрешённое доступно из панели и ярлыком на столе, оба пути подтверждены
+    живыми загрузками обоих семейств 12.09.2026.
 
-    Ключ называется `favoriteApps`: меню киоска -- kicker, а не kickoff (см.
-    задачу 29), и схема у него своя.
+    Что остаётся -- вычистка чужого избранного из уже существующей
+    конфигурации: она не рисует ничего, а убирает то, чего пользователю видеть
+    нельзя. На РЕД ОС там оказывались «Параметры системы».
     """
     from portable_os_admin.install.kiosk.environments import kde
 
     script = kde.plasma_layout_script(make_kiosk_config(desktop_environment="kde"))
 
-    assert "menu.writeConfig('favoriteApps'" in script, "избранное не задаётся в раскладке"
-    assert "$FAVOURITES" in script, "избранное не берётся из вычисленного списка"
-    assert "menu.writeConfig('favoritesPortedToKAstats'" not in script, (
-        "флаг переноса выставлен -- меню возьмёт пустой KAStats"
+    assert "menu.writeConfig('favoriteApps'" not in script, (
+        "мёртвая запись избранного вернулась: kicker её не рисует"
+    )
+    assert "menu.writeConfig('favoritesPortedToKAstats'" not in script
+    # Вычистка чужого избранного -- остаётся.
+    assert "favoriteApps=" in script and "favorites=" in script, (
+        "перестали вычищать чужое избранное из существующей конфигурации"
     )
 
 
