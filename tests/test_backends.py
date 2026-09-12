@@ -387,6 +387,13 @@ def test_redos_tells_the_initramfs_to_unlock_the_volume():
     grub_defaults = get_backend("redos").config_files(config, layout)["etc/default/grub"]
     assert f"rd.luks.uuid={layout.luks_uuid}" in grub_defaults
 
+    # И выбор по умолчанию задаётся номером, а не «сохранённым»: сохранённый
+    # GRUB читает из `grubenv` рядом с `grub.cfg`, то есть с раздела EFI, куда
+    # этот файл не попадает. Загрузка 12.09.2026 встретила человека строкой
+    # «error: file `/EFI/redos/grubenv' not found» перед запросом пароля.
+    assert "GRUB_DEFAULT=0" in grub_defaults
+    assert "GRUB_DEFAULT=saved" not in grub_defaults
+
     # И дописывание не повторяет то, что генератор уже поставил. Первая версия
     # дописывала всегда, параметры оказывались в строке дважды, а dracut
     # склеивал два имени тома через пробел и искал службу, которой нет.

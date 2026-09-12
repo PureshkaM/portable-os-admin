@@ -958,7 +958,14 @@ class RedOSInstallBackend(InstallBackend):
     #: grub2-mkconfig перезаписывает их строку `options` из GRUB_CMDLINE_LINUX.
     #: Отсюда и требование держать параметры расшифровки именно там.
     GRUB_EXTRA_DEFAULTS = (
-        "GRUB_DEFAULT=saved",
+        # `0`, а не `saved`: сохранённый выбор GRUB читает из `grubenv` рядом с
+        # `grub.cfg`, то есть с раздела EFI, -- а наш `grubenv` лежит на
+        # POA_BOOT, и на ESP его никто не кладёт. Загрузка 12.09.2026 показала
+        # это первой же строкой на экране: «error: file `/EFI/redos/grubenv'
+        # not found». Отказ не фатальный, GRUB берёт первую запись, но на
+        # носителе-киоске запись ровно одна, а сообщение об ошибке человек
+        # видит перед запросом пароля. Debian по той же причине ставит `0`.
+        "GRUB_DEFAULT=0",
         'GRUB_DISTRIBUTOR="$(sed \'s, release .*$,,g\' /etc/system-release)"',
         "GRUB_DISABLE_RECOVERY=true",
         "GRUB_ENABLE_BLSCFG=true",
