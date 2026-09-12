@@ -414,7 +414,10 @@ class MateEnvironment(DesktopEnvironment):
         # Без меню киоск работоспособен: приложения запускаются ярлыками с
         # рабочего стола, которые кладёт скрипт белого списка.
         return f"""
-if [ -e "{BRISK_APPLET_FILE}" ]; then
+MENU_APPLET=$(poa_probe_file "апплет меню Brisk" \\
+    "меню на панели не будет, приложения запускаются ярлыками с рабочего стола" \\
+    "" "" "{BRISK_APPLET_FILE}")
+if [ -n "$MENU_APPLET" ]; then
     cat >> "/{PANEL_LAYOUT_PATH}" <<'POA_MENU'
 
 [Object menu]
@@ -431,9 +434,6 @@ else
          "приложения запускаются ярлыками с рабочего стола"
 fi
 
-if command -v dconf >/dev/null 2>&1; then
-    dconf update
-else
-    echo "poa-kiosk: dconf не установлен, настройки рабочей среды не применены" >&2
-fi
+DCONF=$(poa_probe_cmd "dconf" "настройки рабочей среды не применены" dconf)
+[ -z "$DCONF" ] || dconf update
 """

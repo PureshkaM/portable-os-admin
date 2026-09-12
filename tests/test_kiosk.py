@@ -1237,21 +1237,56 @@ def test_settings_reach_the_panel_only_when_something_is_allowed():
         make_kiosk_config(desktop_environment="kde", allowed_apps=["mate-calc"],
                           allowed_settings=["network"])
     )
-    # Имя не вписано, а выбрано из тех, что действительно лежат на носителе.
-    assert "SETTINGS_ENTRY=" in with_settings
-    assert "for cand in kdesystemsettings systemsettings" in with_settings
-    assert '[ -f "/usr/share/applications/$cand.desktop" ]' in with_settings
+    # Имя не вписано, а выбрано из тех, что действительно лежат на носителе, --
+    # и выбрано общим механизмом проверок «на месте», а не своим кодом здесь.
+    assert "SETTINGS_ENTRY=$(poa_probe_file" in with_settings
+    assert "/usr/share/applications/ .desktop kdesystemsettings systemsettings)" in with_settings
     # И попадает в тот же список, что и разрешённые приложения.
     assert "for a in $ALLOWED $SETTINGS_ENTRY" in with_settings
-    # Если ни одного из имён на носителе нет -- об этом говорится вслух, а не
-    # получается молча пустая панель.
-    assert "запускателя «Параметров системы» на носителе нет" in with_settings
+    # Если ни одного из имён на носителе нет -- в журнале установки будет и что
+    # искали, и чем это обернётся; сама строка печатается общим механизмом.
+    assert "разрешённые настройки будут недоступны из меню и панели" in with_settings
 
     without = kiosk.plasma_layout_script(
         make_kiosk_config(desktop_environment="kde", allowed_apps=["mate-calc"])
     )
     assert "systemsettings" not in without, "настройки не разрешены -- нечего выносить"
     assert "SETTINGS_ENTRY=" not in without
+
+
+def test_the_generated_script_is_valid_shell_in_every_combination():
+    """`sh -n` по всему скрипту, а не по глазам.
+
+    Скрипт исполняется в chroot на носителе, и синтаксическая ошибка в нём
+    всплывает только на живой установке -- через час работы, когда носитель уже
+    стёрт. Раньше синтаксис проверяли руками; с 12.09.2026 проверки «на месте»
+    делают два общих помощника, и сломать их можно сразу для всех четырёх
+    комбинаций одной правкой.
+    """
+    import subprocess
+
+    for target in ("redos", "debian"):
+        for desktop in ("kde", "mate"):
+            script = kiosk.apply_script(
+                make_kiosk_config(
+                    target,
+                    desktop_environment=desktop,
+                    allowed_apps=["mate-calc"],
+                    allowed_settings=["network"],
+                )
+            )
+            checked = subprocess.run(
+                ["sh", "-n"], input=script, text=True, capture_output=True
+            )
+            assert checked.returncode == 0, f"{target} + {desktop}: {checked.stderr}"
+
+            # Помощник объявлен ровно один раз и до первого обращения: иначе
+            # `set -eu` уронит скрипт на первой же проверке.
+            for helper in ("poa_probe_file", "poa_probe_cmd"):
+                assert script.count(f"{helper}() {{") == 1, f"{helper}: не одно объявление"
+                call = f"$({helper} "
+                if call in script:
+                    assert script.index(f"{helper}() {{") < script.index(call)
 
 
 def test_the_device_notifier_is_removed_rather_than_hidden():

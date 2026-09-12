@@ -455,15 +455,9 @@ def plasma_layout_script(config: InstallConfig, paths: "KdePaths | None" = None)
     settings_probe = (
         "\n# Запускатель «Параметров системы»: имя разное у семейств, ищем то,\n"
         "# что действительно лежит на носителе.\n"
-        'SETTINGS_ENTRY=""\n'
-        "for cand in kdesystemsettings systemsettings; do\n"
-        '    if [ -f "/usr/share/applications/$cand.desktop" ]; then\n'
-        '        SETTINGS_ENTRY="$cand"\n'
-        "        break\n"
-        "    fi\n"
-        "done\n"
-        '[ -n "$SETTINGS_ENTRY" ] || echo "poa-kiosk: ВНИМАНИЕ: настройки'
-        ' разрешены, но запускателя «Параметров системы» на носителе нет" >&2\n'
+        'SETTINGS_ENTRY=$(poa_probe_file "запускатель «Параметров системы»"'
+        ' "разрешённые настройки будут недоступны из меню и панели"'
+        " /usr/share/applications/ .desktop kdesystemsettings systemsettings)\n"
         if config.kiosk.allowed_settings
         else ""
     )
@@ -948,12 +942,10 @@ class Kde5Environment(DesktopEnvironment):
 # KDE читает ограничения из /etc/xdg/kdeglobals при запуске приложения,
 # компилировать нечего. Пересобирается лишь кэш меню, чтобы скрытые записи
 # исчезли из него сразу, а не после первого входа.
-for tool in {self.paths.sycoca_tools}; do
-    if command -v "$tool" >/dev/null 2>&1; then
-        "$tool" --noincremental >/dev/null 2>&1 || true
-        break
-    fi
-done
+SYCOCA=$(poa_probe_cmd "инструмент пересборки кэша меню" \\
+    "скрытые записи исчезнут из меню только после первого входа" \\
+    {self.paths.sycoca_tools})
+[ -z "$SYCOCA" ] || "$SYCOCA" --noincremental >/dev/null 2>&1 || true
 if [ ! -f /etc/xdg/kdeglobals ]; then
     echo "poa-kiosk: ВНИМАНИЕ: /etc/xdg/kdeglobals отсутствует, ограничения KDE не применены" >&2
 else
