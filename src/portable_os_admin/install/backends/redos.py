@@ -699,7 +699,9 @@ class RedOSInstallBackend(InstallBackend):
                         f"setfiles -F {self.FILE_CONTEXTS} / 2>/dev/null || true"),
         ]
 
-    def restore_labels_command(self, mount_root: str, paths: tuple[str, ...] = ("/etc",)) -> list[str] | None:
+    def restore_labels_command(
+        self, mount_root: str, paths: tuple[str, ...] = ("/etc",), upper: str = ""
+    ) -> list[str] | None:
         """Метки для файлов, дописанных на носитель после разметки эталона.
 
         `setfiles`, а не `restorecon`, и это не вкусовщина: restorecon
@@ -715,6 +717,28 @@ class RedOSInstallBackend(InstallBackend):
         setfiles берёт правила из файла политики и работает без ядра — тем же
         способом, что и разметка эталона при сборке.
         """
+        # Сквозь overlay метить нельзя, и это стоило целого дня 12.09.2026.
+        #
+        # `setfiles`, запущенный по собранному корню, завершается **с кодом
+        # ноль и не метит ничего**: файловую систему `overlay` он молча
+        # пропускает. Поэтому ни один файл, дописанный развёртыванием, метки не
+        # получал -- ни fstab, ни crypttab, ни настройка автовхода SDDM, -- и
+        # носитель доходил до экрана входа, где и оставался: SDDM не мог
+        # прочитать собственную конфигурацию.
+        #
+        # Лечится обходом overlay: метки ставятся прямо по верхнему слою, он
+        # лежит на обычном ext4. `-r` говорит setfiles, что путь надо сверять с
+        # политикой, отбросив этот префикс, -- иначе `/mnt/upper/etc/fstab` не
+        # совпал бы ни с одним правилом. Проверено на носителе: fstab и
+        # настройка SDDM получают `etc_t`.
+        if upper:
+            targets = " ".join(f"{upper}{path}" for path in paths)
+            return self.chroot(
+                mount_root, "sh", "-c",
+                f"setfiles -F -r {upper} {self.FILE_CONTEXTS} {targets}"
+                + ' || echo "poa: setfiles не смог расставить метки по слою изменений"',
+            )
+
         # Отказ виден, а не проглочен. До 12.09.2026 здесь стояло
         # `2>/dev/null || true`, и это скрыло настоящий дефект: на носителе с
         # overlay ни один дописанный файл метки не получил -- ни fstab, ни

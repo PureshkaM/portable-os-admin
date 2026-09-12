@@ -823,7 +823,13 @@ class OSInstaller:
 
         self._progress.step("Опись загрузчика и initramfs")
         self._boot_manifest = self._collect_boot_manifest(layout, dry_run)
-        self._install_self_check(layout, backend, plan, dry_run, confirm_device)
+        # Слой изменений передаётся только там, где корень собран из образа:
+        # метки по overlay не ложатся, и ставить их надо прямо по нему.
+        _, upper_dir, _ = overlay.container_paths(layout.container_root)
+        self._install_self_check(
+            layout, backend, plan, dry_run, confirm_device,
+            overlay_upper=upper_dir if overlay_root else "",
+        )
 
         self._progress.step("Завершение записи и отключение носителя")
         run(["sync"])
@@ -1809,7 +1815,9 @@ class OSInstaller:
             "esp": f"{layout.mount_root}/boot/efi",
         })
 
-    def _install_self_check(self, layout, backend, plan, dry_run, confirm_device) -> None:
+    def _install_self_check(
+        self, layout, backend, plan, dry_run, confirm_device, overlay_upper: str = ""
+    ) -> None:
         """Копия описи на зашифрованном корне и служба, которая её сверяет.
 
         Пишется после снятия описи и до размонтирования: корень ещё открыт, а
@@ -1850,9 +1858,27 @@ class OSInstaller:
         # без метки `/etc/fstab` -- его развёртывание дописывает после разметки
         # эталона, как и crypttab с vconsole.conf. На overlay это ничего не
         # копирует наверх: `/etc` и так лежит в верхнем слое целиком.
-        relabel = backend.restore_labels_command(
-            layout.mount_root, ("/usr/local/sbin", "/etc", "/var/lib")
-        )
+        paths = ("/usr/local/sbin", "/etc", "/var/lib")
+        if overlay_upper:
+            # Корень собран overlay, а по нему setfiles не работает: он молча
+            # пропускает такую файловую систему и выходит с нулём. Поэтому слой
+            # изменений подставляется внутрь chroot как обычный каталог, и
+            # метки ставятся прямо по нему.
+            inside = "/mnt/poa-upper"
+            run(["mkdir", "-p", f"{layout.mount_root}{inside}"])
+            run(["mount", "--bind", overlay_upper, f"{layout.mount_root}{inside}"])
+            try:
+                relabel = backend.restore_labels_command(
+                    layout.mount_root, paths, upper=inside
+                )
+                if relabel is not None:
+                    run(relabel, timeout=BOOTSTRAP_TIMEOUT)
+            finally:
+                run(["umount", f"{layout.mount_root}{inside}"])
+                run(["rmdir", f"{layout.mount_root}{inside}"])
+            return
+
+        relabel = backend.restore_labels_command(layout.mount_root, paths)
         if relabel is not None:
             run(relabel, timeout=BOOTSTRAP_TIMEOUT)
 

@@ -643,11 +643,17 @@ class InstallBackend(ABC):
         """
         return []
 
-    def restore_labels_command(self, mount_root: str, paths: tuple[str, ...] = ("/etc",)) -> list[str] | None:
+    def restore_labels_command(
+        self, mount_root: str, paths: tuple[str, ...] = ("/etc",), upper: str = ""
+    ) -> list[str] | None:
         """Метки для файлов, дописанных уже на носитель.
 
         Развёртывание пишет то, что уникально для носителя — fstab, crypttab,
         ключи, — и эти файлы появляются после разметки эталона.
+
+        `upper` — путь к верхнему слою overlay, каким он виден внутри chroot.
+        Задаётся, когда корень собран из образа: метить сквозь overlay нельзя,
+        см. семейство, которое это умеет.
         """
         return None
 
