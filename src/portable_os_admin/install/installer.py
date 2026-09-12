@@ -1371,6 +1371,23 @@ class OSInstaller:
         for argv in backend.chroot_setup_commands(layout.mount_root, config):
             run(argv, timeout=BOOTSTRAP_TIMEOUT)
 
+        # Метки мандатного контроля по всему дереву -- тем же вызовом и на том
+        # же месте, что и в сборке дистрибутива.
+        #
+        # Путь установки их не расставлял вовсе: метилось только то, что
+        # дописывается поверх готовой системы (`/usr/local/sbin`, `/etc`,
+        # `/var/lib` в самопроверке). Дистрибутив разворачивается с машины
+        # администратора, где мандатного контроля нет, поэтому файлы приезжают
+        # без меток -- и это видно на собранном носителе: у `/etc/passwd` метка
+        # есть, у `/usr/lib/systemd/systemd` и `/bin/bash` её нет ни одной.
+        # Загрузка 12.09.2026 дошла до регистрации машины и остановилась
+        # чёрным экраном: systemd с непомеченным `/usr` не стартует.
+        relabel = backend.relabel_commands(layout.mount_root)
+        if relabel:
+            self._progress.step("Расстановка меток безопасности")
+            for argv in relabel:
+                run(argv, timeout=BOOTSTRAP_TIMEOUT)
+
         # Before the initramfs is built, never after: the hooks below are what
         # copy the recovery flow *into* that image, so writing them afterwards
         # would leave a medium that boots without any recovery at all.
