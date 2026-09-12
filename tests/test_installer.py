@@ -125,6 +125,27 @@ def test_target_system_is_actually_written_onto_the_medium(session, make_config)
     assert f"<write-file> {mount_root}/etc/crypttab" in flat
 
 
+def test_dangling_resolver_symlink_is_removed_before_it_is_written(session, make_config):
+    """На РЕД ОС /etc/resolv.conf -- ссылка на стаб systemd-resolved, которого в
+    неподнятом корне не существует, и запись по ней падает с «no such file or
+    directory», указывая на файл, хотя каталог на месте.
+
+    Проверяется именно путь установки на носитель: в сборке дистрибутива `rm -f`
+    стоял с 27.08.2026, а сюда тот же код скопировали руками и без него. Прогон
+    12.09.2026 умер на этом на шаге 11 из 19, когда носитель был уже стёрт.
+    """
+    argvs, _ = _plan_argvs(session, make_config)
+    flat = [" ".join(a) for a in argvs]
+
+    write = next(
+        line for line in flat
+        if line.startswith("<write-file> ") and line.endswith("/etc/resolv.conf")
+    )
+    removal = "rm -f " + write.split(" ", 1)[1]
+    assert removal in flat, "resolv.conf пишется, но висячая ссылка перед этим не снесена"
+    assert flat.index(removal) < flat.index(write)
+
+
 def test_everything_opened_by_the_install_is_released_afterwards(session, make_config):
     """A medium left mounted cannot be safely unplugged, and a LUKS mapping left
     open collides with the next install."""
