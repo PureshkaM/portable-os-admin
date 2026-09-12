@@ -34,6 +34,13 @@ def test_overlay_needs_its_working_directory_prepared():
     assert any(work in c for c in commands)
     # Оба — внутри контейнера, то есть на одной файловой системе.
     assert upper.startswith("/mnt/container/") and work.startswith("/mnt/container/")
+    # Верхний слой получает метку мандатного контроля сразу при создании.
+    # Корень собранного overlay берёт инод отсюда, и без метки он выходит
+    # `unlabeled_t`: прогон 12.09.2026 показал носитель, доходящий до
+    # graphical.target, где ни одна служба не запускается.
+    assert any("setfattr" in c and upper in c for c in commands), (
+        "верхний слой остаётся без метки SELinux"
+    )
     assert image == "/mnt/container/" + overlay.SYSTEM_IMAGE
 
 
