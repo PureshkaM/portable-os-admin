@@ -1021,6 +1021,35 @@ class ConfigWizardFrame(WizardFrame):
             text="Разрешить выключение и перезагрузку машины",
             variable=self.allow_shutdown_var,
         ).pack(anchor="w", pady=(theme.SPACE_SM, 0))
+
+        # Что из «Параметров системы» открыто пользователю.
+        #
+        # Поля здесь не было вовсе -- найдено 12.09.2026. Механизм в коде есть
+        # с обеих сторон (`SETTINGS_MODULES`, запреты модулей KDE), а задать
+        # его администратору было нечем: носитель с разрешёнными настройками
+        # приложением не собирался. Тот же класс дефекта, что был с полем
+        # привязки и со своими пакетами -- код есть, выхода в интерфейс нет.
+        #
+        # Показывается в обоих режимах: это решение о том, что пользователю
+        # позволено менять в системе, и прятать его за «экспертностью» значит
+        # прятать выбор, который администратор обязан сделать осознанно.
+        # Пусто по умолчанию -- отправная точка проекта самая закрытая.
+        self.settings_vars: "dict[str, tk.BooleanVar]" = {}
+        allowed_now = set(kiosk.allowed_settings or ())
+        settings_box = ttk.LabelFrame(
+            inner, text=" Разрешённые настройки ", padding=theme.SPACE_SM
+        )
+        settings_box.pack(fill="x", pady=(theme.SPACE_SM, 0))
+        for key, label in (
+            ("network", "Сеть"),
+            ("sound", "Звук"),
+            ("datetime", "Дата и время"),
+            ("localisation", "Язык и форматы"),
+            ("keyboard", "Раскладка клавиатуры"),
+        ):
+            variable = tk.BooleanVar(value=key in allowed_now)
+            self.settings_vars[key] = variable
+            ttk.Checkbutton(settings_box, text=label, variable=variable).pack(anchor="w")
         if self.expert_mode:
             # Съёмные носители закрыты в минимальной системе намеренно:
             # принесённая флешка обходит раздел обмена с его `noexec`.
@@ -1247,6 +1276,9 @@ class ConfigWizardFrame(WizardFrame):
         )
         kiosk.autostart_app = self.autostart_var.get().strip()
         kiosk.allow_shutdown = self.allow_shutdown_var.get()
+        kiosk.allowed_settings = sorted(
+            key for key, variable in self.settings_vars.items() if variable.get()
+        )
         kiosk.allow_removable_media = self.allow_media_var.get()
         kiosk.firejail = self.firejail_var.get()
         kiosk.firejail_options = self.firejail_opts_var.get().strip()

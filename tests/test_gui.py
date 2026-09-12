@@ -794,6 +794,32 @@ def test_install_wizard_shows_no_valid_configs_guidance(gui_app, tmp_path):
     assert "конфигурац" in wizard.message_bar.var.get()
 
 
+def test_the_wizard_can_open_system_settings_to_the_user(gui_app, tmp_path):
+    """Разрешённые настройки задаются в мастере и доезжают до конфигурации.
+
+    Поля не было вовсе -- найдено 12.09.2026. Механизм в коде есть с обеих
+    сторон, а задать его администратору было нечем: носитель с разрешёнными
+    настройками приложением не собирался, и пункт «пять назначений» был
+    непроверяем не из-за нехватки прогона.
+    """
+    app = gui_app
+    _open_container(app, tmp_path)
+    app.show_frame(ConfigWizardFrame)
+    app.update()
+    wizard = app._current_frame
+    # Шаг открывается напрямую: проверяется он сам, а не дорога к нему.
+    wizard.step_index = wizard.step_titles.index("Режим системы и обновления")
+    wizard._render_step()
+    app.update()
+
+    wizard.profile_var.set("kiosk")
+    wizard.settings_vars["network"].set(True)
+    wizard.settings_vars["keyboard"].set(True)
+    wizard.save_step(wizard.step_index)
+
+    assert wizard.config.kiosk.allowed_settings == ["keyboard", "network"]
+
+
 def test_configs_list_delete(gui_app, tmp_path, monkeypatch):
     app = gui_app
     _open_container(app, tmp_path)
