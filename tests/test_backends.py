@@ -475,7 +475,17 @@ def test_both_families_build_a_generic_initramfs():
     redos = get_backend("redos")
     debian = get_backend("debian")
 
-    assert "--no-hostonly" in redos.initramfs_command("/mnt/root")
+    redos_initramfs = " ".join(redos.initramfs_command("/mnt/root"))
+    assert "--no-hostonly" in redos_initramfs
+
+    # И путь вывода задаётся явно, а не оставляется на усмотрение dracut: тот
+    # выбирает каталог по тому, что смонтировано, и при смонтированном ESP
+    # уносит образ в /boot/efi/<machine-id>/<версия>/initrd. При сборке
+    # дистрибутива ESP не смонтирован, при установке на носитель смонтирован --
+    # и прогон 12.09.2026 умер на «Directory does not exist» после получаса
+    # работы, с уже стёртым носителем.
+    assert "--regenerate-all" not in redos_initramfs
+    assert "/boot/initramfs-$kver.img" in redos_initramfs
 
     # И настройка, которая держит образ универсальным при пересборках на самом
     # носителе: без неё первое же автообновление на чужой машине сделало бы

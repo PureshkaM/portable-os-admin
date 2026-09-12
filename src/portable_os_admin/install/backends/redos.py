@@ -677,15 +677,34 @@ class RedOSInstallBackend(InstallBackend):
         ]
 
     def initramfs_command(self, mount_root: str) -> list[str]:
+        """Пересборка initramfs с явным путём вывода, по ядру за раз.
+
+        `--regenerate-all` отдавал выбор каталога самому dracut, а тот смотрит
+        на то, что смонтировано: если `/boot/efi` -- точка монтирования, он
+        пишет в `/boot/efi/<machine-id>/<версия>/initrd` (ветка с
+        `mountpoint -q /boot/efi` в самом dracut). При сборке дистрибутива ESP
+        не смонтирован, и образ ложился в `/boot`; при установке на носитель
+        смонтирован -- и прогон 12.09.2026 умер на «Can't write to
+        /boot/efi/769aebd…/6.12.21-1.red80.x86_64: Directory does not exist».
+
+        Явный путь снимает зависимость от окружения: оба пути кладут образ
+        туда, откуда его берёт запись загрузчика, -- `/boot/initramfs-<версия>.img`.
+
+        Флаги те же и по тем же причинам: без `--no-hostonly` dracut соберёт
+        образ под машину, на которой идёт сборка (chroot в чужой ВМ), а
+        `--no-hostonly-cmdline` не даёт зафиксировать в образе командную
+        строку окружения сборки -- параметры носителя приходят из записи
+        загрузчика.
+        """
         return self.chroot(
-            mount_root, "dracut", "--force", "--regenerate-all",
-            # Без этого dracut собирает образ под машину, на которой идёт
-            # сборка. Здесь это chroot внутри чужой ВМ, и в образ попадают её
-            # драйверы, а не те, что нужны носителю.
-            "--no-hostonly",
-            # И командную строку тоже не «фиксировать по месту»: параметры
-            # носителя приходят из записи загрузчика, а не из окружения сборки.
-            "--no-hostonly-cmdline",
+            mount_root, "sh", "-c",
+            "set -e; "
+            "for moddir in /lib/modules/*/; do "
+            "kver=${moddir%/}; kver=${kver##*/}; "
+            '[ -d "/lib/modules/$kver/kernel" ] || continue; '
+            "dracut --force --no-hostonly --no-hostonly-cmdline "
+            '"/boot/initramfs-$kver.img" "$kver"; '
+            "done",
         )
 
     #: Где политика targeted держит описание меток.

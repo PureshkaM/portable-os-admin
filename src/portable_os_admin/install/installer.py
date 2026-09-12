@@ -883,10 +883,6 @@ class OSInstaller:
             dry_run=dry_run, confirm_device=confirm_device,
         )
 
-    def _mount_boot_partitions(self, layout, state, plan, dry_run, confirm_device) -> None:
-        self._mount_boot_partition(layout, state, plan, dry_run, confirm_device)
-        self._mount_esp(layout, state, plan, dry_run, confirm_device)
-
     def _mount_logs_volume(self, layout, state, plan, dry_run, confirm_device) -> None:
         """Том журналов — та же история, что и /boot, этажом ниже.
 
@@ -1212,31 +1208,39 @@ class OSInstaller:
             device, config, layout, media_id, user_passphrase, plan, state, dry_run, confirm_device
         )
 
+        # Разделы подключаются ДО установки системы, а не после. Правило то же,
+        # что и в развёртывании (см. `_mount_logs_volume` и порядок шагов в
+        # `deploy_distribution`), и причина та же -- здесь её просто не
+        # применили.
+        #
+        # Прогон 12.09.2026 показал цену: в RHEL 9 ядро приезжает как
+        # /lib/modules/<версия>/vmlinuz, а в /boot его переносит
+        # kernel-install -- при установке базовой системы, то есть до того, как
+        # раздел POA_BOOT был смонтирован. Ядро, initramfs и запись загрузчика
+        # легли на корневой раздел, сверху встал пустой /boot и закрыл их
+        # собой. По содержимому корня этого не видно: файлы на месте, просто не
+        # на том разделе, а GRUB читает раздел и не находит ни одного ядра.
+        #
+        # Том журналов -- то же самое этажом ниже: пакеты создают свои каталоги
+        # в /var/log при установке (auditd, sssd, cups), каждый со своим
+        # владельцем и меткой SELinux, и служба, не нашедшая своего каталога,
+        # не стартует. Путь установки не монтировал этот том вовсе.
+        self._progress.step("Подключение служебных разделов")
+        self._mount_boot_partition(layout, state, plan, dry_run, confirm_device)
+        self._mount_logs_volume(layout, state, plan, dry_run, confirm_device)
+
         self._progress.step("Развёртывание базовой системы с образа")
         self._run_bootstrap(
             backend, config, layout.mount_root, image_url, release, plan, dry_run, confirm_device
         )
 
-        self._progress.step("Подключение служебных разделов")
-        run(["mkdir", "-p", f"{layout.mount_root}/boot"])
-        run(["mount", layout.boot_partition, f"{layout.mount_root}/boot"])
-        state.mounts.append(f"{layout.mount_root}/boot")
-        run(["mkdir", "-p", f"{layout.mount_root}/boot/efi"])
-        run(["mount", layout.esp_partition, f"{layout.mount_root}/boot/efi"])
-        state.mounts.append(f"{layout.mount_root}/boot/efi")
-
-        # Pseudo-filesystems, without which apt/dnf and the initramfs tools
-        # inside the chroot fail in obscure ways. /run is deliberately NOT
-        # bound: it would expose the host's systemd/dbus sockets to the chroot.
-        for target, argv in (
-            (f"{layout.mount_root}/proc", ["mount", "-t", "proc", "proc", f"{layout.mount_root}/proc"]),
-            (f"{layout.mount_root}/sys", ["mount", "-t", "sysfs", "sys", f"{layout.mount_root}/sys"]),
-            (f"{layout.mount_root}/dev", ["mount", "--bind", "/dev", f"{layout.mount_root}/dev"]),
-            (f"{layout.mount_root}/dev/pts", ["mount", "--bind", "/dev/pts", f"{layout.mount_root}/dev/pts"]),
-        ):
-            run(["mkdir", "-p", target])
-            run(argv)
-            state.mounts.append(target)
+        # ESP -- отдельным шагом и после установки системы. Дальше он нужен:
+        # пакеты shim и grub кладут файлы именно на него. Но раскладку внутри
+        # /boot выбирают kernel-install и dracut, а они смотрят на то, что
+        # смонтировано, и на прогоне 12.09.2026 dracut выбрал каталог внутри
+        # ESP (/boot/efi/<machine-id>/<версия>/), которого никто не создавал.
+        self._mount_esp(layout, state, plan, dry_run, confirm_device)
+        self._mount_pseudo_filesystems(layout.mount_root, state, plan, dry_run, confirm_device)
 
         # The image, visible from inside the chroot at the same path it has
         # outside it.
