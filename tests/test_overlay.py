@@ -44,6 +44,26 @@ def test_overlay_needs_its_working_directory_prepared():
     assert image == "/mnt/container/" + overlay.SYSTEM_IMAGE
 
 
+def test_labels_are_written_through_the_upper_layer_not_the_overlay():
+    """По overlay метки не ложатся, и молча.
+
+    `setfiles`, запущенный по собранному корню, пропускает такую файловую
+    систему и выходит с нулём. Прогон 12.09.2026: ни fstab, ни crypttab, ни
+    настройка автовхода SDDM метки не получили, носитель встал на экране входа,
+    и в журнале установки не было ни строчки. Поэтому метится слой изменений
+    напрямую -- он на обычном ext4, -- а `-r` отбрасывает префикс при сверке с
+    политикой.
+    """
+    from portable_os_admin.install.backends import get_backend
+
+    argv = get_backend("redos").restore_labels_command(
+        "/mnt/root", ("/etc",), upper="/mnt/poa-upper"
+    )
+    joined = " ".join(argv)
+    assert "-r /mnt/poa-upper" in joined, "метки снова ставятся сквозь overlay"
+    assert "/mnt/poa-upper/etc" in joined
+
+
 def test_the_lower_layer_is_mounted_read_only():
     """База неизменяема — на этом держится весь смысл схемы."""
     argv = overlay.lower_mount_command("/mnt/container")
