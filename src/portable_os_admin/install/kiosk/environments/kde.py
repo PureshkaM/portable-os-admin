@@ -11,7 +11,7 @@
 from __future__ import annotations
 
 from ....config.schema import InstallConfig
-from ..common import DESKTOP_KDE, EXCHANGE_DIR, SESSION_NAME, desktop_of
+from ..common import DESKTOP_KDE, EXCHANGE_DIR, desktop_of
 from .base import DesktopEnvironment
 
 #: KDE reads system-wide Kiosk restrictions from here.

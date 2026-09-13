@@ -8,7 +8,7 @@ MATE ограничивается через dconf: настройки пишу�
 from __future__ import annotations
 
 from ....config.schema import InstallConfig
-from ..common import DESKTOP_MATE, EXCHANGE_DIR, SESSION_NAME
+from ..common import DESKTOP_MATE
 from .base import DesktopEnvironment
 
 #: dconf profile telling the session to read the system database below.

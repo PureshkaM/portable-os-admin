@@ -27,7 +27,10 @@ def _install_compatibility_shims():
     # for pipes.quote, which has always been an alias of shlex.quote.
     if "pipes" not in sys.modules:
         try:
-            import pipes  # noqa: F401
+            # Через __import__, а не `import pipes`: имя здесь не нужно -- нужен
+            # сам факт, что модуль есть. Обычный импорт статический анализатор
+            # считает неиспользованным, и это замечание не убрать комментарием.
+            __import__("pipes")
         except ImportError:
             import shlex
             import types

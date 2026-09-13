@@ -17,8 +17,6 @@ run against anything else (enforced in install/installer.py).
 """
 from __future__ import annotations
 
-import json
-from pathlib import Path
 
 from ..errors import ConfigError
 from .schema import InstallConfig

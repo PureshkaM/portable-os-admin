@@ -19,7 +19,6 @@ from __future__ import annotations
 from pathlib import Path
 
 from ..errors import LogsCorruptedError, LogsUnavailableError
-from .media_lookup import find_media_by_boot_metadata  # noqa: F401  (re-exported for callers)
 from ..install.command_runner import CommandPlan, CommandRunner
 
 
