@@ -102,6 +102,35 @@ from .environments.mate import (
 )
 from .script import apply_script
 
+#: Что этот пакет отдаёт наружу.
+#:
+#: Список нужен не ради стиля: имена выше импортируются, чтобы вызывающие брали
+#: их отсюда, а не из внутренних модулей, — и статический анализатор без `__all__`
+#: считает каждое такое имя неиспользованным импортом. Тридцать ложных
+#: замечаний в выводе прячут настоящее, поэтому граница объявлена явно.
+__all__ = [
+    "APPLY_SCRIPT_PATH", "AUTOSTART_PATH", "DESKTOP_KDE", "DESKTOP_MATE",
+    "EXCHANGE_DIR", "HARDENED_OPTS", "HARDENING_KERNEL_PARAMETERS",
+    "HIDDEN_VOLUMES_RULES_PATH", "LAUNCHER_PATH", "LOGIND_CONF_PATH",
+    "OVERRIDE_DIR", "POLKIT_RULES_PATH", "SESSION_NAME", "SESSION_WAYLAND",
+    "SESSION_X11", "UNWANTED_SERVICES", "USB_LOCKDOWN_UNIT_PATH",
+    "XORG_CONF_PATH", "autostart_entry", "desktop_of", "hardening_fstab_rows",
+    "hidden_volumes_udev_rules", "is_enabled", "launcher_script",
+    "logind_conf", "polkit_rules", "session_entry", "udev_storage_rules",
+    "usb_lockdown_unit", "wants_wayland", "xorg_conf",
+    "environments",
+    "KDE5_SETTINGS_CATEGORIES", "KDE6_SETTINGS_CATEGORIES", "KDEGLOBALS_PATH",
+    "KSCREENLOCKER_PATH", "PLASMARC_PATH", "POWERMANAGEMENT_PATH",
+    "REMOVED_PLASMOIDS", "SETTINGS_LANDING_MODULE", "SETTINGS_MODULES",
+    "SETTINGS_ROOT_CATEGORY", "kdeglobals", "kscreenlockerrc",
+    "plasma_layout_script", "plasmarc", "powermanagement_profiles",
+    "settings_modules_script",
+    "DCONF_KEYFILE_PATH", "DCONF_LOCKS_PATH", "DCONF_PROFILE_PATH",
+    "dconf_keyfile", "dconf_locks", "dconf_profile",
+    "apply_script",
+    "config_files", "chroot_commands",
+]
+
 
 # ----------------------------------------------------------------------
 # What the installer asks for
