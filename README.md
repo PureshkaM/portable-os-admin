@@ -791,14 +791,19 @@ src/portable_os_admin/
     machine_binding.py  # привязка к машинам: keyslot'ы и скрипты для initramfs
     distribution.py     # сборка и распаковка дистрибутива, контрольная сумма
     autoupdate.py       # самообновление носителя при загрузке
-    overlay.py          # squashfs + overlay (написано, в работу не включено)
+    overlay.py          # squashfs + overlay: корень носителя из образа и слоя
+    revocation.py       # проверка отзыва на носителе: скрипт, служба, ключ
   recovery/             # запрос администратору, выдача кода, recovery_module.sh,
                         #   ui.sh — общий экран носителя до загрузки системы
-  admin/                # просмотр журналов, раздел обмена, сопоставление носителя
+  admin/                # журналы, раздел обмена, сопоставление носителя,
+                        #   revocation_client.py — команды ресурсу отзыва,
+                        #   revocation_publish.py — состояние носителя туда же
   gui/                  # Tkinter-приложение: пошаговые мастера, запрос прав
-tests/                    # pytest, 560 тестов (31 файл)
+tests/                    # pytest, 664 теста (37 файлов)
 docs/PLAN.md               # план работ и хроника
-packaging/                 # .deb (debian/) и .rpm (rpm/) для самого приложения
+docs/REVOCATION-SERVER.md  # ресурс отзыва: развёртывание и протокол
+packaging/                 # .deb (debian/) и .rpm (rpm/) для самого приложения,
+                           #   revocation-server/ — служба отзыва и её установка
 ```
 
 ## Лицензия
