@@ -33,7 +33,13 @@ BuildArch:      x86_64
 # refuse loudly instead of shipping a package that only looks like it works.
 # build-rpm.sh checks for exactly this before invoking rpmbuild at all.
 
-BuildRequires:  python3-devel
+# BuildRequires больше нет вовсе.
+#
+# python3-devel требовался, пока код ставился в системный site-packages: путь
+# туда даёт макрос %{python3_sitelib}, а его приносит именно этот пакет. Со
+# своим рантаймом в собственном префиксе системный Python не нужен ни при
+# сборке, ни при установке, и требование стало ложным: сборка 13.09.2026 на
+# раннере GitHub упала на «python3-devel is needed by portable-os-admin».
 
 # RHEL-family python3 stays at 3.6 forever; 3.9/3.11/... arrive as separate,
 # differently-named packages. `python3 >= 3.9` therefore either fails to
