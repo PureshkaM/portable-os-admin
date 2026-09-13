@@ -94,6 +94,26 @@ class AdminContainer:
             ).decode()
         return base64.b64decode(self.data.revocation_secret_b64)
 
+    @property
+    def admin_authority_secret(self) -> bytes:
+        """Семя ключа, которым администратор подписывает команды серверу отзыва.
+
+        Третий ключ, и снова отдельный -- по той же причине, по какой отделён
+        ключ отзыва, только с другой стороны. Ключ отзыва уезжает на сервер
+        целиком: без него тот не подпишет ответ носителю. Этот не уезжает
+        никогда, на сервере лежит только его открытая часть.
+
+        Что это даёт: администратору не нужен ни доступ к оболочке сервера, ни
+        токен, который можно украсть и предъявить в другом месте, -- он просто
+        подписывает новый список состояний. А взломанный сервер не может выдать
+        себя за администратора: подделать подпись ему нечем.
+        """
+        if not self.data.admin_authority_secret_b64:
+            self.data.admin_authority_secret_b64 = base64.b64encode(
+                crypto.new_admin_secret()
+            ).decode()
+        return base64.b64decode(self.data.admin_authority_secret_b64)
+
     # -- media records ----------------------------------------------------
     def add_media_record(self, record: MediaRecord) -> None:
         self.data.media_records.append(record)

@@ -276,6 +276,16 @@ class AdminContainerData:
     #: отказ в обслуживании, -- но не подделать обмен конфигурациями между
     #: администраторами и не вычислить коды восстановления.
     revocation_secret_b64: str = ""
+    #: Семя ключа, которым администратор подписывает команды ресурсу отзыва.
+    #:
+    #: Третий ключ, и снова отдельный. Ключ отзыва уезжает на сервер целиком --
+    #: иначе тот не сможет подписывать ответы носителям. Этот не уезжает
+    #: никогда: на сервере лежит только его открытая часть, и она позволяет
+    #: серверу проверить, что список состояний прислал администратор. Значит
+    #: администратору не нужен ни доступ к оболочке сервера, ни токен, который
+    #: можно украсть и предъявить где-то ещё, а взломанный сервер не может
+    #: выдать себя за администратора.
+    admin_authority_secret_b64: str = ""
     #: Семя ключей обмена конфигурациями между администраторами.
     #:
     #: Отдельно от секрета восстановления, хотя оба -- случайные 32 байта.
@@ -293,6 +303,7 @@ class AdminContainerData:
             "journal": [e.to_dict() for e in self.journal],
             "admin_secret_b64": self.admin_secret_b64,
             "revocation_secret_b64": self.revocation_secret_b64,
+            "admin_authority_secret_b64": self.admin_authority_secret_b64,
             "exchange_seed_b64": self.exchange_seed_b64,
         }
 
@@ -310,5 +321,6 @@ class AdminContainerData:
             journal=[JournalEntry.from_dict(e) for e in data.get("journal", [])],
             admin_secret_b64=data.get("admin_secret_b64", ""),
             revocation_secret_b64=data.get("revocation_secret_b64", ""),
+            admin_authority_secret_b64=data.get("admin_authority_secret_b64", ""),
             exchange_seed_b64=data.get("exchange_seed_b64", ""),
         )

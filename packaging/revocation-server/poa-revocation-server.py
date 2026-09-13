@@ -99,6 +99,78 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def do_POST(self) -> None:  # noqa: N802 - имя задано базовым классом
+        """Приём нового списка состояний от приложения администратора.
+
+        Так администратору не нужен доступ к серверу: он не ходит сюда по SSH и
+        не кладёт файлы руками, а подписывает список ключом, который не покидает
+        его контейнера. Сервер знает только открытую часть -- проверить подпись
+        может, выдать себя за администратора нет.
+
+        Тело запроса: первая строка `poa-states <номер>`, дальше сам список.
+        Подпись всего тела -- в заголовке `X-POA-Signature`, base64.
+
+        Номер строго возрастает и хранится рядом со списком. Без него старую,
+        когда-то подписанную версию списка можно было бы прислать снова и
+        «оживить» отозванный носитель -- та же защита от повтора, что и с
+        случайным числом в ответах носителям, только с другой стороны.
+        """
+        if self.admin_key is None:
+            self.send_error(403, "admin publishing is not configured")
+            return
+        if urllib.parse.urlparse(self.path).path != "/admin/states":
+            self.send_error(404, "unknown endpoint")
+            return
+
+        length = int(self.headers.get("Content-Length") or 0)
+        if length <= 0 or length > 1_000_000:
+            self.send_error(400, "bad body size")
+            return
+        body = self.rfile.read(length)
+
+        try:
+            signature = base64.b64decode(self.headers.get("X-POA-Signature") or "", validate=True)
+            self.admin_key.verify(signature, body)
+        except Exception:
+            # Одинаковый ответ на «подписи нет» и «подпись чужая»: разница
+            # ничего не даёт тому, кто имеет право, и подсказывает тому, кто
+            # подбирает.
+            print("отклонено: подпись администратора не сходится", flush=True)
+            self.send_error(403, "bad signature")
+            return
+
+        text = body.decode("utf-8", "replace")
+        first, _, rest = text.partition("\n")
+        parts = first.split()
+        if len(parts) != 2 or parts[0] != "poa-states" or not parts[1].isdigit():
+            self.send_error(400, "bad header line")
+            return
+        counter = int(parts[1])
+
+        previous = 0
+        counter_path = self.states_path.with_suffix(".counter")
+        try:
+            previous = int(counter_path.read_text(encoding="ascii").strip())
+        except (OSError, ValueError):
+            previous = 0
+        if counter <= previous:
+            print(f"отклонено: номер {counter} не больше прежнего {previous}", flush=True)
+            self.send_error(409, "stale counter")
+            return
+
+        # Замена целиком и атомарно: список, обновлённый наполовину, означал бы
+        # носители в неизвестном состоянии.
+        temporary = self.states_path.with_suffix(".new")
+        temporary.write_text(rest, encoding="utf-8")
+        temporary.replace(self.states_path)
+        counter_path.write_text(f"{counter}\n", encoding="ascii")
+
+        revoked = sum(1 for line in rest.splitlines() if line.endswith(" revoked"))
+        print(f"список принят: номер {counter}, отозванных {revoked}", flush=True)
+        self.send_response(204)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
     def log_message(self, fmt: str, *args) -> None:
         # В journald, одной строкой на запрос: по этому журналу видно, какие
         # носители живы и когда отмечались, -- это и есть учёт парка.
@@ -115,11 +187,18 @@ def main() -> int:
                         help="адрес; по умолчанию только локальный -- наружу "
                              "смотрит обратный прокси с TLS")
     parser.add_argument("--port", type=int, default=8081)
+    parser.add_argument("--admin-pubkey", type=pathlib.Path, default=None,
+                        help="открытый ключ полномочий администратора в PEM; без "
+                             "него приём списка по сети выключен")
     args = parser.parse_args()
 
     key = serialization.load_pem_private_key(args.key.read_bytes(), password=None)
     Handler.key = key
     Handler.states_path = args.states
+    if args.admin_pubkey is not None:
+        Handler.admin_key = serialization.load_pem_public_key(
+            args.admin_pubkey.read_bytes()
+        )
 
     server = http.server.ThreadingHTTPServer((args.host, args.port), Handler)
     print(f"ресурс отзыва слушает {args.host}:{args.port}", flush=True)
