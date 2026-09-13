@@ -821,6 +821,49 @@ class OSInstaller:
         run(["sync"])
         return recovery_code, recovery_salt, service_key
 
+    def _write_revocation_key(self, config, layout, plan, dry_run, confirm_device) -> None:
+        """Открытый ключ ресурса отзыва -- на носитель, обоими путями.
+
+        Ключ приходит от сервера: его туда не отправляют, а забирают при
+        знакомстве, потому что сервер разворачивают раньше, чем появляется
+        приложение. На носитель он попадает при записи, а не в образ
+        дистрибутива: у разных организаций разные ресурсы, а дистрибутив один.
+
+        Отдельным помощником, а не строчками в одном из путей, -- и это не
+        вкусовщина. До 13.09.2026 ключ писал только путь развёртывания.
+        Носитель, собранный «Установкой ОС», уезжал со службой отзыва, со
+        скриптом, с адресом ресурса -- и без ключа, то есть с проверкой,
+        которая при каждой загрузке пишет «нет открытого ключа» и выходит.
+        Найдено осмотром собранного носителя, а не тестом, и это тот же класс
+        дефекта, что и все прежние: два пути делают одно и то же врозь.
+        """
+        from . import revocation
+
+        if not revocation.is_enabled(config):
+            return
+
+        key_pem = self.session.container.data.revocation_public_key_pem
+        if not key_pem.strip():
+            # Носитель без ключа не проверит ни одного ответа и будет молча
+            # считать себя действующим -- худший из отказов для такой вещи,
+            # поэтому останавливаемся до записи, а не после.
+            raise InstallError(
+                "в конфигурации включён отзыв носителей, но контейнер не знаком "
+                "с ресурсом отзыва. Подключитесь к нему в «Обслуживании» — "
+                "приложение заберёт открытый ключ, без которого носитель "
+                "не сможет проверить ответ"
+            )
+
+        key_dir = revocation.PUBLIC_KEY_PATH.rsplit("/", 1)[0]
+        self._run(
+            ["mkdir", "-p", f"{layout.mount_root}/{key_dir}"], plan, dry_run, confirm_device
+        )
+        self._write_file(
+            f"{layout.mount_root}/{revocation.PUBLIC_KEY_PATH}",
+            key_pem,
+            plan, dry_run, confirm_device, mode=0o444,
+        )
+
     def _write_medium_identity(
         self, config, backend, layout, media_id, recovery_salt, boot_key, service_key,
         plan, state, dry_run, confirm_device, overlay_root: bool = False,
@@ -862,34 +905,7 @@ class OSInstaller:
             binary=True, mode=0o400,
         )
 
-        # Открытый ключ ресурса отзыва: им носитель проверяет ответ «отозван».
-        #
-        # Ключ приходит от сервера -- его туда не отправляют, а забирают при
-        # знакомстве: сервер разворачивают раньше, чем появляется приложение.
-        # Пишется здесь, вместе с остальным удостоверением носителя, а не в
-        # образ дистрибутива: у разных организаций разные ресурсы отзыва, а
-        # дистрибутив один.
-        from . import revocation
-
-        if revocation.is_enabled(config):
-            key_pem = self.session.container.data.revocation_public_key_pem
-            if not key_pem.strip():
-                # Носитель без ключа не проверит ни одного ответа и будет
-                # молча считать себя действующим -- худший из отказов для
-                # такой вещи, поэтому останавливаемся прямо здесь.
-                raise InstallError(
-                    "в конфигурации включён отзыв носителей, но контейнер не знаком "
-                    "с ресурсом отзыва. Подключитесь к нему в «Обслуживании» — "
-                    "приложение заберёт открытый ключ, без которого носитель "
-                    "не сможет проверить ответ"
-                )
-            key_dir = revocation.PUBLIC_KEY_PATH.rsplit("/", 1)[0]
-            run(["mkdir", "-p", f"{layout.mount_root}/{key_dir}"])
-            self._write_file(
-                f"{layout.mount_root}/{revocation.PUBLIC_KEY_PATH}",
-                key_pem,
-                plan, dry_run, confirm_device, mode=0o444,
-            )
+        self._write_revocation_key(config, layout, plan, dry_run, confirm_device)
 
         run(["mkdir", "-p", f"{layout.mount_root}{EXCHANGE_MOUNTPOINT}"])
         run(["mount", layout.exchange_mapper_path, f"{layout.mount_root}{EXCHANGE_MOUNTPOINT}"])
@@ -1325,6 +1341,8 @@ class OSInstaller:
             target = f"{layout.mount_root}/{relative}"
             run(["mkdir", "-p", target.rsplit("/", 1)[0]])
             self._write_file(target, content, plan, dry_run, confirm_device, mode=mode)
+
+        self._write_revocation_key(config, layout, plan, dry_run, confirm_device)
 
         # The key file crypttab uses to open the log and exchange volumes at
         # boot. It sits on the encrypted root, so it is only reachable once the

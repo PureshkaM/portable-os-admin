@@ -578,3 +578,53 @@ def test_filesystems_are_made_readable_by_the_target_not_just_by_this_machine():
         assert "CONSERVATIVE_EXT4_FEATURES" in line, (
             "раздел создаётся с возможностями по умолчанию: " + line.strip()
         )
+
+
+_PUBLIC_KEY = (
+    "-----BEGIN PUBLIC KEY-----\n"
+    "MCowBQYDK2VwAyEAVDgvWTswVDgvWTswVDgvWTswVDgvWTswVDgvWTswVDg=\n"
+    "-----END PUBLIC KEY-----\n"
+)
+
+
+def _revoking_config(make_config):
+    config = make_config()
+    config.revocation.enabled = True
+    config.revocation.url = "https://revoke.example.org"
+    ConfigManager().validate(config)
+    return config
+
+
+def test_the_install_path_writes_the_revocation_key(session, big_removable_device, make_config):
+    """Оба пути записи носителя обязаны положить ключ ресурса отзыва.
+
+    До 13.09.2026 его писал только путь развёртывания. Носитель, собранный
+    «Установкой ОС», уезжал со службой отзыва, скриптом и адресом ресурса -- и
+    без ключа: проверка при каждой загрузке писала «нет открытого ключа» и
+    выходила. Найдено осмотром собранного носителя, не тестом.
+    """
+    config = _revoking_config(make_config)
+    session.container.data.revocation_public_key_pem = _PUBLIC_KEY
+
+    result = OSInstaller(session).run(
+        big_removable_device, config, b"user-passphrase-123", dry_run=True
+    )
+
+    written = [r.argv[1] for r in result.plan.results if r.argv[0] == "<write-file>"]
+    assert any(path.endswith("etc/poa/revocation.pub") for path in written), (
+        "носитель уезжает с проверкой отзыва, но без ключа, которым её проверять"
+    )
+
+
+def test_a_container_without_the_resource_key_refuses_to_write_a_medium(
+    session, big_removable_device, make_config
+):
+    """Молчаливый носитель хуже отказа: он выглядит защищённым и не проверяет
+    ничего."""
+    config = _revoking_config(make_config)
+
+    with pytest.raises(Exception) as error:
+        OSInstaller(session).run(
+            big_removable_device, config, b"user-passphrase-123", dry_run=True
+        )
+    assert "ресурс" in str(error.value).lower()
