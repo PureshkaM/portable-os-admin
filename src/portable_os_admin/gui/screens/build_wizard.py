@@ -13,7 +13,6 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, ttk
 
-from ...config.schema import InstallConfig
 from ...install import OSInstaller
 from .. import theme
 from ..widgets import (

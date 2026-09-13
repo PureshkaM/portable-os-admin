@@ -1,22 +1,28 @@
-"""Обслуживание: пароль контейнера и следы прерванных установок.
+"""Обслуживание: пароль контейнера, следы прерванных установок, ресурс отзыва.
 
-Два действия, которые делают редко и по случаю, а не в ходе работы. Раньше
-они стояли отдельными кнопками в общем ряду главного экрана, вперемешку с
+Всё это делают редко и по случаю, а не в ходе работы. Раньше эти действия
+стояли отдельными кнопками в общем ряду главного экрана, вперемешку с
 разделами и с тем, ради чего программу открывают, -- и именно этот ряд
 однажды не поместился в окно.
 
 Здесь они вместе не потому, что похожи, а потому что одинаково относятся к
-работе: ни то, ни другое не нужно, пока всё идёт как надо.
+работе: пока всё идёт как надо, сюда не заходят.
 """
 from __future__ import annotations
 
-import pathlib
 import tkinter as tk
 from tkinter import messagebox, ttk
 
 from ...install import leftovers
 from .. import theme
-from ..widgets import MessageBar, ScrollableArea, section_card, section_header
+from ..widgets import (
+    MessageBar,
+    ScrollableArea,
+    add_field,
+    run_in_background,
+    section_card,
+    section_header,
+)
 
 
 class MaintenanceFrame(ttk.Frame):
@@ -72,18 +78,29 @@ class MaintenanceFrame(ttk.Frame):
         ttk.Separator(card).pack(fill="x", pady=theme.SPACE_MD)
 
         ttk.Label(card, text="Ресурс отзыва носителей", font=theme.FONT_SECTION).pack(anchor="w")
-        ttk.Label(
-            card,
-            text="Серверу, который отвечает носителям на вопрос «не отозван ли я», "
-            "нужны закрытый ключ подписи и список состояний. Ключ отзыва отдельный от "
-            "всего прочего в контейнере: сервер общедоступен, и его взлом должен стоить "
-            "не больше, чем возможность отозвать носители.",
-            style="Hint.TLabel",
-            wraplength=theme.TEXT_WRAP,
-        ).pack(anchor="w", pady=(theme.SPACE_XS, theme.SPACE_SM))
-        ttk.Button(
-            card, text="Выгрузить для сервера…", command=self._export_revocation
-        ).pack(anchor="w")
+        self.revocation_state = ttk.Label(card, text="", wraplength=theme.TEXT_WRAP)
+        self.revocation_state.pack(anchor="w", pady=(theme.SPACE_XS, theme.SPACE_SM))
+
+        form = ttk.Frame(card)
+        form.pack(anchor="w")
+        self.revocation_url = tk.StringVar(
+            value=self.app.session.container.data.revocation_server_url
+        )
+        self.revocation_code = tk.StringVar()
+        _, row = add_field(form, 0, "Адрес", self.revocation_url, label_style="TLabel")
+        add_field(
+            form,
+            row,
+            "Код знакомства",
+            self.revocation_code,
+            hint="Печатается при установке сервера и годится один раз. "
+            "Уже знакомому ресурсу код не нужен — поле остаётся пустым.",
+            label_style="TLabel",
+        )
+        ttk.Button(card, text="Подключиться", command=self._connect_revocation).pack(
+            anchor="w", pady=(theme.SPACE_SM, 0)
+        )
+        self._show_revocation_state()
 
     def _open_password(self) -> None:
         from .password import PasswordFrame
@@ -115,42 +132,66 @@ class MaintenanceFrame(ttk.Frame):
                 "Всё освобождено, носитель можно извлекать или размечать заново."
             )
 
-    def _export_revocation(self) -> None:
-        """Выгружает то, без чего сервер отзыва не может ответить носителю.
+    def _show_revocation_state(self) -> None:
+        data = self.app.session.container.data
+        if data.revocation_public_key_pem.strip():
+            self.revocation_state.config(text=f"Подключён: {data.revocation_server_url}")
+        else:
+            self.revocation_state.config(
+                text="Не подключён. Носители, выпущенные без ресурса отзыва, "
+                "нельзя отозвать удалённо: остаётся только забрать флешку."
+            )
 
-        Два файла, а не один: ключ меняется раз в жизни контейнера, а список
-        состояний -- при каждом отзыве, и обновлять их придётся по-разному.
+    def _connect_revocation(self) -> None:
+        """Знакомство с ресурсом отзыва: забрать его ключ и отдать свой.
+
+        Ключ сервера запоминается в контейнере и уезжает на каждый выпускаемый
+        носитель. Адрес можно спросить заново в любой момент, а ключ должен
+        быть один и тот же у всех носителей организации -- поэтому он здесь, а
+        не в конфигурации установки.
         """
-        from tkinter import filedialog
+        from ...admin import revocation_client
 
-        from ...install import revocation
-
-        directory = filedialog.askdirectory(parent=self, title="Куда выгрузить")
-        if not directory:
+        url = self.revocation_url.get().strip()
+        code = self.revocation_code.get().strip()
+        if not url.lower().startswith("https://"):
+            self.message_bar.error(
+                "Адрес должен начинаться с https://. Подпись защищает ответ от "
+                "подмены, но по открытому каналу видно, какие носители у организации "
+                "есть и когда они включаются."
+            )
             return
 
         container = self.app.session.container
-        key_path = pathlib.Path(directory) / "revocation-key.pem"
-        states_path = pathlib.Path(directory) / "revocation-states.txt"
-        try:
-            key_path.write_text(
-                revocation.private_key_pem(container.revocation_secret), encoding="ascii"
-            )
-            # Права до того, как файл уедет куда-либо: закрытый ключ, лежащий с
-            # правами по умолчанию, читается любым пользователем машины.
-            key_path.chmod(0o600)
-            states_path.write_text(
-                revocation.server_states(container.data.media_records), encoding="utf-8"
-            )
-        except OSError as exc:
-            self.message_bar.error(f"Не удалось выгрузить: {exc}")
-            return
+        # Семя ключа полномочий заводится здесь же, если контейнер создан до
+        # появления отзыва; сохраняется вместе с остальным ниже.
+        seed = container.admin_authority_secret
 
-        # Ключ мог быть заведён только что -- контейнеры, созданные до отзыва,
-        # получают семя при первом обращении. Без сохранения носители получили
-        # бы открытую часть от одного ключа, а сервер -- закрытую от другого.
-        self.app.save_container()
-        self.message_bar.success(
-            f"Выгружено: {key_path.name} и {states_path.name}. Ключ закрытый — "
-            "передайте его серверу и не оставляйте копий там, где он не нужен."
+        def work():
+            pem = revocation_client.fetch_public_key(url)
+            return pem, revocation_client.enroll(url, seed, code) if code else ""
+
+        def done(result) -> None:
+            pem, said = result
+            known = container.data.revocation_public_key_pem.strip()
+            if known and known != pem.strip():
+                # Смена ключа -- это не «переподключение», а другой сервер: все
+                # выпущенные носители доверяют прежнему и ответы нового не
+                # примут. Молча перезаписать значило бы тихо выключить отзыв.
+                self.message_bar.error(
+                    "Этот ресурс подписывает не тем ключом, что записан в контейнере. "
+                    "Выпущенные носители ответов нового ключа не примут — сначала "
+                    "убедитесь, что это тот самый сервер."
+                )
+                return
+            container.data.revocation_server_url = url
+            container.data.revocation_public_key_pem = pem
+            self.app.save_container()
+            self.revocation_code.set("")
+            self._show_revocation_state()
+            self.message_bar.success(said or f"Ресурс отзыва отвечает: {url}")
+
+        self.message_bar.info("Соединяюсь с ресурсом отзыва…")
+        run_in_background(
+            self, work, done, lambda exc: self.message_bar.error(str(exc))
         )

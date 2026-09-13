@@ -1279,7 +1279,8 @@ echo "poa-boot: меню загрузки написано для ядра $vers
         )
 
     def scripted_files(
-        self, config: InstallConfig, layout: MediaLayout | None = None, image=None
+        self, config: InstallConfig, layout: MediaLayout | None = None, image=None,
+        overlay_root: bool = False,
     ) -> dict[str, tuple[str, int | None]]:
         """Relative path -> (content, mode) for files that need an explicit mode.
 
@@ -1311,10 +1312,18 @@ echo "poa-boot: меню загрузки написано для ядра $vers
             )
         files.update(self.machine_binding_files(config, layout))
         # Хуки, собирающие корень из образа и слоя изменений. Пишутся только
-        # при развёртывании (есть раскладка) и только если система на носителе
-        # хранится образом: в эталонном корне дистрибутива им делать нечего --
-        # там ещё нет ни тома, ни имени его отображения.
-        if layout is not None and getattr(config.disk, "system_image", True):
+        # при развёртывании (есть раскладка) и только если корень носителя
+        # **действительно** собран overlay поверх образа.
+        #
+        # Именно действительно, а не «администратор так хотел»: раньше здесь
+        # стоял `config.disk.system_image` -- предпочтение, -- а установщик
+        # решает иначе, ещё и по наличию образа в дистрибутиве. Установка с
+        # дистрибутива, собранного деревом, получала скрипты overlay на
+        # обычный корень; при загрузке они уносили корень из $rootmnt, не
+        # находили образа и оставляли систему без точки монтирования. Носитель
+        # доходил до вопроса о привязке и после перезагрузки не грузился вовсе
+        # (13.09.2026, Debian + MATE).
+        if layout is not None and overlay_root:
             files.update(self.overlay_boot_files(layout))
         return files
 

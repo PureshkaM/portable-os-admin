@@ -14,8 +14,6 @@ to hang for however long partitioning/LUKS/debootstrap take.
 """
 from __future__ import annotations
 
-import os
-import signal
 import tkinter as tk
 from pathlib import Path
 from tkinter import ttk
@@ -24,7 +22,7 @@ from tkinter import filedialog
 
 from ...errors import DeviceNotEligibleError, InstallError
 from ...install.command_runner import InstallAborted
-from ...install import BlockDevice, DeviceLister, OSInstaller
+from ...install import BlockDevice, OSInstaller
 from ...install import image_source, leftovers
 from ...install.emulation import probe as probe_emulation
 from ...install.installer import IMAGE_FAMILY
@@ -696,6 +694,12 @@ class InstallWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
             "«Восстановление»."
             + ("  " + " ".join(result.warnings) if getattr(result, "warnings", ()) else "")
         )
+        # Носитель заводится на ресурсе отзыва сразу при выпуске: иначе первый
+        # же отзыв упёрся бы в «носитель не ваш» -- владельцем записи сервер
+        # считает того, кто её завёл.
+        from ..widgets import publish_media_state
+
+        publish_media_state(self, result.media_record.media_id)
 
     def _on_install_error(self, exc: BaseException) -> None:
         self._stop_progress()

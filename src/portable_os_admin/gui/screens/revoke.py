@@ -29,6 +29,7 @@ from ..widgets import (
     add_field,
     data_table,
     error_guard,
+    publish_media_state,
     section_card,
     section_header,
     run_in_background,
@@ -205,6 +206,9 @@ class RevokeFrame(ttk.Frame):
                 "Данные на нём это не закрывает: если он у постороннего, он работает "
                 "как работал."
             )
+            # Вот это как раз закрывает -- если носитель дойдёт до сети:
+            # получив «отозван», он уничтожает заголовок LUKS сам.
+            publish_media_state(self, self.media_id)
 
     def _restore(self) -> None:
         with error_guard(self.message_bar):
@@ -215,6 +219,7 @@ class RevokeFrame(ttk.Frame):
             self.message_bar.success(
                 f"Носитель «{self.record.display_name}» снова числится действующим."
             )
+            publish_media_state(self, self.media_id)
 
     # -- стирание -----------------------------------------------------------
     def _sync_erase_button(self, *_args) -> None:

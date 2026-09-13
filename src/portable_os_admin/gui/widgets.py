@@ -469,6 +469,42 @@ def run_in_background(
     widget.after(poll_ms, poll)
 
 
+def publish_media_state(frame, media_id: str) -> None:
+    """Сообщает ресурсу отзыва состояние носителя, не задерживая экран.
+
+    Ничего не делает, пока контейнер не знаком с ресурсом: отзыв через сеть --
+    возможность, а не обязанность, и организация, которая её не подключала, не
+    должна видеть ошибок соединения после каждого действия.
+
+    Неудача отправки не отменяет того, что уже записано в контейнере, и
+    сообщается отдельной строкой: местное решение принято, а сервер узнает о
+    нём при следующей попытке.
+    """
+    from ..admin import revocation_publish
+
+    container = frame.app.session.container
+    if not revocation_publish.is_connected(container):
+        return
+
+    def work():
+        return revocation_publish.publish_record(container, media_id)
+
+    def done(said) -> None:
+        # Сохранение и при успехе, и при отказе: номер команды увеличился в
+        # обоих случаях и обязан пережить закрытие программы.
+        frame.app.save_container()
+        if said:
+            frame.message_bar.success(said)
+
+    def failed(exc: BaseException) -> None:
+        frame.app.save_container()
+        frame.message_bar.error(
+            f"{exc}. Запись в контейнере уже изменена — повторите отправку позже."
+        )
+
+    run_in_background(frame, work, done, failed)
+
+
 def widget_alive(widget) -> bool:
     """True while the widget still exists.
 

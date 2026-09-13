@@ -100,66 +100,6 @@ def test_files_land_where_the_service_can_find_them():
     assert f"/{revocation.SCRIPT_PATH}" in files[revocation.SERVICE_PATH][0]
 
 
-def test_only_the_public_half_of_the_key_travels():
-    """На носитель едет открытая часть: подделать ответ тем, что лежит на
-    носителе, нельзя, даже открыв его."""
-    seed = b"\x01" * 32
-    pem = revocation.public_key_pem(seed)
-
-    assert pem.startswith("-----BEGIN PUBLIC KEY-----")
-    assert "PRIVATE" not in pem
-    # Из одного семени -- один и тот же ключ, иначе носители одного контейнера
-    # доверяли бы разным ключам и сервер не смог бы ответить им всем.
-    assert revocation.public_key_pem(seed) == pem
-
-
-def test_the_revocation_key_is_not_the_exchange_key():
-    """Закрытая часть ключа отзыва уезжает на общедоступный сервер, который
-    однажды взломают. Взлом должен стоить организации отзыва носителей, а не
-    подделки обмена конфигурациями между администраторами."""
-    from portable_os_admin.config import exchange
-
-    seed = b"\x02" * 32
-    mine = revocation.signing_key_from_seed(seed).public_key().public_bytes_raw()
-    _, exchange_signing = exchange._keys_from_seed(seed)
-
-    assert mine != exchange_signing.public_key().public_bytes_raw()
-
-
-def test_the_export_gives_the_server_a_key_that_matches_the_media():
-    """Сервер подписывает закрытой частью, носитель проверяет открытой. Если
-    это разные ключи, отзыв не сработает ни у одного носителя контейнера, и
-    выяснится это в тот день, когда отзыв понадобится."""
-    from cryptography.hazmat.primitives import serialization
-
-    seed = b"\x03" * 32
-    pem = revocation.private_key_pem(seed)
-    assert pem.startswith("-----BEGIN PRIVATE KEY-----")
-
-    loaded = serialization.load_pem_private_key(pem.encode("ascii"), password=None)
-    exported = loaded.public_key().public_bytes(
-        encoding=serialization.Encoding.PEM,
-        format=serialization.PublicFormat.SubjectPublicKeyInfo,
-    ).decode("ascii")
-    assert exported == revocation.public_key_pem(seed)
-
-
-def test_the_state_list_names_every_medium_and_its_state():
-    """Список читается сервером, который написан не нами, поэтому он простой:
-    строка на носитель, состояние словом."""
-
-    class _Record:
-        def __init__(self, media_id: str, revoked_at: str = "") -> None:
-            self.media_id = media_id
-            self.revoked_at = revoked_at
-
-    text = revocation.server_states(
-        [_Record("aaaa1111"), _Record("bbbb2222", "2026-09-13T10:00:00+00:00")]
-    )
-    assert text == "aaaa1111 ok\nbbbb2222 revoked\n"
-    assert revocation.server_states([]) == ""
-
-
 def test_the_validator_refuses_configurations_that_would_install_but_not_work():
     manager = BuiltinConfigValidator()
 

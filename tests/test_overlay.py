@@ -304,8 +304,10 @@ def test_the_medium_learns_to_assemble_that_root_at_boot(kiosk_config, layout):
     from portable_os_admin.install.backends import get_backend
 
     backend = get_backend("debian")
-    deployed = backend.scripted_files(kiosk_config, layout)
-    built = backend.scripted_files(kiosk_config, None)
+    # overlay_root=True -- это и есть «корень собран из образа». Носитель с
+    # обычным корнем таких хуков не получает: см. соседний тест.
+    deployed = backend.scripted_files(kiosk_config, layout, overlay_root=True)
+    built = backend.scripted_files(kiosk_config, None, overlay_root=True)
 
     assert any("poa-overlay" in path for path in deployed), (
         "носитель не получает хуков, собирающих корень"
@@ -615,3 +617,44 @@ def test_the_dracut_hook_does_not_leave_strict_mode_behind(layout):
     assert "rd.poa.overlay" in hook, "хук не проверяет, что корень собирает он"
     # У initramfs-tools скрипт запускается сам по себе, и там строгий режим уместен.
     assert "set -u" in overlay.boot_script("poa-x")
+
+
+def test_the_overlay_scripts_stay_off_a_plain_root():
+    """Скрипты overlay -- только на носитель, чей корень собран из образа.
+
+    Разойдись это решение с тем, что делает установщик, и носитель с обычным
+    корнем получит скрипт, который при загрузке унесёт корень из `$rootmnt`
+    ради образа, которого нет. Ровно так Debian + MATE 13.09.2026 переставал
+    грузиться после регистрации машины.
+    """
+    from portable_os_admin.config import InstallConfig
+    from portable_os_admin.install.backends import get_backend
+    from portable_os_admin.install.disk import build_media_layout, plan_partitions
+
+    config = InstallConfig.create_baseline("stick", "debian")
+    layout = build_media_layout(
+        plan_partitions("/dev/sdb", config.disk), mapper_name="poa-x", mount_root="/mnt/root"
+    )
+    backend = get_backend("debian")
+    path = "etc/initramfs-tools/scripts/local-bottom/poa-overlay"
+
+    assert path not in backend.scripted_files(config, layout)
+    assert path in backend.scripted_files(config, layout, overlay_root=True)
+
+
+def test_the_script_looks_for_the_image_before_it_moves_the_root():
+    """Порядок двух строк -- разница между «носитель просто загрузился» и
+    «носитель не грузится и не объясняет почему»."""
+    from portable_os_admin.config import InstallConfig
+    from portable_os_admin.install.backends import get_backend
+    from portable_os_admin.install.disk import build_media_layout, plan_partitions
+
+    config = InstallConfig.create_baseline("stick", "debian")
+    layout = build_media_layout(
+        plan_partitions("/dev/sdb", config.disk), mapper_name="poa-x", mount_root="/mnt/root"
+    )
+    script = get_backend("debian").overlay_boot_files(layout)[
+        "etc/initramfs-tools/scripts/local-bottom/poa-overlay"
+    ][0]
+
+    assert script.index('[ -f "$rootmnt/') < script.index('mount -o move "$rootmnt"')

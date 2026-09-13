@@ -12,7 +12,6 @@ from __future__ import annotations
 import platform
 import re
 import tkinter as tk
-from pathlib import Path
 from tkinter import ttk
 
 import json
@@ -24,7 +23,6 @@ from ...config.schema import (
     InstallConfig,
 )
 from ...config.validator import ConfigValidationUnavailableError
-from ...errors import RepoBrowseError
 from ...install import machine_binding
 from ...install.emulation import probe as probe_emulation
 from .. import theme
@@ -1107,6 +1105,32 @@ class ConfigWizardFrame(WizardFrame):
                 "за ту же флешку.",
             )
 
+        # Отзыв показывается в обоих режимах, в отличие от обновлений: это не
+        # удобство, а единственное, что администратор может сделать с
+        # носителем, которого у него нет в руках.
+        revocation = self.config.revocation
+        self.revocation_enabled_var = tk.BooleanVar(value=revocation.enabled)
+        box = ttk.LabelFrame(body, text="Отзыв носителя через сеть", padding=theme.SPACE_SM)
+        box.pack(fill="x", pady=(theme.SPACE_MD, 0))
+        ttk.Checkbutton(
+            box,
+            text="Спрашивать ресурс отзыва при каждой загрузке",
+            variable=self.revocation_enabled_var,
+        ).pack(anchor="w")
+        server = self.app.session.container.data.revocation_server_url
+        ttk.Label(
+            box,
+            text=(
+                f"Ресурс: {server}. Ответ «отозван» уничтожает заголовок LUKS "
+                "носителя — необратимо."
+                if server
+                else "Контейнер не знаком ни с одним ресурсом отзыва: «Обслуживание» → "
+                "«Подключиться». Без этого носитель проверять ответ нечем."
+            ),
+            style="Hint.TLabel",
+            wraplength=theme.TEXT_WRAP,
+        ).pack(anchor="w", padx=(theme.SPACE_LG, 0))
+
         self._on_profile_changed()
 
     def _on_profile_changed(self) -> None:
@@ -1287,6 +1311,13 @@ class ConfigWizardFrame(WizardFrame):
         except ValueError:
             kiosk.screen_blank_minutes = -1  # reported by _validate_step_profile
 
+        # Адрес не спрашивается здесь: он один на контейнер, а не на
+        # конфигурацию, и берётся оттуда, где администратор познакомился с
+        # ресурсом. Иначе носители одной организации разошлись бы по разным
+        # адресам из-за опечатки в одной конфигурации.
+        self.config.revocation.enabled = self.revocation_enabled_var.get()
+        self.config.revocation.url = self.app.session.container.data.revocation_server_url
+
         settings = self.config.auto_update
         settings.enabled = self.update_enabled_var.get()
         settings.include_kernel = self.update_kernel_var.get()
@@ -1296,6 +1327,13 @@ class ConfigWizardFrame(WizardFrame):
             settings.delay_minutes = -1
 
     def _validate_step_profile(self) -> bool:
+        if self.config.revocation.enabled and not self.config.revocation.url:
+            self.message_bar.error(
+                "Отзыв включён, но контейнер не знаком ни с одним ресурсом: "
+                "«Обслуживание» → «Подключиться». Носитель, собранный без этого, "
+                "проверять ответ не сможет."
+            )
+            return False
         kiosk = self.config.kiosk
         if self.config.profile == "kiosk":
             if self.config.target_os not in ("debian", "redos"):

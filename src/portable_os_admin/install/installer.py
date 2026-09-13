@@ -786,7 +786,7 @@ class OSInstaller:
         self._progress.step("Настройка носителя")
         self._write_medium_identity(
             config, backend, layout, media_id, recovery_salt, boot_key, service_key,
-            plan, state, dry_run, confirm_device,
+            plan, state, dry_run, confirm_device, overlay_root=overlay_root,
         )
 
         # Файлы, уникальные для носителя, появились после разметки эталона —
@@ -823,7 +823,7 @@ class OSInstaller:
 
     def _write_medium_identity(
         self, config, backend, layout, media_id, recovery_salt, boot_key, service_key,
-        plan, state, dry_run, confirm_device,
+        plan, state, dry_run, confirm_device, overlay_root: bool = False,
     ) -> None:
         """Everything that makes this medium this medium and not another one."""
         run = lambda argv, **kw: self._run(argv, plan, dry_run, confirm_device, **kw)  # noqa: E731
@@ -848,7 +848,7 @@ class OSInstaller:
         # до аварийной оболочки: том открыт, а собрать из него корень некому.
         common = backend.scripted_files(config, image=self._image)
         for relative, (content, mode) in backend.scripted_files(
-            config, layout, image=self._image
+            config, layout, image=self._image, overlay_root=overlay_root
         ).items():
             if relative in common:
                 continue
@@ -862,20 +862,32 @@ class OSInstaller:
             binary=True, mode=0o400,
         )
 
-        # Открытый ключ администратора: им носитель проверяет ответ об отзыве.
+        # Открытый ключ ресурса отзыва: им носитель проверяет ответ «отозван».
         #
+        # Ключ приходит от сервера -- его туда не отправляют, а забирают при
+        # знакомстве: сервер разворачивают раньше, чем появляется приложение.
         # Пишется здесь, вместе с остальным удостоверением носителя, а не в
-        # образ дистрибутива: ключ принадлежит контейнеру администратора, а не
-        # сборке, и носители разных администраторов из одного дистрибутива
-        # должны доверять разным ключам.
+        # образ дистрибутива: у разных организаций разные ресурсы отзыва, а
+        # дистрибутив один.
         from . import revocation
 
         if revocation.is_enabled(config):
+            key_pem = self.session.container.data.revocation_public_key_pem
+            if not key_pem.strip():
+                # Носитель без ключа не проверит ни одного ответа и будет
+                # молча считать себя действующим -- худший из отказов для
+                # такой вещи, поэтому останавливаемся прямо здесь.
+                raise InstallError(
+                    "в конфигурации включён отзыв носителей, но контейнер не знаком "
+                    "с ресурсом отзыва. Подключитесь к нему в «Обслуживании» — "
+                    "приложение заберёт открытый ключ, без которого носитель "
+                    "не сможет проверить ответ"
+                )
             key_dir = revocation.PUBLIC_KEY_PATH.rsplit("/", 1)[0]
             run(["mkdir", "-p", f"{layout.mount_root}/{key_dir}"])
             self._write_file(
                 f"{layout.mount_root}/{revocation.PUBLIC_KEY_PATH}",
-                revocation.public_key_pem(self.session.container.revocation_secret),
+                key_pem,
                 plan, dry_run, confirm_device, mode=0o444,
             )
 

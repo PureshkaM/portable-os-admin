@@ -90,6 +90,13 @@ class MediaRecord:
     status: str = STATUS_ACTIVE
     revoked_at: str = ""
     revoked_reason: str = ""
+    #: Номер последней команды, отправленной ресурсу отзыва про этот носитель.
+    #:
+    #: Строго возрастает и хранится у записи, а не общий на контейнер: сервер
+    #: принимает команду, только если её номер больше уже известного ему. Без
+    #: этого однажды подписанную команду «этот носитель в порядке» можно было
+    #: бы прислать повторно и оживить отозванный.
+    revocation_counter: int = 0
 
     @property
     def service_key(self) -> bytes:
@@ -275,7 +282,16 @@ class AdminContainerData:
     #: Взлом такого сервера позволит отзывать носители -- то есть устроить
     #: отказ в обслуживании, -- но не подделать обмен конфигурациями между
     #: администраторами и не вычислить коды восстановления.
-    revocation_secret_b64: str = ""
+    #: Адрес ресурса отзыва и его открытый ключ -- то, что приложение узнало у
+    #: сервера при знакомстве.
+    #:
+    #: Ключ рождается на сервере, а не здесь: сервер разворачивают первым,
+    #: когда приложения ещё нет. Носители носят в себе эту открытую часть и по
+    #: ней проверяют подпись ответа «отозван», поэтому она хранится в
+    #: контейнере: адрес можно спросить заново, а ключ должен быть один и тот
+    #: же у всех выпущенных носителей.
+    revocation_server_url: str = ""
+    revocation_public_key_pem: str = ""
     #: Семя ключа, которым администратор подписывает команды ресурсу отзыва.
     #:
     #: Третий ключ, и снова отдельный. Ключ отзыва уезжает на сервер целиком --
@@ -302,7 +318,8 @@ class AdminContainerData:
             "configs": [c.to_dict() for c in self.configs],
             "journal": [e.to_dict() for e in self.journal],
             "admin_secret_b64": self.admin_secret_b64,
-            "revocation_secret_b64": self.revocation_secret_b64,
+            "revocation_server_url": self.revocation_server_url,
+            "revocation_public_key_pem": self.revocation_public_key_pem,
             "admin_authority_secret_b64": self.admin_authority_secret_b64,
             "exchange_seed_b64": self.exchange_seed_b64,
         }
@@ -320,7 +337,8 @@ class AdminContainerData:
             # «их не было».
             journal=[JournalEntry.from_dict(e) for e in data.get("journal", [])],
             admin_secret_b64=data.get("admin_secret_b64", ""),
-            revocation_secret_b64=data.get("revocation_secret_b64", ""),
+            revocation_server_url=data.get("revocation_server_url", ""),
+            revocation_public_key_pem=data.get("revocation_public_key_pem", ""),
             admin_authority_secret_b64=data.get("admin_authority_secret_b64", ""),
             exchange_seed_b64=data.get("exchange_seed_b64", ""),
         )

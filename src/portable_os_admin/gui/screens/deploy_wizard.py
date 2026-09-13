@@ -18,7 +18,6 @@
 from __future__ import annotations
 
 import tkinter as tk
-from pathlib import Path
 from tkinter import filedialog, ttk
 
 from ...config.schema import InstallConfig
@@ -597,6 +596,9 @@ class DeployWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
             "Код восстановления выдаётся по запросу пользователя, на экране "
             "«Восстановление»."
         )
+        from ..widgets import publish_media_state
+
+        publish_media_state(self, result.media_record.media_id)
 
     def _failed(self, exc: BaseException) -> None:
         self._stop_progress()
