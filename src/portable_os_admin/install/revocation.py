@@ -82,6 +82,39 @@ def signing_key_from_seed(seed: bytes):
     return ed25519.Ed25519PrivateKey.from_private_bytes(material)
 
 
+def private_key_pem(seed: bytes) -> str:
+    """Закрытая часть ключа отзыва -- единственное, что вообще выходит наружу.
+
+    Уезжает на сервер, который подписывает ответы носителям, и только по явному
+    действию администратора. Всё остальное, чем владеет контейнер, его не
+    покидает; ради этого исключения ключ отзыва и сделан отдельным.
+    """
+    from cryptography.hazmat.primitives import serialization
+
+    return (
+        signing_key_from_seed(seed)
+        .private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption(),
+        )
+        .decode("ascii")
+    )
+
+
+def server_states(records) -> str:
+    """Состояния носителей для сервера: по строке на носитель.
+
+    Простой текст, а не JSON: сервер пишет не эта программа, и прочитать список
+    должно быть можно чем угодно -- от питона до `while read`.
+    """
+    lines = [
+        f"{record.media_id} {'revoked' if getattr(record, 'revoked_at', '') else 'ok'}"
+        for record in records
+    ]
+    return "".join(f"{line}\n" for line in lines)
+
+
 def public_key_pem(seed: bytes) -> str:
     """Открытая часть ключа отзыва в PEM -- в таком виде её читает openssl.
 
