@@ -37,7 +37,12 @@ jobs:
       - name: Проверить, что пакет собран и внятен
         run: |
           set -e
-          deb=$(ls ../portable-os-admin_*.deb | head -1)
+          # dpkg-buildpackage кладёт результат рядом с деревом исходников, а
+          # выгрузка артефактов пути с «..» не принимает -- поэтому пакет
+          # переезжает внутрь рабочего каталога.
+          mkdir -p dist
+          mv ../portable-os-admin_*.deb dist/
+          deb=$(ls dist/portable-os-admin_*.deb | head -1)
           echo "собран: $deb"
           # lintian не запускаем: он ругается на стиль, а нам важно, что пакет
           # ставится и несёт то, что обещал.
@@ -48,5 +53,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: portable-os-admin-deb
-          path: ../portable-os-admin_*.deb
+          path: dist/*.deb
           if-no-files-found: error
