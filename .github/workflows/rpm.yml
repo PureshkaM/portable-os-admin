@@ -51,3 +51,7 @@ jobs:
           name: portable-os-admin-rpm
           path: ~/rpmbuild/RPMS/x86_64/*.rpm
           if-no-files-found: error
+
+# Проверено 13.09.2026: ручной запуск через API отвечал 500 и 502 при
+# полностью исправном GitHub (страница состояния — «All Systems Operational»),
+# поэтому проверяем триггер push прямым опытом.
