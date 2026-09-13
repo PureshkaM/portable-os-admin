@@ -141,3 +141,17 @@ def test_the_check_names_the_tool_it_lacks():
 
     assert "command -v" in script
     assert "проверка отзыва невозможна" in script
+
+
+def test_the_service_waits_for_the_volume_its_log_lives_on():
+    """Иначе строки ложатся на корень под точкой монтирования.
+
+    `/var/log` на носителе -- отдельный зашифрованный том. Служба, написавшая
+    раньше монтирования, пишет фактически в никуда: раздел «Журналы»
+    приложения читает том, а не корень. Найдено живой загрузкой 13.09.2026 --
+    две строки службы отзыва оказались недоступны администратору.
+    """
+    from portable_os_admin.install import autoupdate
+
+    assert "RequiresMountsFor=/var/log" in revocation.service_unit()
+    assert "RequiresMountsFor=/var/log" in autoupdate.service_unit(_config())
