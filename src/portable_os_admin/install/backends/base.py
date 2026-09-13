@@ -15,7 +15,7 @@ import shutil
 from abc import ABC, abstractmethod
 
 from ...config.schema import ExtraUserConfig, InstallConfig
-from .. import autoupdate
+from .. import autoupdate, revocation
 from .. import desktop_roles
 from .. import kiosk as kiosk_mode
 from .. import machine_binding
@@ -805,6 +805,7 @@ echo "poa-boot: меню загрузки написано для ядра $vers
         commands.append(self.systemctl_enable(mount_root, "rsyslog"))
 
         commands += autoupdate.chroot_commands(mount_root, config, self)
+        commands += revocation.chroot_commands(mount_root, config, self)
 
         # After config.packages above, never before: the whitelist hides the
         # desktop entries that exist at the moment it runs, and a package
@@ -1296,6 +1297,18 @@ echo "poa-boot: меню загрузки написано для ядра $vers
         files.update(self.generic_initramfs_files())
         files.update(kiosk_mode.config_files(config, image))
         files.update(autoupdate.config_files(config, self))
+        # Отзыв -- только при записи носителя: скрипт называет идентификатор
+        # этого носителя и его раздел. В эталонном корне дистрибутива ни того,
+        # ни другого ещё нет, и общий на всех скрипт спрашивал бы ресурс об
+        # одном и том же идентификаторе со всех флешек сразу.
+        if layout is not None and getattr(layout, "mapper_name", ""):
+            files.update(
+                revocation.config_files(
+                    config,
+                    media_id=layout.mapper_name.rsplit("-", 1)[-1],
+                    system_partition=layout.system_partition,
+                )
+            )
         files.update(self.machine_binding_files(config, layout))
         # Хуки, собирающие корень из образа и слоя изменений. Пишутся только
         # при развёртывании (есть раскладка) и только если система на носителе

@@ -862,6 +862,25 @@ class OSInstaller:
             binary=True, mode=0o400,
         )
 
+        # Открытый ключ администратора: им носитель проверяет ответ об отзыве.
+        #
+        # Пишется здесь, вместе с остальным удостоверением носителя, а не в
+        # образ дистрибутива: ключ принадлежит контейнеру администратора, а не
+        # сборке, и носители разных администраторов из одного дистрибутива
+        # должны доверять разным ключам.
+        from . import revocation
+        from ..config import exchange
+
+        if revocation.is_enabled(config):
+            identity = exchange.identity_of(self.session.container)
+            key_dir = revocation.PUBLIC_KEY_PATH.rsplit("/", 1)[0]
+            run(["mkdir", "-p", f"{layout.mount_root}/{key_dir}"])
+            self._write_file(
+                f"{layout.mount_root}/{revocation.PUBLIC_KEY_PATH}",
+                revocation.public_key_pem(identity.signing_key),
+                plan, dry_run, confirm_device, mode=0o444,
+            )
+
         run(["mkdir", "-p", f"{layout.mount_root}{EXCHANGE_MOUNTPOINT}"])
         run(["mount", layout.exchange_mapper_path, f"{layout.mount_root}{EXCHANGE_MOUNTPOINT}"])
         state.mounts.append(f"{layout.mount_root}{EXCHANGE_MOUNTPOINT}")

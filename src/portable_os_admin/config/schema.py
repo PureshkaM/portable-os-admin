@@ -42,6 +42,9 @@ FIELD_LABELS = {
     "disk.log_partition_mb": "Размер раздела журналов, МБ",
     "disk.exchange_partition_mb": "Размер раздела обмена, МБ",
     "machine_binding.slots": "Разных машин на носитель",
+    "revocation.enabled": "Спрашивать об отзыве при загрузке",
+    "revocation.url": "Адрес ресурса отзыва",
+    "revocation.timeout_seconds": "Ждать ответа, секунд",
     "luks.cipher": "Шифр LUKS",
     "luks.key_size_bits": "Длина ключа LUKS, бит",
     "luks.kdf": "Функция формирования ключа",
@@ -624,6 +627,7 @@ def _migrated(data: dict) -> dict:
         ("account", UserAccountConfig),
         ("remote_access", RemoteAccessConfig),
         ("auto_update", AutoUpdateConfig),
+        ("revocation", RevocationConfig),
         ("localisation", LocalisationConfig),
         ("boot", BootConfig),
         ("network", NetworkConfig),
@@ -638,6 +642,31 @@ def _migrated(data: dict) -> dict:
 
     known_top = {f.name for f in fields(InstallConfig)}
     return {key: value for key, value in data.items() if key in known_top}
+
+
+@dataclass
+class RevocationConfig:
+    """Удалённый отзыв: носитель спрашивает своё состояние при каждой загрузке.
+
+    Закрывает случай, который не закрывает привязка к машинам: уволившийся
+    сотрудник с невозвращённым носителем и уже зарегистрированной машиной.
+    Получив «отозван», носитель уничтожает заголовок LUKS -- необратимо.
+
+    Ресурс задаётся администратором и должен быть **общедоступным**. Это не
+    недосмотр, а суть механизма: проверка обязана срабатывать раньше, чем
+    носитель дотянется до внутренней сети. Ресурс во внутреннем контуре
+    означал бы, что отозванный носитель сперва попадает внутрь периметра, а
+    уже потом узнаёт, что он отозван.
+    """
+
+    enabled: bool = False
+    #: Адрес ресурса, у которого носитель спрашивает состояние. Только HTTPS:
+    #: подпись защищает от подмены ответа, но не от того, что по дороге видно,
+    #: какие носители у организации есть и когда они включаются.
+    url: str = ""
+    #: Сколько ждать ответа. Больше -- дольше висит служба на загрузке без
+    #: сети; меньше -- ложные пропуски на медленном канале.
+    timeout_seconds: int = 10
 
 
 @dataclass
@@ -670,6 +699,9 @@ class InstallConfig:
     disk: DiskLayoutConfig = field(default_factory=DiskLayoutConfig)
     luks: LuksConfig = field(default_factory=LuksConfig)
     machine_binding: MachineBindingConfig = field(default_factory=MachineBindingConfig)
+    #: Удалённый отзыв. Отдельно от `machine_binding`: привязка закрывает чужие
+    #: машины, отзыв -- бывшего своего сотрудника.
+    revocation: RevocationConfig = field(default_factory=RevocationConfig)
     account: UserAccountConfig = field(default_factory=UserAccountConfig)
     localisation: LocalisationConfig = field(default_factory=LocalisationConfig)
     boot: BootConfig = field(default_factory=BootConfig)
@@ -715,6 +747,9 @@ class InstallConfig:
         # no such key, and default to the console system they were made for.
         kiosk = KioskConfig(**data.pop("kiosk", {}))
         auto_update = AutoUpdateConfig(**data.pop("auto_update", {}))
+        # Конфигурации, написанные до появления удалённого отзыва, этого ключа
+        # не имеют и получают отзыв выключенным.
+        revocation = RevocationConfig(**data.pop("revocation", {}))
         # Конфигурации, написанные до того, как язык и часовой пояс стали
         # настраиваемыми, этого ключа не имеют и получают прежние значения.
         localisation = LocalisationConfig(**data.pop("localisation", {}))
@@ -727,6 +762,7 @@ class InstallConfig:
             disk=disk,
             luks=luks,
             machine_binding=machine_binding,
+            revocation=revocation,
             account=account,
             remote_access=remote_access,
             kiosk=kiosk,

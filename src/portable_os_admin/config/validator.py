@@ -150,6 +150,7 @@ class BuiltinConfigValidator:
 
         errors += self._kiosk_errors(config)
         errors += self._auto_update_errors(config)
+        errors += self._revocation_errors(config)
 
         return ValidationResult(ok=not errors, errors=errors)
 
@@ -172,6 +173,40 @@ class BuiltinConfigValidator:
 
         if settings.delay_minutes < 0:
             errors.append("задержка перед автообновлением не может быть отрицательной")
+
+        return errors
+
+    def _revocation_errors(self, config: InstallConfig) -> list[str]:
+        """Проверки удалённого отзыва.
+
+        Все три -- про конфигурацию, которая устанавливается без единой ошибки
+        и оставляет носитель без той защиты, ради которой отзыв включали.
+        """
+        errors: list[str] = []
+        settings = getattr(config, "revocation", None)
+        if settings is None or not settings.enabled:
+            return errors
+
+        url = (settings.url or "").strip()
+        if not url:
+            errors.append(
+                "удалённый отзыв включён, но не задан адрес ресурса: носитель не "
+                "у кого будет спросить своё состояние, и отозвать его будет нечем"
+            )
+        elif not url.startswith("https://"):
+            # Подпись защищает от подмены ответа, но не от наблюдения. По
+            # открытому каналу видно, какие носители у организации есть и когда
+            # они включаются, -- то есть карта парка и расписание сотрудников,
+            # выложенные наружу тем самым механизмом, который делали ради
+            # безопасности.
+            errors.append(
+                "адрес ресурса отзыва должен начинаться с https://: подпись "
+                "защищает ответ от подмены, но по открытому каналу видно, какие "
+                "носители существуют и когда они включаются"
+            )
+
+        if int(settings.timeout_seconds or 0) < 1:
+            errors.append("время ожидания ответа при отзыве должно быть больше нуля")
 
         return errors
 
