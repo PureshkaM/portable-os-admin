@@ -13,8 +13,13 @@ Wants=network-online.target
 Type=simple
 ExecStart=/usr/local/sbin/poa-revocation-server.py \
     --key %d/revocation-key \
-    --states /etc/poa-revocation/revocation-states.txt \
+    --db /var/lib/poa-revocation/media.sqlite \
+    --admins /etc/poa-revocation/admins \
     --host 127.0.0.1 --port 8081
+
+# База лежит в /var/lib, а не рядом с ключами: ключи служба только читает, а
+# базу пишет, и смешивать эти два права на один каталог незачем.
+StateDirectory=poa-revocation
 
 # Ключ отдаётся через учётные данные systemd, а не правами на файл.
 #
