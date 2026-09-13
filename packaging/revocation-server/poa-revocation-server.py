@@ -39,6 +39,7 @@ import hashlib
 import http.server
 import pathlib
 import re
+import secrets
 import sqlite3
 import sys
 import urllib.parse
@@ -146,11 +147,26 @@ class Handler(http.server.BaseHTTPRequestHandler):
     server_version = "poa-revocation/2"
     key = None       # ключ подписи ответов носителям
     admins: dict = {}  # допущенные администраторы по отпечатку
+    admins_dir = None  # где они лежат; туда же пишется новый при знакомстве
     db = None
 
     # -- носитель спрашивает -------------------------------------------------
     def do_GET(self) -> None:  # noqa: N802 - имя задано базовым классом
         parsed = urllib.parse.urlparse(self.path)
+        if parsed.path == "/pubkey":
+            # Открытая часть ключа отзыва. Её забирает приложение при первой
+            # настройке и кладёт на носители: сервер разворачивают раньше, чем
+            # появляется приложение, поэтому ключ рождается здесь, а не там.
+            pem = self.key.public_key().public_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PublicFormat.SubjectPublicKeyInfo,
+            )
+            self.send_response(200)
+            self.send_header("Content-Type", "application/x-pem-file")
+            self.send_header("Content-Length", str(len(pem)))
+            self.end_headers()
+            self.wfile.write(pem)
+            return
         if parsed.path != "/state":
             self.send_error(404, "unknown endpoint")
             return
@@ -181,6 +197,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
     # -- администратор распоряжается ----------------------------------------
     def do_POST(self) -> None:  # noqa: N802 - имя задано базовым классом
         parsed = urllib.parse.urlparse(self.path)
+        if parsed.path == "/admin/enroll":
+            self._enroll()
+            return
         prefix = "/admin/media/"
         if not parsed.path.startswith(prefix):
             self.send_error(404, "unknown endpoint")
@@ -254,6 +273,57 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Length", "0")
         self.end_headers()
 
+    def _enroll(self) -> None:
+        """Первое знакомство с администратором: он присылает свой открытый ключ.
+
+        По одноразовому коду, который печатает сценарий установки. Иначе
+        пришлось бы либо доверять любому, кто постучится первым, -- а сервер
+        общедоступен, -- либо лезть на машину руками, чего мы и избегаем.
+
+        Код сгорает после первого успешного знакомства. Второй администратор
+        заводится новым кодом: его создаёт владелец сервера, у него для этого
+        есть машина.
+        """
+        code_path = self.admins_dir.parent / "enrollment-code"
+        try:
+            expected = code_path.read_text(encoding="ascii").strip()
+        except OSError:
+            expected = ""
+        given = (self.headers.get("X-POA-Enrollment") or "").strip()
+        if not expected or not given or not secrets.compare_digest(given, expected):
+            print("отклонено знакомство: код не сходится", flush=True)
+            self.send_error(403, "bad enrollment code")
+            return
+
+        length = int(self.headers.get("Content-Length") or 0)
+        if length <= 0 or length > 4096:
+            self.send_error(400, "bad body size")
+            return
+        body = self.rfile.read(length)
+        try:
+            key = serialization.load_pem_public_key(body)
+        except Exception:
+            self.send_error(400, "bad public key")
+            return
+
+        name = fingerprint(key)
+        self.admins_dir.mkdir(parents=True, exist_ok=True)
+        (self.admins_dir / f"{name}.pem").write_bytes(body)
+        self.admins[name] = key
+        # Код сжигается: знакомство одноразовое.
+        try:
+            code_path.unlink()
+        except OSError:
+            pass
+        print(f"заведён администратор {name}", flush=True)
+
+        answer = f"{name}\n".encode("ascii")
+        self.send_response(201)
+        self.send_header("Content-Type", "text/plain; charset=ascii")
+        self.send_header("Content-Length", str(len(answer)))
+        self.end_headers()
+        self.wfile.write(answer)
+
     def log_message(self, fmt: str, *args) -> None:
         # В journald, одной строкой на запрос: по этому журналу видно, какие
         # носители живы и когда отмечались, -- это и есть учёт парка.
@@ -278,6 +348,18 @@ def main() -> int:
     Handler.key = serialization.load_pem_private_key(args.key.read_bytes(), password=None)
     Handler.db = Database(args.db)
     Handler.admins = load_admins(args.admins)
+    Handler.admins_dir = args.admins
+
+    if args.admins is not None and not Handler.admins:
+        # Никого ещё нет -- значит сервер только что развернули, приложения не
+        # существует и положить в него нечего. Заводим одноразовый код: по нему
+        # первый администратор пришлёт свой открытый ключ сам.
+        code_path = args.admins.parent / "enrollment-code"
+        if not code_path.exists():
+            code_path.parent.mkdir(parents=True, exist_ok=True)
+            code_path.write_text(secrets.token_hex(16) + "\n", encoding="ascii")
+            code_path.chmod(0o600)
+        print(f"код знакомства: {code_path.read_text(encoding='ascii').strip()}", flush=True)
 
     server = http.server.ThreadingHTTPServer((args.host, args.port), Handler)
     print(f"ресурс отзыва слушает {args.host}:{args.port}", flush=True)

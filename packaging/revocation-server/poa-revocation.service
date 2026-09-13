@@ -14,11 +14,13 @@ Type=simple
 ExecStart=/usr/local/sbin/poa-revocation-server.py \
     --key %d/revocation-key \
     --db /var/lib/poa-revocation/media.sqlite \
-    --admins /etc/poa-revocation/admins \
+    --admins /var/lib/poa-revocation/admins \
     --host 127.0.0.1 --port 8081
 
-# База лежит в /var/lib, а не рядом с ключами: ключи служба только читает, а
-# базу пишет, и смешивать эти два права на один каталог незачем.
+# База и список администраторов лежат в /var/lib, а не рядом с ключом: ключ
+# служба только читает, а это -- пишет. Список пишется потому, что первый
+# администратор заводится по одноразовому коду: сервер разворачивают раньше,
+# чем появляется приложение, и на момент установки класть в него нечего.
 StateDirectory=poa-revocation
 
 # Ключ отдаётся через учётные данные systemd, а не правами на файл.

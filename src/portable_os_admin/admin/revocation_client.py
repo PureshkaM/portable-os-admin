@@ -23,7 +23,7 @@ import hashlib
 import urllib.error
 import urllib.request
 
-from ..errors import PortableOsAdminError
+from ..errors import PortableOSAdminError
 
 #: Метка вывода ключа полномочий. Та же, что в install/revocation.py, потому
 #: что ключ тот же -- он выводится из отдельного семени контейнера.
@@ -34,7 +34,7 @@ _KEY_INFO = b"poa-revocation-admin-ed25519"
 TIMEOUT_SECONDS = 15
 
 
-class RevocationServerError(PortableOsAdminError):
+class RevocationServerError(PortableOSAdminError):
     """Сервер не принял команду -- с причиной, понятной человеку."""
 
 
@@ -83,6 +83,84 @@ def public_key_pem(seed: bytes) -> str:
         )
         .decode("ascii")
     )
+
+
+def fetch_public_key(
+    url: str,
+    *,
+    timeout: int = TIMEOUT_SECONDS,
+    opener=urllib.request.urlopen,
+) -> str:
+    """Забирает у сервера открытую часть ключа отзыва.
+
+    Ключ рождается на сервере, а не здесь: сервер разворачивают первым, когда
+    приложения ещё нет. Носители носят в себе эту открытую часть и по ней
+    проверяют подпись ответа «отозван».
+    """
+    request = urllib.request.Request(f"{url.rstrip('/')}/pubkey", method="GET")
+    try:
+        with opener(request, timeout=timeout) as response:
+            pem = response.read(4096).decode("ascii")
+    except urllib.error.HTTPError as error:
+        raise RevocationServerError(
+            f"ресурс отзыва не отдал открытый ключ (код {error.code})"
+        ) from error
+    except (OSError, UnicodeDecodeError) as error:
+        raise RevocationServerError(f"ресурс отзыва недоступен: {error}") from error
+
+    if "BEGIN PUBLIC KEY" not in pem:
+        raise RevocationServerError(
+            "по этому адресу отвечает не ресурс отзыва: вместо открытого ключа "
+            "пришло что-то другое"
+        )
+    return pem
+
+
+def enroll(
+    url: str,
+    seed: bytes,
+    code: str,
+    *,
+    timeout: int = TIMEOUT_SECONDS,
+    opener=urllib.request.urlopen,
+) -> str:
+    """Знакомство: отправляет серверу открытую часть ключа полномочий.
+
+    По одноразовому коду, который печатает установка сервера. Иначе выбор был
+    бы между «сервер верит любому, кто постучится первым» и «администратор
+    лезет на сервер по SSH» -- а лишних прав там у него быть не должно.
+
+    Закрытая часть при этом никуда не уходит и контейнера не покидает.
+    """
+    if not code.strip():
+        raise RevocationServerError("нужен код знакомства, выданный при установке сервера")
+
+    body = public_key_pem(seed).encode("ascii")
+    request = urllib.request.Request(
+        f"{url.rstrip('/')}/admin/enroll",
+        data=body,
+        method="POST",
+        headers={
+            "Content-Type": "application/x-pem-file",
+            "X-POA-Enrollment": code.strip(),
+        },
+    )
+    try:
+        with opener(request, timeout=timeout) as response:
+            response.read(256)
+    except urllib.error.HTTPError as error:
+        if error.code == 403:
+            raise RevocationServerError(
+                "код знакомства не подошёл. Он одноразовый: если этим сервером уже "
+                "пользуется другой администратор, новый код выписывает владелец сервера"
+            ) from error
+        raise RevocationServerError(
+            f"ресурс отзыва отказал в знакомстве (код {error.code})"
+        ) from error
+    except OSError as error:
+        raise RevocationServerError(f"ресурс отзыва недоступен: {error}") from error
+
+    return f"контейнер допущен к ресурсу отзыва, отпечаток ключа {key_id(seed)}"
 
 
 def publish_state(
