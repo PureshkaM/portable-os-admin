@@ -1,0 +1,52 @@
+# Сборка .deb.
+#
+# Проще, чем rpm: пакет не несёт своего рантайма и берёт всё из дистрибутива --
+# python3-tk и python3-cryptography есть в любом Debian и Ubuntu. Поэтому
+# Architecture: all, никакой компиляции и никакой зависимости от архитектуры
+# раннера.
+#
+# Отдельный рабочий процесс, а не шаг в rpm: у семейств разные причины падать,
+# и падение одной сборки не должно прятать успех другой.
+name: deb
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "packaging/**"
+      - "pyproject.toml"
+      - ".github/workflows/deb.yml"
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Поставить инструменты сборки
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -q --no-install-recommends \
+            build-essential debhelper devscripts dh-python python3-all
+
+      - name: Собрать пакет
+        run: sh packaging/build-deb.sh
+
+      - name: Проверить, что пакет собран и внятен
+        run: |
+          set -e
+          deb=$(ls ../portable-os-admin_*.deb | head -1)
+          echo "собран: $deb"
+          # lintian не запускаем: он ругается на стиль, а нам важно, что пакет
+          # ставится и несёт то, что обещал.
+          dpkg-deb --info "$deb" | sed -n '1,20p'
+          dpkg-deb --contents "$deb" | grep -q "usr/bin/portable-os-admin"
+
+      - name: Забрать пакет
+        uses: actions/upload-artifact@v4
+        with:
+          name: portable-os-admin-deb
+          path: ../portable-os-admin_*.deb
+          if-no-files-found: error
