@@ -147,10 +147,20 @@ ACTION_REVOKED = "media_revoked"
 ACTION_RESTORED = "media_restored"
 ACTION_ERASED = "media_erased"
 
+#: Ресурс отзыва узнал состояние носителя -- или не узнал.
+#:
+#: Два события, а не одно на двоих: «отозван» в журнале и «ресурс об этом
+#: знает» -- разные факты. Через полгода вопрос будет звучать именно так: до
+#: носителя дотянулись или только пометили в контейнере.
+ACTION_PUBLISHED = "media_state_published"
+ACTION_PUBLISH_FAILED = "media_state_not_published"
+
 ACTION_TITLES = {
     ACTION_REVOKED: "Помечен отозванным",
     ACTION_RESTORED: "Отметка отзыва снята",
     ACTION_ERASED: "Заголовки LUKS стёрты",
+    ACTION_PUBLISHED: "Состояние принято ресурсом отзыва",
+    ACTION_PUBLISH_FAILED: "Состояние до ресурса отзыва не доехало",
 }
 
 

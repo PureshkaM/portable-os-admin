@@ -14,6 +14,10 @@ class _Container:
     def __init__(self, url: str = "https://revoke.example.org") -> None:
         self.data = AdminContainerData(revocation_server_url=url)
         self.admin_authority_secret = b"\x05" * 32
+        self.events = []
+
+    def record_event(self, action, media_id="", details=""):
+        self.events.append((action, media_id, details))
 
     def find_media(self, media_id: str):
         for record in self.data.media_records:
@@ -113,3 +117,33 @@ def test_an_unknown_medium_is_refused(sent):
     with pytest.raises(MediaNotRegisteredError):
         revocation_publish.publish_record(_Container(), "cafe0001")
     assert sent == []
+
+
+def test_the_journal_remembers_whether_the_resource_learned_of_it(sent):
+    """«Отозван» и «ресурс об этом знает» -- разные факты, и спросят через
+    полгода именно второй."""
+    from portable_os_admin.container.models import ACTION_PUBLISHED
+
+    container = _Container()
+    container.data.media_records.append(_record(status="revoked", revoked_at="2026-09-13"))
+
+    revocation_publish.publish_record(container, "cafe0001")
+
+    assert container.events == [(ACTION_PUBLISHED, "cafe0001", "revoked")]
+
+
+def test_a_failed_delivery_is_written_down_too(monkeypatch):
+    from portable_os_admin.container.models import ACTION_PUBLISH_FAILED
+
+    def refuse(*args, **kwargs):
+        raise revocation_client.RevocationServerError("ресурс отзыва недоступен")
+
+    monkeypatch.setattr(revocation_client, "publish_state", refuse)
+    container = _Container()
+    container.data.media_records.append(_record())
+
+    with pytest.raises(revocation_client.RevocationServerError):
+        revocation_publish.publish_record(container, "cafe0001")
+
+    assert container.events[0][0] == ACTION_PUBLISH_FAILED
+    assert "недоступен" in container.events[0][2]

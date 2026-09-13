@@ -10,6 +10,7 @@
 """
 from __future__ import annotations
 
+from ..container.models import ACTION_PUBLISH_FAILED, ACTION_PUBLISHED
 from ..errors import MediaNotRegisteredError
 from . import revocation_client
 
@@ -45,10 +46,20 @@ def publish_record(container, media_id: str) -> str:
         )
 
     record.revocation_counter += 1
-    return revocation_client.publish_state(
-        container.data.revocation_server_url,
-        container.admin_authority_secret,
-        media_id,
-        state_of(record),
-        record.revocation_counter,
-    )
+    state = state_of(record)
+    try:
+        said = revocation_client.publish_state(
+            container.data.revocation_server_url,
+            container.admin_authority_secret,
+            media_id,
+            state,
+            record.revocation_counter,
+        )
+    except revocation_client.RevocationServerError as error:
+        # Неудача записывается в журнал наравне с успехом: «отозван» и «ресурс
+        # об этом знает» -- разные факты, и через полгода спросят именно
+        # второй. Без записи он не восстановим ничем.
+        container.record_event(ACTION_PUBLISH_FAILED, media_id, f"{state}: {error}")
+        raise
+    container.record_event(ACTION_PUBLISHED, media_id, state)
+    return said
