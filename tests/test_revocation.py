@@ -103,14 +103,27 @@ def test_files_land_where_the_service_can_find_them():
 def test_only_the_public_half_of_the_key_travels():
     """На носитель едет открытая часть: подделать ответ тем, что лежит на
     носителе, нельзя, даже открыв его."""
-    from cryptography.hazmat.primitives.asymmetric import ed25519
-
-    private = ed25519.Ed25519PrivateKey.generate()
-    raw = private.public_key().public_bytes_raw()
-    pem = revocation.public_key_pem(raw)
+    seed = b"\x01" * 32
+    pem = revocation.public_key_pem(seed)
 
     assert pem.startswith("-----BEGIN PUBLIC KEY-----")
     assert "PRIVATE" not in pem
+    # Из одного семени -- один и тот же ключ, иначе носители одного контейнера
+    # доверяли бы разным ключам и сервер не смог бы ответить им всем.
+    assert revocation.public_key_pem(seed) == pem
+
+
+def test_the_revocation_key_is_not_the_exchange_key():
+    """Закрытая часть ключа отзыва уезжает на общедоступный сервер, который
+    однажды взломают. Взлом должен стоить организации отзыва носителей, а не
+    подделки обмена конфигурациями между администраторами."""
+    from portable_os_admin.config import exchange
+
+    seed = b"\x02" * 32
+    mine = revocation.signing_key_from_seed(seed).public_key().public_bytes_raw()
+    _, exchange_signing = exchange._keys_from_seed(seed)
+
+    assert mine != exchange_signing.public_key().public_bytes_raw()
 
 
 def test_the_validator_refuses_configurations_that_would_install_but_not_work():

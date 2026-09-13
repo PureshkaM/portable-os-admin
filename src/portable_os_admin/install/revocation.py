@@ -56,21 +56,49 @@ def is_enabled(config: InstallConfig) -> bool:
     return bool(settings and settings.enabled and settings.url.strip())
 
 
-def public_key_pem(signing_key: bytes) -> str:
-    """Открытая часть подписи администратора в PEM -- в таком виде её читает openssl.
+#: Метка вывода ключа. Своя, а не общая с обменом конфигурациями: один и тот же
+#: материал не должен служить двум ролям, а роли здесь разные -- закрытая часть
+#: ключа отзыва уезжает на общедоступный сервер, ключ обмена не покидает
+#: контейнера никогда.
+_KEY_INFO = b"poa-revocation-ed25519"
 
-    На носитель едет только она. Закрытая часть выводится из семени контейнера
-    и его не покидает: подделать ответ тем, что лежит на носителе, нельзя, даже
-    имея носитель в руках и открыв его.
+
+def signing_key_from_seed(seed: bytes):
+    """Ключ подписи отзыва из отдельного семени контейнера.
+
+    Отдельное семя, а не `admin_secret`: сервер, отвечающий носителям,
+    общедоступен, и его закрытая часть однажды утечёт. Пусть тогда
+    злоумышленник сможет отозвать носители -- отказ в обслуживании,
+    восстановимый выдачей новых, -- а не подделывать обмен конфигурациями между
+    администраторами и вычислять коды восстановления.
+    """
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.asymmetric import ed25519
+    from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+
+    material = HKDF(
+        algorithm=hashes.SHA256(), length=32, salt=None, info=_KEY_INFO
+    ).derive(bytes(seed))
+    return ed25519.Ed25519PrivateKey.from_private_bytes(material)
+
+
+def public_key_pem(seed: bytes) -> str:
+    """Открытая часть ключа отзыва в PEM -- в таком виде её читает openssl.
+
+    На носитель едет только она: подделать ответ тем, что лежит на носителе,
+    нельзя, даже имея носитель в руках и открыв его.
     """
     from cryptography.hazmat.primitives import serialization
-    from cryptography.hazmat.primitives.asymmetric import ed25519
 
-    key = ed25519.Ed25519PublicKey.from_public_bytes(bytes(signing_key))
-    return key.public_bytes(
-        encoding=serialization.Encoding.PEM,
-        format=serialization.PublicFormat.SubjectPublicKeyInfo,
-    ).decode("ascii")
+    return (
+        signing_key_from_seed(seed)
+        .public_key()
+        .public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        .decode("ascii")
+    )
 
 
 def revocation_script(config: InstallConfig, media_id: str, system_partition: str) -> str:

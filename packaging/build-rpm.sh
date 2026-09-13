@@ -70,10 +70,28 @@ tar -C "$WORKDIR" -czf "$WORKDIR/$NAME-$VERSION.tar.gz" "$NAME-$VERSION"
 TOPDIR="${RPM_TOPDIR:-$HOME/rpmbuild}"
 mkdir -p "$TOPDIR"/SOURCES "$TOPDIR"/SPECS "$TOPDIR"/BUILD "$TOPDIR"/RPMS "$TOPDIR"/SRPMS
 cp "$WORKDIR/$NAME-$VERSION.tar.gz" "$TOPDIR/SOURCES/"
-# `--target x86_64` явно: пакет несёт двоичный рантайм этой архитектуры, и на
-# машине другой архитектуры rpmbuild иначе отказывается со словами «No
-# compatible architectures found for build». Сборка при этом честная -- ничего
-# не компилируется, содержимое рантайма уже готово.
+# Отказ здесь, а не невнятное сообщение rpmbuild потом.
+#
+# rpm собирает только под архитектуры, которые считает совместимыми со своей.
+# На хосте arm64 это «aarch64 noarch», и пакет с двоичным рантаймом x86_64 там
+# не собрать никаким `--target`: проверено 13.09.2026, rpmbuild отвечает «No
+# compatible architectures found for build», и по этому сообщению причину не
+# угадать. Пакет собирается на машине x86_64 семейства RHEL -- там же, где он и
+# ставится.
+COMPATIBLE=$(rpm --showrc 2>/dev/null | sed -n 's/^compatible archs *: *//p')
+case " $COMPATIBLE " in
+    *" x86_64 "*) ;;
+    *)
+        echo "error: этот хост не собирает пакеты для x86_64." >&2
+        echo "rpm считает совместимыми: ${COMPATIBLE:-(ничего не сообщил)}" >&2
+        echo "Пакет несёт двоичный рантайм x86_64, поэтому собирать его надо на" >&2
+        echo "машине x86_64 семейства RHEL." >&2
+        exit 1
+        ;;
+esac
+
+# `--target x86_64` явно: пакет несёт двоичный рантайм этой архитектуры, и без
+# указания цели rpmbuild собрал бы его под архитектуру хоста.
 rpmbuild --define "_topdir $TOPDIR" --target x86_64 -bb packaging/rpm/portable-os-admin.spec
 
 echo "Готовый пакет: $TOPDIR/RPMS/x86_64/"

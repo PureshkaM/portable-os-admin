@@ -73,6 +73,27 @@ class AdminContainer:
             self.data.admin_secret_b64 = base64.b64encode(crypto.new_admin_secret()).decode()
         return base64.b64decode(self.data.admin_secret_b64)
 
+    @property
+    def revocation_secret(self) -> bytes:
+        """Семя ключа, которым подписываются ответы об отзыве носителя.
+
+        Отдельное от `admin_secret`, и это не педантизм: закрытая часть этого
+        ключа уезжает на общедоступный сервер, отвечающий носителям, а такой
+        сервер рано или поздно взломают. Пусть тогда злоумышленник получит
+        возможность отозвать носители -- отказ в обслуживании, неприятно, но
+        восстановимо выдачей новых, -- а не возможность подделывать обмен
+        конфигурациями между администраторами и вычислять коды восстановления.
+
+        Заводится на месте, как и секрет администратора: контейнеры, созданные
+        до появления отзыва, получают ключ при первом обращении, без
+        пересоздания.
+        """
+        if not self.data.revocation_secret_b64:
+            self.data.revocation_secret_b64 = base64.b64encode(
+                crypto.new_admin_secret()
+            ).decode()
+        return base64.b64decode(self.data.revocation_secret_b64)
+
     # -- media records ----------------------------------------------------
     def add_media_record(self, record: MediaRecord) -> None:
         self.data.media_records.append(record)

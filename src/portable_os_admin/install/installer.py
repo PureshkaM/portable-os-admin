@@ -869,15 +869,13 @@ class OSInstaller:
         # сборке, и носители разных администраторов из одного дистрибутива
         # должны доверять разным ключам.
         from . import revocation
-        from ..config import exchange
 
         if revocation.is_enabled(config):
-            identity = exchange.identity_of(self.session.container)
             key_dir = revocation.PUBLIC_KEY_PATH.rsplit("/", 1)[0]
             run(["mkdir", "-p", f"{layout.mount_root}/{key_dir}"])
             self._write_file(
                 f"{layout.mount_root}/{revocation.PUBLIC_KEY_PATH}",
-                revocation.public_key_pem(identity.signing_key),
+                revocation.public_key_pem(self.session.container.revocation_secret),
                 plan, dry_run, confirm_device, mode=0o444,
             )
 

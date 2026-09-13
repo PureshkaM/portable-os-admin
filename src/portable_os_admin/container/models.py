@@ -268,6 +268,14 @@ class AdminContainerData:
     #: носителей организации. Забыл пароль от контейнера — контейнер бесполезен,
     #: и это принятое решение, а не недоработка.
     admin_secret_b64: str = ""
+    #: Отдельное семя для подписи ответов об отзыве.
+    #:
+    #: Не то же, что `admin_secret_b64`, и это принципиально: закрытая часть
+    #: ключа отзыва уезжает на общедоступный сервер, который однажды взломают.
+    #: Взлом такого сервера позволит отзывать носители -- то есть устроить
+    #: отказ в обслуживании, -- но не подделать обмен конфигурациями между
+    #: администраторами и не вычислить коды восстановления.
+    revocation_secret_b64: str = ""
     #: Семя ключей обмена конфигурациями между администраторами.
     #:
     #: Отдельно от секрета восстановления, хотя оба -- случайные 32 байта.
@@ -284,6 +292,7 @@ class AdminContainerData:
             "configs": [c.to_dict() for c in self.configs],
             "journal": [e.to_dict() for e in self.journal],
             "admin_secret_b64": self.admin_secret_b64,
+            "revocation_secret_b64": self.revocation_secret_b64,
             "exchange_seed_b64": self.exchange_seed_b64,
         }
 
@@ -300,5 +309,6 @@ class AdminContainerData:
             # «их не было».
             journal=[JournalEntry.from_dict(e) for e in data.get("journal", [])],
             admin_secret_b64=data.get("admin_secret_b64", ""),
+            revocation_secret_b64=data.get("revocation_secret_b64", ""),
             exchange_seed_b64=data.get("exchange_seed_b64", ""),
         )
