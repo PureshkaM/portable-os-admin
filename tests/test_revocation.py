@@ -116,3 +116,28 @@ def test_the_validator_refuses_configurations_that_would_install_but_not_work():
     assert not manager.validate(zero_timeout).ok
 
     assert manager.validate(_config()).ok
+
+
+def test_both_families_carry_what_the_check_needs():
+    """Проверка отзыва ходит curl и проверяет подпись openssl.
+
+    Ни того, ни другого в минимальной системе нет по умолчанию, а отсутствие
+    вылезает худшим образом: носитель выглядит исправным, проверка молча не
+    срабатывает ни разу, и заметить это можно только в журнале носителя.
+    """
+    from portable_os_admin.config import InstallConfig
+    from portable_os_admin.install.backends import get_backend
+
+    for family in ("debian", "redos"):
+        config = InstallConfig.create_baseline("stick", family)
+        packages = get_backend(family).boot_packages(config)
+        for tool in ("curl", "openssl"):
+            assert tool in packages, f"{family}: в наборе нет {tool}"
+
+
+def test_the_check_names_the_tool_it_lacks():
+    """Скрипт не должен молча уходить при нехватке инструмента."""
+    script = revocation.revocation_script(_config(), "a1b2c3d4", "/dev/sdb3")
+
+    assert "command -v" in script
+    assert "проверка отзыва невозможна" in script
