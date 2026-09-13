@@ -59,6 +59,10 @@ mkdir -p "$STAGE"
 # in the tarball the build fails at %install rather than at %prep, which is a
 # confusing place to find out.
 cp -r src packaging pyproject.toml README.md LICENSE "$STAGE/"
+# Рантайм едет вместе с исходниками: spec берёт его из runtime/ в распакованном
+# архиве. Копируется, а не собирается заново -- сборка уже прошла выше и
+# проверила себя запуском.
+cp -a "$RUNTIME" "$STAGE/runtime"
 tar -C "$WORKDIR" -czf "$WORKDIR/$NAME-$VERSION.tar.gz" "$NAME-$VERSION"
 
 # The tree is made by hand rather than with rpmdev-setuptree: that tool comes
@@ -66,6 +70,10 @@ tar -C "$WORKDIR" -czf "$WORKDIR/$NAME-$VERSION.tar.gz" "$NAME-$VERSION"
 TOPDIR="${RPM_TOPDIR:-$HOME/rpmbuild}"
 mkdir -p "$TOPDIR"/SOURCES "$TOPDIR"/SPECS "$TOPDIR"/BUILD "$TOPDIR"/RPMS "$TOPDIR"/SRPMS
 cp "$WORKDIR/$NAME-$VERSION.tar.gz" "$TOPDIR/SOURCES/"
-rpmbuild --define "_topdir $TOPDIR" -bb packaging/rpm/portable-os-admin.spec
+# `--target x86_64` явно: пакет несёт двоичный рантайм этой архитектуры, и на
+# машине другой архитектуры rpmbuild иначе отказывается со словами «No
+# compatible architectures found for build». Сборка при этом честная -- ничего
+# не компилируется, содержимое рантайма уже готово.
+rpmbuild --define "_topdir $TOPDIR" --target x86_64 -bb packaging/rpm/portable-os-admin.spec
 
-echo "Built package(s) are in $TOPDIR/RPMS/noarch/"
+echo "Готовый пакет: $TOPDIR/RPMS/x86_64/"

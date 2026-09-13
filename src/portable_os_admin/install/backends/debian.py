@@ -506,7 +506,21 @@ class DebianInstallBackend(InstallBackend):
             "set -e; "
             "export DEBIAN_FRONTEND=noninteractive; "
             'if [ -x /usr/bin/eatmydata ]; then run="eatmydata"; else run=""; fi; '
-            f"exec $run apt-get install -y --no-install-recommends {quoted}"
+            # Наши файлы настроек лежат в целевой системе раньше, чем пакет,
+            # которому они принадлежат: тему plymouth установщик пишет до
+            # установки самого plymouth. dpkg видит изменённый conffile,
+            # спрашивает, что с ним делать, -- а спросить некого, stdin закрыт,
+            # и установка падает с «end of file on stdin at conffile prompt».
+            # Прогон 13.09.2026 умер именно так, на plymouth и plymouth-label,
+            # через сорок минут работы. `DEBIAN_FRONTEND=noninteractive` этот
+            # вопрос не закрывает: он про debconf, а conffile -- про dpkg.
+            #
+            # `confold` -- сохранять наш файл: он написан осознанно и на нём
+            # держится графический экран ввода пароля. `confdef` -- там, где
+            # спора нет, брать умолчание пакета.
+            "exec $run apt-get install -y --no-install-recommends "
+            '-o Dpkg::Options::=--force-confold '
+            f'-o Dpkg::Options::=--force-confdef {quoted}'
         )
         return self.chroot(mount_root, "sh", "-c", script)
 
