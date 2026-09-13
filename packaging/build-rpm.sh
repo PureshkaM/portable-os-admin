@@ -29,16 +29,24 @@ fi
 # with ModuleNotFoundError on first launch. There is no host-independent
 # value to fall back to, so refuse instead of shipping a package that only
 # looks like it works.
-SITELIB=$(rpm --eval '%{?python3_sitelib}' 2>/dev/null || true)
-if [ -z "$SITELIB" ] || [ "$SITELIB" = '%{python3_sitelib}' ]; then
-    cat >&2 <<'EOF'
-error: %{python3_sitelib} is not defined by this rpm installation.
-Install python3-devel (RedOS/RHEL: dnf install python3-devel) and retry --
-this package can only be built for real on a RHEL-family host, because the
-install path it needs to write to is that host's own packaging convention
-and there is no way to guess it from outside that family.
-EOF
-    exit 1
+# Встроенный рантайм: свой Python с Tk и cryptography.
+#
+# Раньше здесь стояла проверка на %{python3_sitelib} и отказ собирать без
+# python3-devel: пакет ставил код в системный site-packages, и путь к нему был
+# свойством хоста. Теперь программа живёт в собственном префиксе вместе со
+# своим интерпретатором, поэтому системный Python не нужен ни при сборке, ни
+# при установке -- а именно из-за него пакет и был неустановим на РЕД ОС, где
+# python3-tkinter отсутствует.
+#
+# Рантайм собирается до rpmbuild, а не внутри него: он тянется из сетевого
+# репозитория дистрибутива, и сборка пакета не должна зависеть от сети в тот
+# момент, когда её уже поздно спрашивать.
+RUNTIME=${RUNTIME:-$PWD/runtime}
+if [ ! -x "$RUNTIME/usr/bin/python3.11" ]; then
+    echo "собираю рантайм в $RUNTIME"
+    sh packaging/rpm/build-runtime.sh "$RUNTIME"
+else
+    echo "рантайм уже собран: $RUNTIME"
 fi
 
 WORKDIR=$(mktemp -d)

@@ -6,7 +6,10 @@ Summary:        Admin tool for portable LUKS-encrypted OS media
 License:        MIT
 URL:            https://github.com/PureshkaM/portable-os-admin
 Source0:        %{name}-%{version}.tar.gz
-BuildArch:      noarch
+# Не noarch: пакет несёт собственный рантайм -- Python, Tcl/Tk и cryptography,
+# собранные для x86_64. Это цена самодостаточности, и она осознанная: без
+# рантайма пакет требовал бы python3-tkinter, которого на DVD РЕД ОС 8 нет.
+BuildArch:      x86_64
 
 # %{python3_sitelib} comes from python3-rpm-macros (pulled in by
 # python3-devel below): it is how rpm's macro table learns where *this
@@ -39,10 +42,12 @@ BuildRequires:  python3-devel
 # interpreter python3-devel's macros were computed for on the build host --
 # the same one %{python3_sitelib} above resolves against -- so this tracks
 # the actual build, not a guessed floor.
-Requires:       python3
-Requires:       python3(abi) = %{python3_version}
-Requires:       python3-tkinter
-Requires:       python3-cryptography
+# Python, Tk и cryptography пакет несёт с собой, поэтому от системных здесь
+# ничего не требуется. Так и получается «ставится на любую машину семейства, не
+# спрашивая репозиториев»: `python3-tkinter` на DVD РЕД ОС 8 нет вовсе, и
+# требование его наличия делало пакет неустановимым ровно там, ради чего он
+# написан. Рантайм собирается packaging/rpm/build-runtime.sh из пакетов самого
+# дистрибутива -- ни компиляции, ни сторонних двоичных файлов.
 # pkexec, through which the application asks the desktop for administrator
 # rights. The agent that draws the dialog comes with the desktop environment.
 Requires:       polkit
@@ -110,13 +115,29 @@ carry it, so that has to come from elsewhere (see docs/ARCHITECTURE.md
 
 %install
 rm -rf %{buildroot}
-mkdir -p %{buildroot}%{python3_sitelib}
-cp -r src/portable_os_admin %{buildroot}%{python3_sitelib}/
-find %{buildroot}%{python3_sitelib} -name __pycache__ -type d -exec rm -rf {} +
+# Программа и её рантайм -- в собственном префиксе, а не в системном
+# site-packages: пакет ничего не берёт у системного Python, потому что нужного
+# ему там может не быть вовсе.
+mkdir -p %{buildroot}/usr/lib/portable-os-admin/app
+cp -r src/portable_os_admin %{buildroot}/usr/lib/portable-os-admin/app/
+find %{buildroot}/usr/lib/portable-os-admin/app -name __pycache__ -type d -exec rm -rf {} +
+# Рантайм собирается packaging/rpm/build-runtime.sh ДО rpmbuild и приезжает в
+# каталоге runtime/ вместе с исходниками. Собирать его здесь нельзя: он
+# тянется из сетевого репозитория, а сборка пакета должна работать из того,
+# что уже есть, и не зависеть от сети в этот момент.
+mkdir -p %{buildroot}/usr/lib/portable-os-admin/runtime
+cp -a runtime/. %{buildroot}/usr/lib/portable-os-admin/runtime/
 mkdir -p %{buildroot}/usr/bin
 cat > %{buildroot}/usr/bin/portable-os-admin <<'EOF'
 #!/bin/sh
-exec /usr/bin/python3 -m portable_os_admin.gui.app "$@"
+# Свой интерпретатор и свой Tk. PYTHONHOME -- чтобы стандартная библиотека
+# искалась рядом, а не в системе; LD_LIBRARY_PATH -- чтобы _tkinter нашёл
+# Tcl/Tk там же, где лежит сам, а не в /usr/lib64, где их может не быть.
+RT=/usr/lib/portable-os-admin/runtime
+export PYTHONHOME="$RT/usr"
+export LD_LIBRARY_PATH="$RT/usr/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export PYTHONPATH=/usr/lib/portable-os-admin/app
+exec "$RT/usr/bin/python3.11" -m portable_os_admin.gui.app "$@"
 EOF
 chmod 755 %{buildroot}/usr/bin/portable-os-admin
 mkdir -p %{buildroot}/usr/share/applications
@@ -145,7 +166,8 @@ install -m 755 packaging/polkit/launch-root %{buildroot}/usr/lib/portable-os-adm
 
 %files
 %license LICENSE
-%{python3_sitelib}/portable_os_admin
+/usr/lib/portable-os-admin/app
+/usr/lib/portable-os-admin/runtime
 /usr/bin/portable-os-admin
 /usr/share/applications/portable-os-admin.desktop
 /usr/share/polkit-1/actions/ru.portableosadmin.policy
