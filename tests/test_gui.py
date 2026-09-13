@@ -2422,3 +2422,36 @@ def test_the_build_wizard_offers_a_place_to_put_the_distribution(gui_app, tmp_pa
     offered = wizard.destination_var.get()
     assert offered, "мастер не предлагает никакого каталога"
     assert pathlib.Path(offered).is_dir(), f"предложенного каталога не существует: {offered}"
+
+
+def test_the_maintenance_screen_says_when_no_revocation_resource_is_known(gui_app, tmp_path):
+    """Пустая карточка молчала бы о главном: носители, выпущенные без ресурса,
+    нельзя отозвать удалённо, и узнать об этом надо до выпуска, а не после."""
+    from portable_os_admin.gui.screens.maintenance import MaintenanceFrame
+
+    app = gui_app
+    _open_container(app, tmp_path)
+    app.show_frame(MaintenanceFrame)
+    app.update()
+    frame = app._current_frame
+
+    assert "Не подключён" in frame.revocation_state.cget("text")
+
+
+def test_a_plain_http_resource_is_refused_before_the_container_says_anything(gui_app, tmp_path):
+    """По открытому каналу видно, какие носители у организации есть и когда
+    они включаются, — поэтому адрес проверяется до всякого обращения."""
+    from portable_os_admin.gui.screens.maintenance import MaintenanceFrame
+
+    app = gui_app
+    _open_container(app, tmp_path)
+    app.show_frame(MaintenanceFrame)
+    app.update()
+    frame = app._current_frame
+
+    frame.revocation_url.set("http://revoke.example.org")
+    frame._connect_revocation()
+    app.update()
+
+    assert "https" in frame.message_bar.var.get()
+    assert not app.session.container.data.revocation_server_url
