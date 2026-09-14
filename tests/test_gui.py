@@ -2455,3 +2455,26 @@ def test_a_plain_http_resource_is_refused_before_the_container_says_anything(gui
 
     assert "https" in frame.message_bar.var.get()
     assert not app.session.container.data.revocation_server_url
+
+
+def test_a_table_inside_a_wizard_keeps_more_than_one_row_visible(gui_app):
+    """Одна видимая строка прячет всё остальное под прокруткой.
+
+    Так «пропала» сохранённая конфигурация 14.09.2026: в разделе
+    «Конфигурации» она была, в мастере сборки -- нет. Растяжение само по себе
+    высоты не добавляет: внутри прокручиваемого шага мастера у таблицы нет
+    соперников за место, и запрошенная строка так строкой и остаётся.
+    """
+    from tkinter import ttk
+
+    from portable_os_admin.gui.widgets import Column, data_table
+
+    holder = ttk.Frame(gui_app)
+    columns = (Column("a", "Колонка", 120, 80),)
+
+    default_table, _ = data_table(holder, columns)
+    asked_table, _ = data_table(holder, columns, min_rows=5)
+
+    # Умолчание не трогаем: оно защищает кнопки под таблицей на окне 900x600.
+    assert int(default_table.cget("height")) == 1
+    assert int(asked_table.cget("height")) == 5
