@@ -94,6 +94,47 @@ def test_recognition_works_by_any_of_the_three_volumes():
     assert found[0].matched_volume == "обмена"
 
 
+def test_a_rewritten_medium_stops_being_listed_as_plugged_in():
+    """В одном порту -- один носитель, а не все, что там когда-то были.
+
+    Замечено 14.09.2026: список предлагал три носителя, и все с пометкой
+    `/dev/loop1`, хотя перезаписаны были первые два. Выбрать из них было
+    нечего: приложение честно отвечало «носитель с томом ... не найден», но
+    только после выбора.
+    """
+    old = make_record("aaaaaaaa", "11111111-0000-0000-0000-000000000000")
+    older = make_record(
+        "bbbbbbbb",
+        "22222222-0000-0000-0000-000000000000",
+        logs_luks_uuid="33333333-0000-0000-0000-000000000000",
+    )
+    current = make_record("cccccccc", "44444444-0000-0000-0000-000000000000")
+    # На устройстве сейчас тома последней записи -- и, скажем, уцелевший том
+    # журналов предыдущей: разделы перезаписываются не всегда все сразу.
+    devices = [
+        make_device(
+            "/dev/loop1",
+            ["44444444-0000-0000-0000-000000000000", "33333333-0000-0000-0000-000000000000"],
+        )
+    ]
+
+    found = detect([old, older, current], FakeLister(devices))
+
+    assert [item.record.media_id for item in found] == ["cccccccc"]
+    assert found[0].matched_volume == "системный"
+
+
+def test_the_later_record_wins_when_both_match_the_same_way():
+    """Записи идут в порядке выдачи: последняя описывает то, что в порту."""
+    first = make_record("aaaaaaaa", "11111111-0000-0000-0000-000000000000")
+    second = make_record("bbbbbbbb", "11111111-0000-0000-0000-000000000000")
+    devices = [make_device("/dev/sdb", ["11111111-0000-0000-0000-000000000000"])]
+
+    found = detect([first, second], FakeLister(devices))
+
+    assert [item.record.media_id for item in found] == ["bbbbbbbb"]
+
+
 def test_uuid_case_does_not_matter():
     """blkid печатает строчными, заголовок хранит как записали."""
     record = make_record("46aed677", "523E0993-4DAC-4EEE-9F72-A272CE456D34")
@@ -210,34 +251,32 @@ def test_nothing_is_copied_when_nothing_was_chosen():
     assert calls == []
 
 
-def test_both_ways_of_writing_a_medium_fill_the_exchange():
-    """Развёртывание и установка с образа -- два разных пути, и оба обязаны.
+def test_both_ways_of_writing_a_medium_go_through_one_helper():
+    """Развёртывание и установка кладут на носитель один и тот же набор.
 
-    Проверено прогоном 04.09.2026: правка стояла только в пути установки с
-    образа, носитель развернулся успешно, а каталог настроек в разделе обмена
-    не появился вовсе. Снаружи это выглядит как «файл не скопировался», и
-    ошибку видно только тому, кто заглянет в раздел после записи.
+    Раньше этот тест сторожил другое: раздел обмена монтировался в двух местах
+    кода, и рядом с каждым монтированием обязан был стоять вызов, который его
+    наполняет. Так и было найдено 04.09.2026 -- правка стояла только в пути
+    установки с образа, носитель развернулся успешно, а каталог настроек в
+    разделе обмена не появился вовсе.
 
-    Смотрим туда же, куда смотрит сама программа: раздел обмена монтируется в
-    двух местах кода, и рядом с каждым монтированием обязан стоять вызов,
-    который его наполняет. Проверка по тексту, а не по поведению: поднять
-    настоящую запись в тесте нечем, а «в обеих ветках есть вызов» -- ровно то,
-    чего не хватало.
+    Два места и были корнем беды: за два дня разъезд путей стоил четырёх
+    дефектов, каждый виден только живой загрузкой. Теперь путь один --
+    `_write_medium_files`, -- и сторожить надо именно это: новая вещь на
+    носителе физически не может попасть лишь в одну ветку.
     """
     import inspect
 
     from portable_os_admin.install import installer as installer_module
 
-    source = inspect.getsource(installer_module).splitlines()
-    mount_lines = [
-        index
-        for index, line in enumerate(source)
-        if 'run(["mount", layout.exchange_mapper_path' in line
-    ]
-    assert len(mount_lines) == 2, "раздел обмена монтируется не в двух местах -- проверьте тест"
+    source = inspect.getsource(installer_module)
+    mounts = source.count('run(["mount", layout.exchange_mapper_path')
+    assert mounts == 1, "раздел обмена монтируется больше чем в одном месте -- пути разъехались"
 
-    for index in mount_lines:
-        nearby = "\n".join(source[index : index + 15])
-        assert "_fill_exchange" in nearby, (
-            f"около монтирования обмена (строка {index + 1}) нет наполнения раздела"
-        )
+    assert "def _write_medium_files(" in source, "общего помощника нет"
+    calls = source.count("self._write_medium_files(")
+    assert calls == 2, "помощник вызван не из обоих путей записи носителя"
+
+    installer_source = inspect.getsource(installer_module.OSInstaller._write_medium_files)
+    for needed in ("config_files", "scripted_files", "_write_revocation_key", "_fill_exchange"):
+        assert needed in installer_source, f"общий помощник не пишет {needed}"

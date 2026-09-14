@@ -879,11 +879,34 @@ class OSInstaller:
             plan, dry_run, confirm_device,
         )
 
-    def _write_medium_identity(
-        self, config, backend, layout, media_id, recovery_salt, boot_key, service_key,
-        plan, state, dry_run, confirm_device, overlay_root: bool = False,
+    def _write_medium_files(
+        self, config, backend, layout, boot_key, plan, state, dry_run, confirm_device,
+        *, overlay_root: bool = False, skip_image_files: bool = False,
     ) -> None:
-        """Everything that makes this medium this medium and not another one."""
+        """Всё, что кладётся на носитель и зависит от него самого.
+
+        Один помощник на оба пути -- и это не вкусовщина. Раньше развёртывание
+        писало эти файлы через `_write_medium_identity`, а установка делала то
+        же самое в своём теле, и наборы разъезжались. Цена расхождения --
+        четыре дефекта за два дня, каждый из которых виден только живой
+        загрузкой: хуки overlay не попадали на носитель (10.09.2026), ключ
+        ресурса отзыва не писался путём установки, служба отзыва уезжала
+        выключенной, `curl` отсутствовал. Теперь новая вещь на носителе
+        физически не может попасть лишь в один путь.
+
+        Различий между путями ровно два, и оба -- параметрами:
+
+        `skip_image_files` -- развёртывание кладёт лишь разницу с образом:
+        всё, что одинаково для носителей из одного дистрибутива, туда уже
+        положила сборка, и переписывать образ поверх самого себя незачем. На
+        пути установки корень собран пакетами, общего набора там не писал
+        никто, и пишется он целиком.
+
+        `overlay_root` -- хуки сборки корня из образа нужны только тогда, когда
+        корень **действительно** собран overlay поверх образа. Написанные на
+        обычный корень, они уносят его из `$rootmnt` и оставляют систему без
+        точки монтирования (13.09.2026, Debian + MATE).
+        """
         run = lambda argv, **kw: self._run(argv, plan, dry_run, confirm_device, **kw)  # noqa: E731
 
         self._probe_uuids(layout, dry_run)
@@ -892,19 +915,10 @@ class OSInstaller:
             run(["mkdir", "-p", target.rsplit("/", 1)[0]])
             self._write_file(target, content, plan, dry_run, confirm_device)
 
-        # Скрипты, которых не могло быть в образе: они зависят от носителя.
-        #
-        # Всё, что одинаково для всех носителей из одного дистрибутива, уже
-        # лежит в образе -- туда его положила сборка. Но часть скриптов
-        # требует раскладки: имя отображения LUKS, идентификатор носителя.
-        # Такие пишутся здесь, и берётся ровно разница между двумя наборами,
-        # чтобы не переписывать образ поверх самого себя.
-        #
-        # Найдено загрузкой с флешки 10.09.2026: хуки, собирающие корень из
-        # образа, не попадали никуда -- в образ их не кладут (там ещё нет
-        # тома), а развёртывание писало только `config_files`. Носитель дошёл
-        # до аварийной оболочки: том открыт, а собрать из него корень некому.
-        common = backend.scripted_files(config, image=self._image)
+        # Скрипты и юниты несут собственный режим. Написанные 0644, они были бы
+        # на месте, верны и мертвы: список разрешённого в киоске не применился
+        # бы ни разу, а служба обновления не стартовала бы вовсе.
+        common = backend.scripted_files(config, image=self._image) if skip_image_files else {}
         for relative, (content, mode) in backend.scripted_files(
             config, layout, image=self._image, overlay_root=overlay_root
         ).items():
@@ -914,6 +928,10 @@ class OSInstaller:
             run(["mkdir", "-p", target.rsplit("/", 1)[0]])
             self._write_file(target, content, plan, dry_run, confirm_device, mode=mode)
 
+        # Ключ, которым crypttab открывает тома журналов и обмена при загрузке.
+        # Лежит на зашифрованном корне, то есть доступен только после того, как
+        # корень открыт парольной фразой; 0400 и владелец root, потому что в
+        # работающей системе его не читает никто, кроме systemd-cryptsetup.
         run(["mkdir", "-p", f"{layout.mount_root}/{SERVICE_KEY_DIR}"])
         self._write_file(
             f"{layout.mount_root}/{SERVICE_KEY_PATH}", boot_key, plan, dry_run, confirm_device,
@@ -922,18 +940,31 @@ class OSInstaller:
 
         self._write_revocation_key(config, layout, plan, dry_run, confirm_device)
 
+        # Том обмена монтируется здесь, а не только при загрузке, чтобы его
+        # корневой каталог стал доступен на запись тому, кто будет носителем
+        # пользоваться. 1777 (как у /tmp), а не владелец: учётная запись
+        # создаётся позже, в chroot, и её uid здесь ещё не известен. Том
+        # зашифрован, а внутри переносной системы пользователь ровно один,
+        # поэтому вольный режим ничего не стоит.
         run(["mkdir", "-p", f"{layout.mount_root}{EXCHANGE_MOUNTPOINT}"])
         run(["mount", layout.exchange_mapper_path, f"{layout.mount_root}{EXCHANGE_MOUNTPOINT}"])
         state.mounts.append(f"{layout.mount_root}{EXCHANGE_MOUNTPOINT}")
         run(["chmod", "1777", f"{layout.mount_root}{EXCHANGE_MOUNTPOINT}"])
-        # Файлы администратора -- здесь же, пока том смонтирован.
-        #
-        # Второй раз, и это не дубль: развёртывание и установка с образа
-        # монтируют раздел обмена каждое у себя. Правка, сделанная в одном
-        # месте, ничего не дала другому -- проверено прогоном 04.09.2026:
-        # носитель записался, а каталог настроек в разделе не появился.
         self._exchange_problems = self._fill_exchange(
             run, layout, getattr(self, "_exchange_files", ())
+        )
+
+    def _write_medium_identity(
+        self, config, backend, layout, media_id, recovery_salt, boot_key, service_key,
+        plan, state, dry_run, confirm_device, overlay_root: bool = False,
+    ) -> None:
+        """Everything that makes this medium this medium and not another one."""
+        # Сами файлы носителя пишет общий помощник -- тот же, что и на пути
+        # установки. Разница между путями ровно одна и выражена флагом:
+        # развёртывание кладёт лишь то, чего нет в образе.
+        self._write_medium_files(
+            config, backend, layout, boot_key, plan, state, dry_run, confirm_device,
+            overlay_root=overlay_root, skip_image_files=True,
         )
 
         # Before the initramfs is built, never after: these are what the
@@ -1351,51 +1382,10 @@ class OSInstaller:
             temporary_paths.append(target)
 
         self._progress.step("Настройка устанавливаемой системы")
-        self._probe_uuids(layout, dry_run)
-
-        for relative, content in backend.config_files(config, layout, image=self._image).items():
-            target = f"{layout.mount_root}/{relative}"
-            run(["mkdir", "-p", target.rsplit("/", 1)[0]])
-            self._write_file(target, content, plan, dry_run, confirm_device)
-
-        # Scripts and units, which carry a mode of their own. Written 0644 they
-        # would be present, correct and inert -- the kiosk whitelist would
-        # never be applied and the update service would never start.
-        for relative, (content, mode) in backend.scripted_files(config, layout, image=self._image).items():
-            target = f"{layout.mount_root}/{relative}"
-            run(["mkdir", "-p", target.rsplit("/", 1)[0]])
-            self._write_file(target, content, plan, dry_run, confirm_device, mode=mode)
-
-        self._write_revocation_key(config, layout, plan, dry_run, confirm_device)
-
-        # The key file crypttab uses to open the log and exchange volumes at
-        # boot. It sits on the encrypted root, so it is only reachable once the
-        # root itself has been unlocked with the user's passphrase; 0400 and
-        # root-owned, because nothing in the running system needs to read it
-        # except systemd-cryptsetup.
-        run(["mkdir", "-p", f"{layout.mount_root}/{SERVICE_KEY_DIR}"])
-        self._write_file(
-            f"{layout.mount_root}/{SERVICE_KEY_PATH}",
-            boot_key,
-            plan,
-            dry_run,
-            confirm_device,
-            binary=True,
-            mode=0o400,
-        )
-
-        # Mounted here and not only at boot, so the volume's root directory can
-        # be made writable for whoever ends up using the portable system. 1777
-        # (like /tmp) rather than an owner: the account is created later, in the
-        # chroot, and its uid is not known at this point. The volume is
-        # encrypted, and inside a booted portable system there is exactly one
-        # user, so a permissive mode there costs nothing.
-        run(["mkdir", "-p", f"{layout.mount_root}{EXCHANGE_MOUNTPOINT}"])
-        run(["mount", layout.exchange_mapper_path, f"{layout.mount_root}{EXCHANGE_MOUNTPOINT}"])
-        state.mounts.append(f"{layout.mount_root}{EXCHANGE_MOUNTPOINT}")
-        run(["chmod", "1777", f"{layout.mount_root}{EXCHANGE_MOUNTPOINT}"])
-        self._exchange_problems = self._fill_exchange(
-            run, layout, getattr(self, "_exchange_files", ())
+        # Тот же помощник, что и на пути развёртывания. Здесь корень собран
+        # пакетами, а не развёрнут из образа, поэтому пишется весь набор.
+        self._write_medium_files(
+            config, backend, layout, boot_key, plan, state, dry_run, confirm_device,
         )
 
         refresh = backend.package_refresh_command(layout.mount_root)

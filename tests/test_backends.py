@@ -881,7 +881,6 @@ def test_redos_carries_the_font_files_themselves():
     системе не существовало, то есть `setfont` (он в initramfs есть) кормить
     было нечем. Файлы шрифтов лежат в kbd-misc, отдельно от kbd.
     """
-    from portable_os_admin.config import InstallConfig
     from portable_os_admin.install.backends import get_backend
 
     names = get_backend("redos").core_package_names()

@@ -16,7 +16,6 @@ import pytest
 from portable_os_admin.config import InstallConfig
 from portable_os_admin.config.repo_browser import RepoPackage
 from portable_os_admin.config.schema import KioskConfig
-from portable_os_admin.gui import screens as _screens_pkg
 from portable_os_admin.gui import theme  # noqa: F401 -- import-ability check
 from portable_os_admin.gui.app import PortableOSAdminGUI
 from portable_os_admin.gui.screens import config_wizard as config_wizard_module
