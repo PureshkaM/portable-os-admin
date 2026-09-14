@@ -1433,7 +1433,10 @@ class OSInstaller:
                 run(firmware_cmd, timeout=BOOTSTRAP_TIMEOUT)
 
         self._progress.step("Создание учётной записи и служб")
-        for argv in backend.chroot_setup_commands(layout.mount_root, config):
+        # media_id здесь есть -- значит файлы носителя уже написаны, и службы,
+        # которые на них опираются, можно включать. На пути сборки
+        # дистрибутива его нет, и включение пропускается.
+        for argv in backend.chroot_setup_commands(layout.mount_root, config, media_id):
             run(argv, timeout=BOOTSTRAP_TIMEOUT)
 
         # Метки мандатного контроля по всему дереву -- тем же вызовом и на том

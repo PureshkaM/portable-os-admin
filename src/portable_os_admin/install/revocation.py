@@ -248,7 +248,20 @@ def config_files(
     }
 
 
-def chroot_commands(mount_root: str, config: InstallConfig, backend) -> list[list[str]]:
-    if not is_enabled(config):
+def chroot_commands(
+    mount_root: str, config: InstallConfig, backend, media_id: str = ""
+) -> list[list[str]]:
+    """Включить службу -- но только там, где её файл уже написан.
+
+    Файлы отзыва появляются при записи носителя: скрипт называет идентификатор
+    этого носителя и его раздел, а в эталонном корне дистрибутива ни того, ни
+    другого ещё нет (см. `config_files`). Включение же шло безусловно, и сборка
+    дистрибутива падала на шаге учётной записи и служб:
+    «Failed to enable unit, unit poa-revocation.service does not exist».
+
+    Найдено сборкой РЕД ОС 14.09.2026 -- и это снова расхождение двух путей:
+    один пишет файлы, другой их включает, а признак у них был разный.
+    """
+    if not is_enabled(config) or not media_id:
         return []
     return [backend.systemctl_enable(mount_root, SERVICE_NAME)]

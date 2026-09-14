@@ -155,3 +155,29 @@ def test_the_service_waits_for_the_volume_its_log_lives_on():
 
     assert "RequiresMountsFor=/var/log" in revocation.service_unit()
     assert "RequiresMountsFor=/var/log" in autoupdate.service_unit(_config())
+
+
+def test_the_service_is_enabled_only_where_its_file_exists():
+    """Иначе сборка дистрибутива падает на пустом месте.
+
+    Файлы отзыва пишутся при записи носителя: скрипт называет идентификатор
+    этого носителя и его раздел. Включение же шло по одному лишь «отзыв
+    включён в конфигурации», и сборка РЕД ОС 14.09.2026 встала на шаге
+    учётной записи и служб: «Failed to enable unit, unit
+    poa-revocation.service does not exist».
+    """
+
+    class _Backend:
+        def systemctl_enable(self, root, unit):
+            return ["chroot", root, "systemctl", "enable", unit]
+
+    config = _config()
+
+    # Сборка дистрибутива: носителя ещё нет, файлов тоже.
+    assert revocation.chroot_commands("/mnt/root", config, _Backend()) == []
+
+    # Запись носителя: файлы написаны, службу можно включать.
+    enabled = revocation.chroot_commands(
+        "/mnt/root", config, _Backend(), media_id="a1b2c3d4"
+    )
+    assert enabled and enabled[0][-1] == revocation.SERVICE_NAME

@@ -780,7 +780,9 @@ echo "poa-boot: меню загрузки написано для ядра $vers
         machine instead of the medium being built."""
         return self.chroot(mount_root, "env", "SYSTEMD_OFFLINE=1", "systemctl", "enable", unit)
 
-    def chroot_setup_commands(self, mount_root: str, config: InstallConfig) -> list[list[str]]:
+    def chroot_setup_commands(
+        self, mount_root: str, config: InstallConfig, media_id: str = ""
+    ) -> list[list[str]]:
         """Implements the OS-account-and-service half of UC-4's "настраивает
         содержимое системного раздела" step. The OS-level login password is
         intentionally locked (`passwd -l`) rather than set here: the LUKS
@@ -815,7 +817,10 @@ echo "poa-boot: меню загрузки написано для ядра $vers
         commands.append(self.systemctl_enable(mount_root, "rsyslog"))
 
         commands += autoupdate.chroot_commands(mount_root, config, self)
-        commands += revocation.chroot_commands(mount_root, config, self)
+        # Идентификатор носителя здесь -- признак «файлы отзыва написаны».
+        # Без него служба включалась бы там, где её файла нет: сборка
+        # дистрибутива падала на «unit poa-revocation.service does not exist».
+        commands += revocation.chroot_commands(mount_root, config, self, media_id)
 
         # After config.packages above, never before: the whitelist hides the
         # desktop entries that exist at the moment it runs, and a package
