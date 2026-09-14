@@ -23,7 +23,7 @@ def _config(url: str = "https://revoke.example.org", enabled: bool = True) -> In
 
 def _script(config: InstallConfig | None = None) -> str:
     config = config if config is not None else _config()
-    return revocation.revocation_script(config, "a1b2c3d4", "/dev/sdb3")
+    return revocation.revocation_script(config, "a1b2c3d4", "0e3f1a90-1111-2222-3333-444455556666")
 
 
 def test_the_generated_script_is_valid_shell():
@@ -80,12 +80,12 @@ def test_identifier_and_address_are_written_into_the_script():
     script = _script()
     assert "MEDIA_ID=a1b2c3d4" in script
     assert "URL=https://revoke.example.org" in script
-    assert "DEVICE=/dev/sdb3" in script
+    assert "LUKS_UUID=0e3f1a90-1111-2222-3333-444455556666" in script
 
 
 def test_nothing_is_written_when_the_feature_is_off():
     off = _config(enabled=False)
-    assert revocation.config_files(off, "a1b2c3d4", "/dev/sdb3") == {}
+    assert revocation.config_files(off, "a1b2c3d4", "0e3f1a90-1111-2222-3333-444455556666") == {}
 
     # И при включённом отзыве, но неизвестном носителе: общий на всех скрипт
     # спрашивал бы ресурс об одном и том же идентификаторе со всех флешек.
@@ -93,7 +93,7 @@ def test_nothing_is_written_when_the_feature_is_off():
 
 
 def test_files_land_where_the_service_can_find_them():
-    files = revocation.config_files(_config(), "a1b2c3d4", "/dev/sdb3")
+    files = revocation.config_files(_config(), "a1b2c3d4", "0e3f1a90-1111-2222-3333-444455556666")
     assert set(files) == {revocation.SCRIPT_PATH, revocation.SERVICE_PATH}
     assert files[revocation.SCRIPT_PATH][1] == 0o755, "скрипт должен быть исполняемым"
     assert f"/{revocation.SCRIPT_PATH}" in files[revocation.SERVICE_PATH][0]
@@ -136,7 +136,7 @@ def test_both_families_carry_what_the_check_needs():
 
 def test_the_check_names_the_tool_it_lacks():
     """Скрипт не должен молча уходить при нехватке инструмента."""
-    script = revocation.revocation_script(_config(), "a1b2c3d4", "/dev/sdb3")
+    script = _script()
 
     assert "command -v" in script
     assert "проверка отзыва невозможна" in script
@@ -169,3 +169,30 @@ def test_nothing_enables_the_service_through_chroot_any_more():
     assert not hasattr(revocation, "chroot_commands"), (
         "включение службы вернулось в команды chroot -- оно выполняется не на всех путях"
     )
+
+
+def test_the_volume_is_found_by_uuid_and_checked_before_it_is_destroyed():
+    """Путь раздела с машины администратора на носителе не значит ничего.
+
+    Живая проверка отзыва 14.09.2026: носитель получил «revoked», дошёл до
+    уничтожения и записал «Device /dev/loop1p3 does not exist or access
+    denied» -- в скрипт был вписан путь, каким раздел назывался на машине,
+    где носитель записывали.
+
+    Опаснее другое: на чужой машине путь вроде `/dev/sdb3` существует сплошь и
+    рядом и принадлежит постороннему диску, а `luksErase` необратим. Поэтому
+    том ищется по UUID заголовка, а перед уничтожением UUID сверяется ещё раз.
+    """
+    script = _script()
+
+    assert "/dev/disk/by-uuid/$LUKS_UUID" in script, "том не ищется по UUID"
+    assert "blkid -t UUID=" in script, "нет запасного способа найти том"
+
+    check_at = script.index("cryptsetup luksUUID")
+    erase_at = script.index("cryptsetup luksErase")
+    assert check_at < erase_at, "UUID сверяется после уничтожения -- бесполезно"
+    assert 'FOUND" != "$LUKS_UUID' in script, "несовпадение UUID ничего не меняет"
+
+    # Не нашли том -- честная строка и отказ, без попыток стереть что-нибудь.
+    assert "уничтожать нечего" in script
+    assert "ничего не трогаю" in script

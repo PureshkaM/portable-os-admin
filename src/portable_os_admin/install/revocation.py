@@ -56,16 +56,29 @@ def is_enabled(config: InstallConfig) -> bool:
     return bool(settings and settings.enabled and settings.url.strip())
 
 
-def revocation_script(config: InstallConfig, media_id: str, system_partition: str) -> str:
-    """Скрипт проверки. Идентификатор и адрес вписаны в текст, не в аргументы.
+def revocation_script(config: InstallConfig, media_id: str, luks_uuid: str) -> str:
+    """Скрипт проверки. Идентификатор, адрес и UUID тома вписаны в текст.
 
     То, что никогда не попадает в командную строку, нельзя закавычить
     неправильно -- тем же приёмом собран скрипт режима киоска.
 
-    `system_partition` -- раздел, чей заголовок уничтожается. Именно раздел, а
-    не отображение: `luksErase` работает с заголовком на диске, и открытый в
-    данный момент том этому не мешает. Сеанс доживёт до перезагрузки, а
-    следующей загрузки не будет -- ни с паролем, ни с кодом восстановления.
+    **Том ищется по UUID заголовка LUKS, а не по пути раздела**, и это не
+    педантизм. До 14.09.2026 в скрипт вписывался путь, каким раздел назывался
+    на машине администратора -- `/dev/loop1p3`, `/dev/sdb3`. На загруженном
+    носителе такого устройства нет: живая проверка отзыва показала в журнале
+    носителя «Device /dev/loop1p3 does not exist or access denied» и
+    «ОШИБКА: заголовок уничтожить не удалось». Вся цепочка -- служба, запрос,
+    подпись, состояние `revoked` -- отработала, и не сработал последний шаг.
+
+    Хуже, чем «не сработал»: на чужой машине путь `/dev/sdb3` вполне может
+    существовать и принадлежать постороннему диску, а `luksErase` необратим.
+    Поэтому устройство ищется по UUID и **перед уничтожением сверяется ещё
+    раз**: стирается только тот том, чей `luksUUID` совпал.
+
+    Уничтожается заголовок раздела, а не отображения: `luksErase` работает с
+    диском, и открытый в данный момент том этому не мешает. Сеанс доживёт до
+    перезагрузки, а следующей загрузки не будет -- ни с паролем, ни с кодом
+    восстановления.
     """
     settings = config.revocation
     url = settings.url.strip().rstrip("/")
@@ -83,7 +96,7 @@ LOG={LOG_PATH}
 MEDIA_ID={media_id}
 URL={url}
 KEY=/{PUBLIC_KEY_PATH}
-DEVICE={system_partition}
+LUKS_UUID={luks_uuid}
 TIMEOUT={timeout}
 
 log() {{
@@ -180,8 +193,38 @@ if [ "$STATE" != "revoked" ]; then
     exit 0
 fi
 
+# Том ищется по UUID: как называется раздел на этой машине, заранее не знает
+# никто, а путь с машины администратора здесь бессмыслен.
+DEVICE=""
+if [ -e "/dev/disk/by-uuid/$LUKS_UUID" ]; then
+    DEVICE=$(readlink -f "/dev/disk/by-uuid/$LUKS_UUID")
+elif command -v blkid >/dev/null 2>&1; then
+    DEVICE=$(blkid -t UUID="$LUKS_UUID" -o device 2>/dev/null | head -1)
+fi
+
+if [ -z "$DEVICE" ]; then
+    log "ОШИБКА: том с UUID $LUKS_UUID не найден, уничтожать нечего"
+    say "Отзыв не удалось довести до конца. Обратитесь к администратору."
+    sync
+    sleep 5
+    poweroff -f 2>/dev/null || echo o > /proc/sysrq-trigger
+    exit 0
+fi
+
+# Последняя сверка перед необратимым. Без неё совпадение имени устройства на
+# чужой машине означало бы уничтожение постороннего диска.
+FOUND=$(cryptsetup luksUUID "$DEVICE" 2>/dev/null)
+if [ "$FOUND" != "$LUKS_UUID" ]; then
+    log "ОШИБКА: $DEVICE -- не тот том (UUID $FOUND), ничего не трогаю"
+    say "Отзыв не удалось довести до конца. Обратитесь к администратору."
+    sync
+    sleep 5
+    poweroff -f 2>/dev/null || echo o > /proc/sysrq-trigger
+    exit 0
+fi
+
 # Дальше -- необратимое.
-log "НОСИТЕЛЬ ОТОЗВАН, уничтожаю заголовок LUKS"
+log "НОСИТЕЛЬ ОТОЗВАН, уничтожаю заголовок LUKS тома $DEVICE"
 say ""
 say "Носитель отозван администратором. Доступ к данным прекращён."
 if cryptsetup luksErase "$DEVICE" --batch-mode >>"$LOG" 2>&1; then
@@ -232,18 +275,18 @@ WantedBy=multi-user.target
 
 
 def config_files(
-    config: InstallConfig, media_id: str = "", system_partition: str = ""
+    config: InstallConfig, media_id: str = "", luks_uuid: str = ""
 ) -> dict[str, tuple[str, int | None]]:
     """Файлы носителя. Пусто, пока отзыв не включён или носитель неизвестен.
 
-    `media_id` и раздел приходят от установщика: они разные у каждого носителя,
+    `media_id` и UUID тома приходят от установщика: они разные у каждого носителя,
     поэтому эти файлы пишутся при записи, а не попадают в образ дистрибутива --
     иначе все носители спрашивали бы ресурс об одном и том же идентификаторе.
     """
-    if not is_enabled(config) or not media_id or not system_partition:
+    if not is_enabled(config) or not media_id or not luks_uuid:
         return {}
     return {
-        SCRIPT_PATH: (revocation_script(config, media_id, system_partition), 0o755),
+        SCRIPT_PATH: (revocation_script(config, media_id, luks_uuid), 0o755),
         SERVICE_PATH: (service_unit(), 0o644),
     }
 

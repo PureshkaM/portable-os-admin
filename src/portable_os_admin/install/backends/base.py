@@ -1322,7 +1322,7 @@ echo "poa-boot: меню загрузки написано для ядра $vers
                 revocation.config_files(
                     config,
                     media_id=layout.mapper_name.rsplit("-", 1)[-1],
-                    system_partition=layout.system_partition,
+                    luks_uuid=layout.luks_uuid,
                 )
             )
         files.update(self.machine_binding_files(config, layout))
