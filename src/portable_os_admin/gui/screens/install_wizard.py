@@ -98,6 +98,10 @@ class InstallWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
                 Column("fits", "подходит образу", 260, 150, stretch=True),
             ),
             height=8,
+            # Та же причина, что и в мастере сборки: одна видимая строка
+            # означает, что вторая конфигурация существует только под
+            # прокруткой, и администратор решает, что её нет.
+            min_rows=5,
             pady=(4, 8),
         )
         # Unsuitable rows stay visible rather than being hidden: seeing that a
