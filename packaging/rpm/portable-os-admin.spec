@@ -1,6 +1,6 @@
 Name:           portable-os-admin
-Version:        0.1.0
-Release:        3%{?dist}
+Version:        1.0.0
+Release:        1%{?dist}
 Summary:        Admin tool for portable LUKS-encrypted OS media
 
 License:        MIT
@@ -181,6 +181,16 @@ install -m 755 packaging/polkit/launch-root %{buildroot}/usr/lib/portable-os-adm
 /usr/lib/portable-os-admin/launch-root
 
 %changelog
+* Sun Sep 14 2026 PureshkaM <xripmax@gmail.com> - 1.0.0-1
+- First complete version. A revoked medium now destroys itself for good: key
+  slots of all three volumes, the data itself, the boot part and finally the
+  partition table, in that order, so that losing power at any step still
+  leaves no way to the data.
+- Both ways of writing a medium (deploy and install) go through one helper,
+  so a new file on the medium can no longer reach only one of them.
+- One medium per port in the media list: rewritten media are no longer
+  offered as plugged in.
+
 * Fri Sep 11 2026 PureshkaM <xripmax@gmail.com> - 0.1.0-3
 - Dropped the sysconfig-based fallback for %{python3_sitelib}: it encoded the
   build host's own Python layout rather than the target's, which is how a
