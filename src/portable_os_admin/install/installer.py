@@ -993,6 +993,15 @@ class OSInstaller:
                 if optional is not None:
                     run(optional, timeout=BOOTSTRAP_TIMEOUT)
 
+        # Пакеты семейства, без которых носитель работает не полностью. Вне
+        # блока рабочего стола намеренно: systemd-cryptsetup нужен и
+        # консольному профилю -- служебные тома открываются одинаково.
+        extra_packages = backend.optional_packages(config)
+        if extra_packages:
+            optional = backend.optional_package_command(root, extra_packages)
+            if optional is not None:
+                run(optional, timeout=BOOTSTRAP_TIMEOUT)
+
         image_dir = image_url[len("file://"):] if image_url.startswith("file://") else ""
         firmware_cmd = backend.firmware_install_command(root, image_dir)
         if firmware_cmd is not None:
@@ -1402,6 +1411,15 @@ class OSInstaller:
                 optional = backend.optional_package_command(layout.mount_root, ["firejail"])
                 if optional is not None:
                     run(optional, timeout=BOOTSTRAP_TIMEOUT)
+
+        # То же, что и на пути сборки дистрибутива, и по той же причине: без
+        # systemd-cryptsetup служебные тома носителя не открываются, а без
+        # журналов и раздела обмена носитель работает наполовину.
+        extra_packages = backend.optional_packages(config)
+        if extra_packages:
+            optional = backend.optional_package_command(layout.mount_root, extra_packages)
+            if optional is not None:
+                run(optional, timeout=BOOTSTRAP_TIMEOUT)
 
             # Device firmware the image carries outside its package index.
             # Without it a medium built from a Debian image reaches unfamiliar

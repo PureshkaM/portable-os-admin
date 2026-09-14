@@ -1009,3 +1009,30 @@ def test_debian_installs_what_its_own_locale_step_calls():
     assert "locales" in backend.boot_packages(config), (
         "locale-gen зовётся, а пакет, который его приносит, не ставится"
     )
+
+
+def test_debian_asks_for_the_tool_that_opens_the_service_volumes():
+    """Без systemd-cryptsetup служебные тома носителя не открываются.
+
+    Найдено живой загрузкой 13.09.2026: носитель поднял рабочий стол, а том
+    журналов не смонтировался -- «Timed out waiting for device …-logs.device»,
+    и ни одной строки от systemd-cryptsetup@. Генератор, который делает из
+    crypttab юниты, без этого бинаря молча не делает ничего, а в Debian 13 он
+    выделен из systemd в отдельный пакет.
+
+    Необязательный, а не обязательный: в Debian 12 такого пакета нет вовсе.
+    """
+    from portable_os_admin.config import InstallConfig
+    from portable_os_admin.install.backends import get_backend
+
+    config = InstallConfig.create_baseline("stick", "debian")
+    debian = get_backend("debian")
+
+    assert "systemd-cryptsetup" in debian.optional_packages(config)
+    # И ставится командой, которой позволено не найти пакет.
+    argv = debian.optional_package_command("/mnt/root", debian.optional_packages(config))
+    assert argv[0] == "sh" and "|| true" in argv[-1]
+
+    # У РЕД ОС бинарь внутри systemd, отдельного пакета не существует.
+    redos_config = InstallConfig.create_baseline("stick", "redos")
+    assert get_backend("redos").optional_packages(redos_config) == []

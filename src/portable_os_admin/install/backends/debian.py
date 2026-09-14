@@ -254,6 +254,23 @@ class DebianInstallBackend(InstallBackend):
             f"deb {source_url} {release} {parts}\n"
         )
 
+    def optional_packages(self, config: InstallConfig) -> list[str]:
+        """`systemd-cryptsetup` -- без него служебные тома не открываются.
+
+        Найдено живой загрузкой 13.09.2026. Носитель поднял рабочий стол, а
+        раздел «Журналы» ответил «журналы отсутствуют»: в системном журнале --
+        «Timed out waiting for device …-logs.device» и ни одной строки от
+        `systemd-cryptsetup@`. `crypttab` при этом верный. Причина в том, что
+        генератор, который делает из `crypttab` юниты, без этого бинаря молча
+        не делает ничего, а в Debian 13 бинарь выделен из `systemd` в
+        отдельный пакет.
+
+        Необязательный, а не обязательный: в Debian 12 такого пакета нет вовсе
+        -- бинарь там внутри `systemd`, -- и требование сломало бы установку на
+        выпуске, где всё и так работает.
+        """
+        return ["systemd-cryptsetup"]
+
     def overlay_boot_files(self, layout) -> dict:
         """initramfs-tools: хук сборки и скрипт, собирающий корень.
 
