@@ -1323,6 +1323,14 @@ echo "poa-boot: меню загрузки написано для ядра $vers
                     config,
                     media_id=layout.mapper_name.rsplit("-", 1)[-1],
                     luks_uuid=layout.luks_uuid,
+                    # Отзыв уничтожает носитель целиком, а не один том, поэтому
+                    # скрипту нужны все части раскладки: служебные тома -- это
+                    # отдельные контейнеры со своими ключами, а загрузочные
+                    # разделы оставляют носитель загрузочным.
+                    logs_luks_uuid=layout.logs_luks_uuid,
+                    exchange_luks_uuid=layout.exchange_luks_uuid,
+                    esp_uuid=layout.esp_uuid,
+                    boot_uuid=layout.boot_uuid,
                 )
             )
         files.update(self.machine_binding_files(config, layout))

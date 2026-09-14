@@ -185,14 +185,168 @@ def test_the_volume_is_found_by_uuid_and_checked_before_it_is_destroyed():
     """
     script = _script()
 
-    assert "/dev/disk/by-uuid/$LUKS_UUID" in script, "том не ищется по UUID"
+    assert "/dev/disk/by-uuid/$_uuid" in script, "том не ищется по UUID"
     assert "blkid -t UUID=" in script, "нет запасного способа найти том"
 
     check_at = script.index("cryptsetup luksUUID")
     erase_at = script.index("cryptsetup luksErase")
     assert check_at < erase_at, "UUID сверяется после уничтожения -- бесполезно"
-    assert 'FOUND" != "$LUKS_UUID' in script, "несовпадение UUID ничего не меняет"
+    assert '_found" != "$_uuid' in script, "несовпадение UUID ничего не меняет"
 
-    # Не нашли том -- честная строка и отказ, без попыток стереть что-нибудь.
-    assert "уничтожать нечего" in script
-    assert "ничего не трогаю" in script
+    # Не нашли том или нашли не тот -- честная строка и ни одной попытки
+    # стереть что-нибудь наугад.
+    assert "не найден" in script
+    assert "не тот том" in script and "не трогаю" in script
+
+
+def _full_script() -> str:
+    """Скрипт со всеми частями раскладки -- как его получает настоящий носитель."""
+    return revocation.revocation_script(
+        _config(),
+        "a1b2c3d4",
+        "0e3f1a90-1111-2222-3333-444455556666",
+        logs_luks_uuid="11111111-aaaa-bbbb-cccc-222222222222",
+        exchange_luks_uuid="33333333-dddd-eeee-ffff-444444444444",
+        esp_uuid="AAAA-BBBB",
+        boot_uuid="55555555-6666-7777-8888-999999999999",
+    )
+
+
+def test_every_volume_of_the_medium_is_destroyed_not_just_the_system_one():
+    """Служебные тома -- отдельные контейнеры со своими ключами.
+
+    `luksErase` системного тома их не касается вовсе: отозванный носитель
+    оставался бы с живыми томами журналов и обмена, то есть с читаемым
+    содержимым. Требование поставлено прямо: после отзыва носитель непригоден
+    безвозвратно.
+    """
+    script = _full_script()
+
+    for uuid_name in ("$LUKS_UUID", "$EXCHANGE_UUID", "$LOGS_UUID"):
+        assert f'destroy_luks "{uuid_name}"' in script, f"{uuid_name} не уничтожается"
+
+    # И каждый UUID действительно вписан в текст скрипта, а не потерян по дороге.
+    for value in (
+        "11111111-aaaa-bbbb-cccc-222222222222",
+        "33333333-dddd-eeee-ffff-444444444444",
+    ):
+        assert value in script
+
+
+def test_the_log_volume_is_destroyed_after_everything_it_recorded():
+    """Иначе журнал уничтожения обрывается на середине уничтожения.
+
+    В том журналов пишется каждый шаг, поэтому он идёт последним из томов, а
+    дальше журнал переезжает в память -- прочитать его можно до выключения.
+    """
+    script = _full_script()
+
+    logs_at = script.index('destroy_luks "$LOGS_UUID"')
+    system_at = script.index('destroy_luks "$LUKS_UUID"')
+    exchange_at = script.index('destroy_luks "$EXCHANGE_UUID"')
+    assert system_at < logs_at and exchange_at < logs_at, "том журналов уничтожен слишком рано"
+
+    move_at = script.index("LOG=/run/poa-revocation.log")
+    assert move_at < logs_at, "журнал переезжает в память уже после уничтожения тома"
+
+
+def test_the_data_is_wiped_and_not_only_the_keys():
+    """Против заранее снятой копии заголовка.
+
+    `luksHeaderBackup` доступен всякому, у кого есть root на собственной
+    машине. Копия плюс известная пользователю фраза -- это восстановленный
+    доступ, и копия лежит вне носителя, отобрать её нельзя. Обесценивает её
+    только затирание того, что она открывает.
+
+    Сплошной проход по флешке идёт часами и будет прерван выдёргиванием,
+    поэтому проход двойной: сплошь по началу тома и дальше с шагом.
+    """
+    script = _full_script()
+
+    assert "wipe_data" in script
+    assert "count=1024" in script, "начало тома не затирается сплошь"
+    assert "seek=\"$_at\"" in script and "_at + 32" in script, "нет прохода с шагом"
+
+    # Затирание -- после уничтожения ключей: выдернутое на этом шаге питание
+    # не должно оставлять носитель открываемым.
+    keys_at = script.index("cryptsetup luksErase")
+    data_at = script.index("wipe_data \"$SYSTEM_DEV\"")
+    assert keys_at < data_at, "данные затираются раньше, чем уничтожены ключи"
+
+
+def test_the_revoked_medium_stops_being_bootable():
+    """Носитель, который грузится, выглядит сломавшимся, а не отозванным."""
+    script = _full_script()
+
+    assert 'wipe_boot "$BOOT_UUID"' in script
+    assert 'wipe_boot "$ESP_UUID"' in script
+    assert "AAAA-BBBB" in script and "55555555-6666-7777-8888-999999999999" in script
+
+    # Разметка -- в самом конце и только от проверенного раздела: ошибиться
+    # здесь диском страшнее, чем пропустить шаг.
+    disk_at = script.index("lsblk -no pkname")
+    boot_at = script.index('wipe_boot "$BOOT_UUID"')
+    assert boot_at < disk_at
+    assert "$SYSTEM_DEV" in script[disk_at - 200 : disk_at]
+
+
+def test_the_service_has_no_deadline_that_would_stop_destruction_halfway():
+    """Пять минут на службу означали бы SIGTERM посреди затирания.
+
+    Часть носителя затёрта, часть цела, и какая именно -- как повезёт. Сетевые
+    шаги ограничены своим `--max-time`, поэтому служба без предела не зависает
+    на недоступном ресурсе.
+    """
+    unit = revocation.service_unit()
+
+    assert "TimeoutStartSec=infinity" in unit
+    assert "--max-time" in _script()
+
+
+def test_the_installer_hands_the_script_every_part_of_the_medium():
+    """UUID собираются в раскладке -- и должны дойти до скрипта целиком.
+
+    Ровно здесь ломались прошлые правки: путь сборки дистрибутива и путь записи
+    носителя опираются на разные признаки, и половина данных терялась по
+    дороге.
+    """
+    from portable_os_admin.config import InstallConfig
+    from portable_os_admin.install.backends import get_backend
+    from portable_os_admin.install.disk import MediaLayout
+
+    config = InstallConfig.create_baseline("stick", "debian")
+    config.revocation.enabled = True
+    config.revocation.url = "https://revoke.example.org"
+    layout = MediaLayout(
+        device="/dev/sdz",
+        esp_partition="/dev/sdz1",
+        boot_partition="/dev/sdz2",
+        system_partition="/dev/sdz3",
+        logs_partition="/dev/sdz4",
+        exchange_partition="/dev/sdz5",
+        mapper_name="poa-a1b2c3d4",
+        mapper_path="/dev/mapper/poa-a1b2c3d4",
+        mount_root="/mnt/poa",
+        esp_uuid="AAAA-BBBB",
+        boot_uuid="55555555-6666-7777-8888-999999999999",
+        luks_uuid="0e3f1a90-1111-2222-3333-444455556666",
+        logs_luks_uuid="11111111-aaaa-bbbb-cccc-222222222222",
+        exchange_luks_uuid="33333333-dddd-eeee-ffff-444444444444",
+    )
+
+    files = get_backend("debian").scripted_files(config, layout)
+    script = files[revocation.SCRIPT_PATH][0]
+
+    assert "LOGS_UUID=11111111-aaaa-bbbb-cccc-222222222222" in script
+    assert "EXCHANGE_UUID=33333333-dddd-eeee-ffff-444444444444" in script
+    assert "ESP_UUID=AAAA-BBBB" in script
+    assert "BOOT_UUID=55555555-6666-7777-8888-999999999999" in script
+
+
+def test_a_step_that_fails_is_told_apart_from_a_medium_that_is_gone():
+    """Человеку и администратору нужны разные слова для разных исходов."""
+    script = _full_script()
+
+    assert "FAILED=1" in script
+    assert "носитель уничтожен" in script
+    assert "уничтожение прошло не полностью" in script
