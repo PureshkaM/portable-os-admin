@@ -817,10 +817,10 @@ echo "poa-boot: меню загрузки написано для ядра $vers
         commands.append(self.systemctl_enable(mount_root, "rsyslog"))
 
         commands += autoupdate.chroot_commands(mount_root, config, self)
-        # Идентификатор носителя здесь -- признак «файлы отзыва написаны».
-        # Без него служба включалась бы там, где её файла нет: сборка
-        # дистрибутива падала на «unit poa-revocation.service does not exist».
-        commands += revocation.chroot_commands(mount_root, config, self, media_id)
+        # Службу отзыва здесь не включаем: она включается ссылкой при записи
+        # носителя, рядом с записью её файлов. Команды chroot выполняются
+        # только на пути установки, и включение здесь означало бы, что носитель,
+        # собранный развёртыванием дистрибутива, уезжает без автозапуска.
 
         # After config.packages above, never before: the whitelist hides the
         # desktop entries that exist at the moment it runs, and a package

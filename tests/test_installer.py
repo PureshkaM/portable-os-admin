@@ -628,3 +628,26 @@ def test_a_container_without_the_resource_key_refuses_to_write_a_medium(
             big_removable_device, config, b"user-passphrase-123", dry_run=True
         )
     assert "ресурс" in str(error.value).lower()
+
+
+def test_the_medium_gets_the_revocation_service_switched_on(session, big_removable_device, make_config):
+    """Файлы без автозапуска -- это проверка, которой не бывает.
+
+    Носитель РЕД ОС 14.09.2026 уехал со скриптом отзыва и открытым ключом, но
+    без ссылки в multi-user.target.wants: служба не запускалась ни разу, и в
+    журнале носителя не было ни строчки. Включение живёт там же, где запись
+    файлов, и потому одинаково работает на обоих путях.
+    """
+    config = _revoking_config(make_config)
+    session.container.data.revocation_public_key_pem = _PUBLIC_KEY
+
+    result = OSInstaller(session).run(
+        big_removable_device, config, b"user-passphrase-123", dry_run=True
+    )
+
+    links = [
+        " ".join(r.argv) for r in result.plan.results
+        if r.argv[0] == "ln" and "poa-revocation.service" in " ".join(r.argv)
+    ]
+    assert links, "служба отзыва не включается на носителе"
+    assert any("multi-user.target.wants" in line for line in links)

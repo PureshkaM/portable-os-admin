@@ -864,6 +864,21 @@ class OSInstaller:
             plan, dry_run, confirm_device, mode=0o444,
         )
 
+        # Служба включается ссылкой, а не `systemctl enable`, и здесь же, рядом
+        # с файлами, -- ровно как служба целостности и по той же причине:
+        # systemd целевой системы не запущен, enable в chroot делает эту самую
+        # ссылку, а команды chroot выполняются только на одном из двух путей.
+        #
+        # Найдено живой загрузкой 14.09.2026: на носителе РЕД ОС, собранном
+        # развёртыванием дистрибутива, лежали и скрипт, и ключ, а службы в
+        # автозапуске не было -- проверка отзыва не выполнялась ни разу.
+        wants = f"{layout.mount_root}/etc/systemd/system/multi-user.target.wants"
+        self._run(["mkdir", "-p", wants], plan, dry_run, confirm_device)
+        self._run(
+            ["ln", "-sf", f"/{revocation.SERVICE_PATH}", f"{wants}/{revocation.SERVICE_NAME}"],
+            plan, dry_run, confirm_device,
+        )
+
     def _write_medium_identity(
         self, config, backend, layout, media_id, recovery_salt, boot_key, service_key,
         plan, state, dry_run, confirm_device, overlay_root: bool = False,

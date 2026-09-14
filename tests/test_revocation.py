@@ -86,7 +86,6 @@ def test_identifier_and_address_are_written_into_the_script():
 def test_nothing_is_written_when_the_feature_is_off():
     off = _config(enabled=False)
     assert revocation.config_files(off, "a1b2c3d4", "/dev/sdb3") == {}
-    assert revocation.chroot_commands("/mnt/root", off, backend=None) == []
 
     # И при включённом отзыве, но неизвестном носителе: общий на всех скрипт
     # спрашивал бы ресурс об одном и том же идентификаторе со всех флешек.
@@ -157,27 +156,16 @@ def test_the_service_waits_for_the_volume_its_log_lives_on():
     assert "RequiresMountsFor=/var/log" in autoupdate.service_unit(_config())
 
 
-def test_the_service_is_enabled_only_where_its_file_exists():
-    """Иначе сборка дистрибутива падает на пустом месте.
+def test_nothing_enables_the_service_through_chroot_any_more():
+    """Включение переехало туда, где пишутся файлы, и это принципиально.
 
-    Файлы отзыва пишутся при записи носителя: скрипт называет идентификатор
-    этого носителя и его раздел. Включение же шло по одному лишь «отзыв
-    включён в конфигурации», и сборка РЕД ОС 14.09.2026 встала на шаге
-    учётной записи и служб: «Failed to enable unit, unit
-    poa-revocation.service does not exist».
+    Сначала оно жило в командах chroot и шло безусловно -- сборка дистрибутива
+    падала на «unit poa-revocation.service does not exist». Потом признаком
+    стал известный носитель -- и служба перестала включаться на пути
+    развёртывания готового дистрибутива, где команды chroot не выполняются
+    вовсе: носитель РЕД ОС 14.09.2026 уехал со скриптом, ключом и без
+    автозапуска.
     """
-
-    class _Backend:
-        def systemctl_enable(self, root, unit):
-            return ["chroot", root, "systemctl", "enable", unit]
-
-    config = _config()
-
-    # Сборка дистрибутива: носителя ещё нет, файлов тоже.
-    assert revocation.chroot_commands("/mnt/root", config, _Backend()) == []
-
-    # Запись носителя: файлы написаны, службу можно включать.
-    enabled = revocation.chroot_commands(
-        "/mnt/root", config, _Backend(), media_id="a1b2c3d4"
+    assert not hasattr(revocation, "chroot_commands"), (
+        "включение службы вернулось в команды chroot -- оно выполняется не на всех путях"
     )
-    assert enabled and enabled[0][-1] == revocation.SERVICE_NAME
