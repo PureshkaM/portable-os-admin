@@ -20,8 +20,11 @@ from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 
-# scrypt cost parameters. n=2**15 keeps container open times well under a
-# second on typical hardware while remaining expensive for offline guessing.
+# scrypt cost parameters. SCRYPT_N is the floor, not the working value: new
+# containers get the most expensive N this machine opens within
+# KDF_BUDGET_SECONDS (see calibrate_scrypt_n), up to SCRYPT_N_CEILING. The
+# floor is what containers created before 11.09.2026 carry and what the
+# calibration probe measures.
 SCRYPT_N = 2 ** 15
 SCRYPT_R = 8
 SCRYPT_P = 1
