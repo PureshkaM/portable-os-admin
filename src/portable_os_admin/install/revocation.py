@@ -191,19 +191,39 @@ say() {{
 # живут на сессионной шине пользователя -- поэтому от его имени и в его шину.
 # Нет сеанса (загрузка ещё идёт) -- уведомлять некого, и это не ошибка: о
 # закрытом сеансе пользователю скажет сам шлюз при попытке запуска.
+#
+# Адрес шины берётся из окружения процесса самого графического сеанса, а не
+# угадывается путём. Сеанс MATE под SDDM поднимает свою шину в /tmp
+# (dbus-launch), и /run/user/UID/bus там нет вовсе: живая загрузка 15.09.2026
+# показала «Could not connect» по пути и успешную отправку по адресу из
+# окружения `mate-session`. Берётся процесс, у которого есть DISPLAY или
+# WAYLAND_DISPLAY: у служб пользователя без экрана адрес может указывать на
+# шину, которой нет.
 notify_user() {{
     command -v notify-send >/dev/null 2>&1 || {{
         log "нет notify-send, уведомление не показано: $2"
         return 0
     }}
-    for _bus in /run/user/*/bus; do
-        [ -S "$_bus" ] || continue
-        _uid=${{_bus#/run/user/}}
-        _uid=${{_uid%/bus}}
+    for _uid in $(ps -eo uid= | sort -un); do
         [ "$_uid" -ge 1000 ] 2>/dev/null || continue
+        [ "$_uid" -lt 65534 ] || continue
         _user=$(getent passwd "$_uid" | cut -d: -f1)
         [ -n "$_user" ] || continue
-        runuser -u "$_user" -- env DBUS_SESSION_BUS_ADDRESS="unix:path=$_bus" \\
+        _addr=""
+        for _pid in $(pgrep -u "$_uid"); do
+            _env=$(tr '\\0' '\\n' < "/proc/$_pid/environ" 2>/dev/null) || continue
+            case "$_env" in
+                *DISPLAY=*) ;;
+                *) continue ;;
+            esac
+            _addr=$(printf '%s\\n' "$_env" | sed -n 's/^DBUS_SESSION_BUS_ADDRESS=//p' | head -1)
+            [ -n "$_addr" ] && break
+        done
+        if [ -z "$_addr" ] && [ -S "/run/user/$_uid/bus" ]; then
+            _addr="unix:path=/run/user/$_uid/bus"
+        fi
+        [ -n "$_addr" ] || continue
+        runuser -u "$_user" -- env DBUS_SESSION_BUS_ADDRESS="$_addr" \\
             notify-send -a "{NOTIFY_APP}" -u "$1" "$2" "$3" >/dev/null 2>&1 || true
     done
 }}

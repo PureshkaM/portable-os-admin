@@ -155,6 +155,13 @@ def test_both_families_carry_what_the_check_needs():
         InstallConfig.create_baseline("stick", "redos")
     )
 
+    # Корневые сертификаты -- явно у обоих. У Debian libcurl4t64 их лишь
+    # рекомендует, и носитель уехал без них: curl (77), сервер «недоступен»
+    # всегда, шлюз сеанса не открывается (живая загрузка 15.09.2026).
+    for family in ("debian", "redos"):
+        packages = get_backend(family).boot_packages(InstallConfig.create_baseline("stick", family))
+        assert "ca-certificates" in packages, f"{family}: в наборе нет ca-certificates"
+
 
 def test_the_check_names_the_tool_it_lacks():
     """Скрипт не должен молча уходить при нехватке инструмента."""
@@ -458,8 +465,14 @@ def test_the_user_is_told_when_the_server_cannot_be_reached():
     """Решение пользователя 15.09.2026: без связи -- системное уведомление."""
     script = _script()
     assert 'notify_user critical "Нет связи с сервером авторизации"' in script
-    assert "DBUS_SESSION_BUS_ADDRESS=\"unix:path=$_bus\"" in script
     assert "runuser -u \"$_user\"" in script
+    # Адрес шины -- из окружения графического процесса пользователя, а не
+    # путь /run/user/UID/bus: у MATE под SDDM шина живёт в /tmp, и по пути
+    # уведомление не доходило (живая загрузка 15.09.2026).
+    assert '/proc/$_pid/environ' in script
+    assert "s/^DBUS_SESSION_BUS_ADDRESS=//p" in script
+    assert "*DISPLAY=*" in script
+    assert 'DBUS_SESSION_BUS_ADDRESS="$_addr"' in script
 
 
 def test_the_server_is_asked_every_five_minutes_and_when_the_network_comes_up():
