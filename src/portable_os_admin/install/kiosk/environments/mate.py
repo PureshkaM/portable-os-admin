@@ -29,6 +29,11 @@ PANEL_LAYOUT_NAME = "poa-kiosk"
 #: Куда она кладётся. Каталог общий для обоих семейств: раскладки читает сам
 #: mate-panel, а не дистрибутив.
 PANEL_LAYOUT_PATH = f"usr/share/mate-panel/layouts/{PANEL_LAYOUT_NAME}.layout"
+#: Объект списка окон в раскладке и его позиция. Названы одним местом, потому
+#: что те же имя и число запираются в dconf (см. `_dconf_settings`): разойдись
+#: они, панель держала бы список окон там, где его нет.
+WINDOW_LIST_OBJECT = "window-list"
+WINDOW_LIST_POSITION = 20
 
 #: Файл апплета меню Brisk. Его наличие проверяется на целевой системе, а не
 #: здесь: в РЕД ОС он есть, в Debian 13 пакета brisk-menu нет вовсе (проверено
@@ -113,6 +118,33 @@ def _dconf_settings(config: InstallConfig) -> list[tuple[str, list[tuple[str, st
                 # мимо, потому что запускатель на ней не .desktop-запись в
                 # меню, а собственный объект панели.
                 ("default-layout", f"'{PANEL_LAYOUT_NAME}'"),
+            ],
+        ),
+        (
+            # Список окон привязан к левому краю панели -- и заперт.
+            #
+            # Задача 24, закрыта 15.09.2026 живой загрузкой Debian + MATE.
+            # mate-panel 1.27 сам выбирает, к чему привязать объект, когда
+            # сохраняет его положение (`panel_widget_determine_applet_edge_
+            # relativity`): группа апплетов, пересекающая середину панели и не
+            # касающаяся её краёв, становится «центральной». Наша группа
+            # начинается с позиции 10 -- позиция 0 оставлена меню, а у Debian
+            # меню нет, -- и растягивающийся список окон получал 'center' и
+            # -620. Центральному растягиваемому апплету панель добавляет
+            # ширину по меньшему из промежутков слева и справа, а слева их
+            # двадцать пикселей: апплет жив, окна есть, кнопок нет. У РЕД ОС
+            # меню стоит в нуле, группа касается края -- отсюда «плавающий»
+            # дефект. Проверено: с запертым 'start' кнопка окна появляется, с
+            # 'center' после того же перезапуска панели пропадает.
+            #
+            # Ключ `relative-to-edge` есть только в mate-panel 1.27 (Debian);
+            # в раскладку его вписать нельзя -- 1.28 у РЕД ОС отвергает объект
+            # раскладки с незнакомым ключом целиком. База dconf схему не
+            # проверяет, поэтому здесь он лишний у РЕД ОС, но безвреден.
+            f"org/mate/panel/objects/{WINDOW_LIST_OBJECT}",
+            [
+                ("relative-to-edge", "'start'"),
+                ("position", str(WINDOW_LIST_POSITION)),
             ],
         ),
         (
@@ -302,7 +334,7 @@ def panel_layout(config: InstallConfig) -> str:
         # где есть, а два объекта на одной позиции панель разложила бы по
         # своему усмотрению.
         _panel_applet("show-desktop", "WnckletFactory::ShowDesktopApplet", 10),
-        _panel_applet("window-list", "WnckletFactory::WindowListApplet", 20),
+        _panel_applet(WINDOW_LIST_OBJECT, "WnckletFactory::WindowListApplet", WINDOW_LIST_POSITION),
         _panel_applet(
             "notification-area",
             "NotificationAreaAppletFactory::NotificationArea",

@@ -439,6 +439,33 @@ def test_autostart_waits_for_the_session_to_be_authorized():
     assert f"Exec=/{revocation.GATE_PATH} --wait /{kiosk.LAUNCHER_PATH} mate-calc" in gated
 
 
+def test_the_mate_window_list_is_pinned_to_the_start_edge_and_locked():
+    """Задача 24: список окон без кнопок на Debian + MATE.
+
+    mate-panel 1.27 делал группу, не касающуюся края, «центральной», и
+    растягиваемый список окон оставался без ширины. Лечится запертым
+    `relative-to-edge='start'` -- в базе dconf, а не в раскладке: mate-panel
+    1.28 у РЕД ОС объект раскладки с незнакомым ключом отбрасывает целиком.
+    """
+    from portable_os_admin.install.kiosk.environments import mate
+
+    config = make_kiosk_config()
+    section = f"[org/mate/panel/objects/{mate.WINDOW_LIST_OBJECT}]"
+    keyfile = mate.dconf_keyfile(config)
+    assert section in keyfile
+    assert "relative-to-edge='start'" in keyfile
+    assert f"position={mate.WINDOW_LIST_POSITION}" in keyfile
+
+    locks = mate.dconf_locks(config)
+    assert f"/org/mate/panel/objects/{mate.WINDOW_LIST_OBJECT}/relative-to-edge" in locks
+    assert f"/org/mate/panel/objects/{mate.WINDOW_LIST_OBJECT}/position" in locks
+
+    layout = mate.panel_layout(config)
+    assert f"[Object {mate.WINDOW_LIST_OBJECT}]" in layout
+    assert f"position={mate.WINDOW_LIST_POSITION}" in layout
+    assert "relative-to-edge" not in layout, "ключ в раскладке уронит объект на РЕД ОС"
+
+
 def test_autostart_entry_only_exists_when_an_application_is_named(layout):
     without = get_backend("debian").scripted_files(make_kiosk_config(), layout)
     assert kiosk.AUTOSTART_PATH not in without
