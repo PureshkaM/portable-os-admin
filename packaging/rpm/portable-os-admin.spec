@@ -1,5 +1,5 @@
 Name:           portable-os-admin
-Version:        1.0.0
+Version:        1.1.0
 Release:        1%{?dist}
 Summary:        Admin tool for portable LUKS-encrypted OS media
 
@@ -181,6 +181,23 @@ install -m 755 packaging/polkit/launch-root %{buildroot}/usr/lib/portable-os-adm
 /usr/lib/portable-os-admin/launch-root
 
 %changelog
+* Tue Sep 15 2026 PureshkaM <xripmax@gmail.com> - 1.1.0-1
+- Revocation v2: the medium signs its request with its own key and asks the
+  server every five minutes and whenever the network comes up; anyone else
+  gets 403.
+- Session gate: kiosk applications start only after a signed "ok" from the
+  server; without a connection the user gets a desktop notification.
+- The revocation server records when each medium last checked in; the revoke
+  screen shows it.
+- Distributions are signed with the administrator's key and checked before a
+  medium is written.
+- The package list is read from the installation image, without a network.
+- Verbose boot and serial console output are wizard options.
+- A revoked medium wipes the partition table before the data: wiping the data
+  cuts the running system off its own root, and later steps never ran.
+- Debian: CA certificates on the medium, a working MATE window list and
+  notifications that reach the session.
+
 * Sun Sep 14 2026 PureshkaM <xripmax@gmail.com> - 1.0.0-1
 - First complete version. A revoked medium now destroys itself for good: key
   slots of all three volumes, the data itself, the boot part and finally the
