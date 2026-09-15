@@ -167,6 +167,134 @@ def test_a_distribution_without_a_checksum_is_refused(tmp_path):
     assert "контрольной суммы" in str(excinfo.value)
 
 
+# ----------------------------------------------------------------------
+# Подпись администратора
+# ----------------------------------------------------------------------
+SECRET = bytes(range(32))
+OTHER_SECRET = bytes(range(1, 33))
+
+
+def _built_distribution(directory):
+    """Дистрибутив так, как его оставляет сборка: архив, .sha256, описание."""
+    archive = directory / distribution.ARCHIVE_NAME
+    archive.write_bytes(b"root filesystem" * 50)
+    _, digest = distribution.write_checksum(str(archive))
+    metadata = distribution.DistributionMetadata(name="kiosk-stick", sha256=digest)
+    distribution.write_metadata(str(directory), metadata)
+    return archive
+
+
+def _edit_metadata(directory, **changes):
+    path = directory / distribution.METADATA_NAME
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data.update(changes)
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+
+def test_a_distribution_signed_by_this_container_verifies(tmp_path):
+    archive = _built_distribution(tmp_path)
+    path = distribution.sign_distribution(str(tmp_path), SECRET)
+
+    assert path == f"{archive}.sig"
+    lines = open(path, encoding="utf-8").read().splitlines()
+    assert lines[0] == distribution.SIGNATURE_HEADER
+    assert lines[1] == f"key {distribution.key_fingerprint(SECRET)}"
+
+    verdict = distribution.verify_distribution(str(tmp_path), SECRET)
+    assert verdict.status == distribution.SIGNED_BY_THIS_CONTAINER
+    assert verdict.fingerprint == distribution.key_fingerprint(SECRET)
+
+
+def test_reformatting_the_description_does_not_break_the_signature(tmp_path):
+    """Подписан смысл описания, а не отступы, которыми его записали."""
+    _built_distribution(tmp_path)
+    distribution.sign_distribution(str(tmp_path), SECRET)
+    _edit_metadata(tmp_path)  # тот же словарь, другое форматирование
+
+    verdict = distribution.verify_distribution(str(tmp_path), SECRET)
+    assert verdict.status == distribution.SIGNED_BY_THIS_CONTAINER
+
+
+def test_a_distribution_without_a_signature_is_unsigned(tmp_path):
+    """Так выглядят все дистрибутивы 1.0.0."""
+    _built_distribution(tmp_path)
+
+    verdict = distribution.verify_distribution(str(tmp_path), SECRET)
+    assert verdict.status == distribution.UNSIGNED
+
+
+def test_a_signature_by_another_container_is_foreign_with_its_fingerprint(tmp_path):
+    _built_distribution(tmp_path)
+    distribution.sign_distribution(str(tmp_path), OTHER_SECRET)
+
+    verdict = distribution.verify_distribution(str(tmp_path), SECRET)
+    assert verdict.status == distribution.FOREIGN
+    assert verdict.fingerprint == distribution.key_fingerprint(OTHER_SECRET)
+
+
+def test_a_replaced_archive_digest_is_invalid(tmp_path):
+    """Подмена архива вместе с хешем в описании и в .sha256 -- ради этого подпись."""
+    archive = _built_distribution(tmp_path)
+    distribution.sign_distribution(str(tmp_path), SECRET)
+
+    archive.write_bytes(b"substituted root")
+    _, digest = distribution.write_checksum(str(archive))
+    _edit_metadata(tmp_path, sha256=digest)
+
+    verdict = distribution.verify_distribution(str(tmp_path), SECRET)
+    assert verdict.status == distribution.INVALID
+
+
+def test_a_checksum_file_disagreeing_with_the_description_is_invalid(tmp_path):
+    archive = _built_distribution(tmp_path)
+    distribution.sign_distribution(str(tmp_path), SECRET)
+    (tmp_path / f"{archive.name}.sha256").write_text(f"{'0' * 64}  {archive.name}\n")
+
+    verdict = distribution.verify_distribution(str(tmp_path), SECRET)
+    assert verdict.status == distribution.INVALID
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [{"profile": "kiosk"}, {"has_bootloader": True}, {"added_by_hand": "x"}],
+)
+def test_an_edited_description_is_invalid(tmp_path, changes):
+    """Включая ключ, которого программа не знает: from_dict его отбросил бы."""
+    _built_distribution(tmp_path)
+    distribution.sign_distribution(str(tmp_path), SECRET)
+    _edit_metadata(tmp_path, **changes)
+
+    verdict = distribution.verify_distribution(str(tmp_path), SECRET)
+    assert verdict.status == distribution.INVALID
+
+
+def test_a_damaged_signature_is_invalid(tmp_path):
+    import base64
+
+    archive = _built_distribution(tmp_path)
+    path = distribution.sign_distribution(str(tmp_path), SECRET)
+    header, key_line, sig_line = open(path, encoding="utf-8").read().splitlines()
+    raw = bytearray(base64.b64decode(sig_line.split(" ", 1)[1]))
+    raw[0] ^= 0x01
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write(f"{header}\n{key_line}\nsignature {base64.b64encode(bytes(raw)).decode()}\n")
+
+    assert distribution.verify_distribution(str(tmp_path), SECRET).status == distribution.INVALID
+
+    (tmp_path / f"{archive.name}.sig").write_text("мусор\n", encoding="utf-8")
+    assert distribution.verify_distribution(str(tmp_path), SECRET).status == distribution.INVALID
+
+
+def test_the_distribution_key_is_not_the_revocation_authority_key():
+    """Один секрет, разные назначения -- разные ключи."""
+    from portable_os_admin.admin import revocation_client
+
+    distribution_raw = distribution._raw_public(distribution.signing_key(SECRET).public_key())
+    authority_raw = distribution._raw_public(revocation_client.signing_key(SECRET).public_key())
+    assert distribution_raw != authority_raw
+    assert distribution.key_fingerprint(SECRET) != revocation_client.key_id(SECRET)
+
+
 def test_a_newer_format_is_refused_with_an_explanation(tmp_path):
     archive = tmp_path / "rootfs.tar.zst"
     archive.write_bytes(b"contents")

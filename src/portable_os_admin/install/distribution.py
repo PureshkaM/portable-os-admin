@@ -50,6 +50,8 @@ they are shared.
 """
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import json
 import os
@@ -331,9 +333,10 @@ def verify_archive(directory: str, metadata: DistributionMetadata) -> str:
 
     It does **not** prove the distribution is the one the administrator built.
     Whoever can replace the archive can replace the checksum file beside it and
-    the digest inside the metadata. Only a signature over the digest, made with
-    a key the substituting party does not hold, would answer that -- see
-    docs/PLAN.md for where that is recorded as the next step.
+    the digest inside the metadata. That question is answered by the signature
+    over the metadata, digest included -- see verify_distribution() below. The
+    two checks form one chain: the signature vouches for the digest, this
+    function vouches that the archive matches it.
     """
     archive = archive_path(directory, metadata)
     expected = metadata.sha256
@@ -351,6 +354,213 @@ def verify_archive(directory: str, metadata: DistributionMetadata) -> str:
             "Установка не начата, носитель не изменён."
         )
     return actual
+
+
+# ----------------------------------------------------------------------
+# Подпись администратора
+# ----------------------------------------------------------------------
+#: Метка вывода ключа подписи дистрибутивов из секрета контейнера.
+#:
+#: Своя, а не метка ключа полномочий отзыва, хотя секрет у них общий. Ключ,
+#: которым подписан дистрибутив, лежит открытым в каждом каталоге сборки, а
+#: ключ полномочий -- на сервере отзыва; совпади они, подпись одного назначения
+#: можно было бы предъявить в другом, и отпечаток дистрибутива сообщал бы
+#: постороннему, какой администратор распоряжается носителями на сервере.
+_SIGNING_INFO = b"poa-distribution-ed25519"
+
+#: Первая строка файла подписи. Версия в ней -- чтобы следующий формат можно
+#: было отличить от испорченного, а не угадывать по содержимому.
+SIGNATURE_HEADER = "poa-distribution-signature 1"
+
+#: Префикс подписываемых байтов. Разделяет назначения на уровне самих данных:
+#: подпись, снятая с чего-то другого, здесь не сойдётся даже при том же ключе.
+_SIGNED_PREFIX = b"poa-distribution v1\n"
+
+#: Исходы проверки подписи.
+SIGNED_BY_THIS_CONTAINER = "signed_by_this_container"
+UNSIGNED = "unsigned"
+FOREIGN = "foreign"
+INVALID = "invalid"
+
+
+@dataclass(frozen=True)
+class SignatureVerdict:
+    """Чем закончилась проверка подписи дистрибутива.
+
+    `foreign` -- не «поддельный», а «подтвердить нечем»: открытые ключи других
+    контейнеров нигде не хранятся, и подпись чужим ключом неотличима от
+    подписи ключом злоумышленника. Решение за человеком, отпечаток ему в помощь.
+    """
+
+    status: str
+    #: Отпечаток ключа из файла подписи; пусто, если подписи нет или файл не
+    #: разобрать.
+    fingerprint: str = ""
+    #: Почему `invalid` -- для сообщения администратору.
+    reason: str = ""
+
+
+def signing_key(admin_secret: bytes):
+    """Ключ подписи дистрибутивов (Ed25519) из секрета администратора."""
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.asymmetric import ed25519
+    from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+
+    material = HKDF(
+        algorithm=hashes.SHA256(), length=32, salt=None, info=_SIGNING_INFO
+    ).derive(bytes(admin_secret))
+    return ed25519.Ed25519PrivateKey.from_private_bytes(material)
+
+
+def _raw_public(public_key) -> bytes:
+    from cryptography.hazmat.primitives import serialization
+
+    return public_key.public_bytes(
+        encoding=serialization.Encoding.Raw, format=serialization.PublicFormat.Raw
+    )
+
+
+def key_fingerprint(admin_secret: bytes) -> str:
+    """Отпечаток ключа: 16 hex от sha256 сырых байтов открытой части.
+
+    Считается так же, как отпечаток ключа полномочий в admin/revocation_client,
+    чтобы администратор сверял отпечатки одного вида.
+    """
+    return hashlib.sha256(_raw_public(signing_key(admin_secret).public_key())).hexdigest()[:16]
+
+
+def signature_path(archive: str) -> str:
+    return f"{archive}.sig"
+
+
+def _read_metadata_dict(directory: str) -> dict:
+    with open(os.path.join(directory, METADATA_NAME), encoding="utf-8") as handle:
+        data = json.load(handle)
+    if not isinstance(data, dict):
+        raise ValueError("описание дистрибутива — не объект JSON")
+    return data
+
+
+def signed_bytes(metadata: dict) -> bytes:
+    """Канонические байты, которые подписываются.
+
+    Подписывается **описание целиком**, в том виде, в каком оно лежит в
+    distribution.json, а не файл `.sha256` и не отдельные поля:
+
+    - в описании есть и sha256 архива, и имя архива, и всё, по чему
+      развёртывание решает, что писать на носитель (конфигурация, профиль,
+      архитектура, наличие загрузчика). Подмена любого из них -- та же
+      подделка, что и подмена архива: киоск без ограничений из «киоска»;
+    - `.sha256` -- производная от того же хеша для `sha256sum -c`, и
+      развёртывание сверяет архив с хешем из описания, а не из этого файла;
+    - берётся словарь из файла, а не `DistributionMetadata.to_dict()`:
+      `from_dict` молча отбрасывает незнакомые ключи, и дописанное в описание
+      поле иначе не меняло бы подписанного.
+
+    Каноническая форма -- JSON с отсортированными ключами, без пробелов,
+    UTF-8 без экранирования. Байты самого файла не годятся: отступы и порядок
+    ключей зависят от того, чем файл записан, а не от того, что в нём сказано.
+    Префикс с версией отделяет эти байты от подписей любого другого назначения.
+    """
+    canonical = json.dumps(metadata, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return _SIGNED_PREFIX + canonical.encode("utf-8")
+
+
+def sign_distribution(directory: str, admin_secret: bytes) -> str:
+    """Подписывает собранный дистрибутив, пишет `<архив>.sig`, возвращает путь.
+
+    Вызывается после того, как описание записано окончательно: подпись
+    накрывает sha256 архива, и дописанное в описание позже её сломает.
+    """
+    metadata = _read_metadata_dict(directory)
+    archive = os.path.join(directory, str(metadata.get("archive") or ARCHIVE_NAME))
+    key = signing_key(admin_secret)
+    signature = key.sign(signed_bytes(metadata))
+    path = signature_path(archive)
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write(
+            f"{SIGNATURE_HEADER}\n"
+            f"key {key_fingerprint(admin_secret)}\n"
+            f"signature {base64.b64encode(signature).decode('ascii')}\n"
+        )
+    return path
+
+
+def _parse_signature(text: str) -> tuple[str, bytes] | None:
+    """(отпечаток, подпись) или None, если файл не того формата."""
+    lines = text.splitlines()
+    if len(lines) != 3 or lines[0] != SIGNATURE_HEADER:
+        return None
+    key_field, _, fingerprint = lines[1].partition(" ")
+    sig_field, _, encoded = lines[2].partition(" ")
+    if key_field != "key" or sig_field != "signature":
+        return None
+    if len(fingerprint) != 16 or any(ch not in "0123456789abcdef" for ch in fingerprint):
+        return None
+    try:
+        signature = base64.b64decode(encoded, validate=True)
+    except (ValueError, binascii.Error):
+        return None
+    if len(signature) != 64:
+        return None
+    return fingerprint, signature
+
+
+def verify_distribution(directory: str, admin_secret: bytes) -> SignatureVerdict:
+    """Проверяет подпись дистрибутива ключом открытого контейнера.
+
+    Архив здесь не хешируется: это гигабайты, а вызывается проверка из
+    интерфейса при выборе дистрибутива. Цепочка замыкается в verify_archive(),
+    которое развёртывание делает до стирания носителя: подпись ручается за
+    хеш в описании, verify_archive -- за то, что архив ему соответствует.
+
+    Файл `.sha256` сверяется с описанием (дёшево): расхождение между ними --
+    порча или правка руками, и в любом случае `invalid`, даже без подписи.
+    """
+    try:
+        metadata = _read_metadata_dict(directory)
+    except (OSError, ValueError) as exc:
+        return SignatureVerdict(INVALID, reason=f"описание не читается: {exc}")
+
+    archive = os.path.join(directory, str(metadata.get("archive") or ARCHIVE_NAME))
+    checksum = checksum_path(archive)
+    if os.path.isfile(checksum):
+        try:
+            with open(checksum, encoding="utf-8") as handle:
+                recorded = handle.read().split()
+        except (OSError, UnicodeDecodeError) as exc:
+            return SignatureVerdict(INVALID, reason=f"файл контрольной суммы не читается: {exc}")
+        if not recorded or recorded[0] != metadata.get("sha256"):
+            return SignatureVerdict(
+                INVALID, reason="контрольная сумма в описании и в файле .sha256 различается"
+            )
+
+    path = signature_path(archive)
+    if not os.path.isfile(path):
+        return SignatureVerdict(UNSIGNED)
+    try:
+        with open(path, encoding="utf-8") as handle:
+            parsed = _parse_signature(handle.read())
+    except (OSError, UnicodeDecodeError):
+        parsed = None
+    if parsed is None:
+        return SignatureVerdict(INVALID, reason="файл подписи испорчен или неизвестного формата")
+    fingerprint, signature = parsed
+
+    if fingerprint != key_fingerprint(admin_secret):
+        return SignatureVerdict(FOREIGN, fingerprint=fingerprint)
+
+    from cryptography.exceptions import InvalidSignature
+
+    try:
+        signing_key(admin_secret).public_key().verify(signature, signed_bytes(metadata))
+    except InvalidSignature:
+        return SignatureVerdict(
+            INVALID,
+            fingerprint=fingerprint,
+            reason="подпись не сходится: описание дистрибутива изменено после подписи",
+        )
+    return SignatureVerdict(SIGNED_BY_THIS_CONTAINER, fingerprint=fingerprint)
 
 
 def sanitise_commands(root: str) -> list[list[str]]:

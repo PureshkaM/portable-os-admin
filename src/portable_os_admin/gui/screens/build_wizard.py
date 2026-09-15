@@ -13,7 +13,7 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, ttk
 
-from ...install import OSInstaller
+from ...install import OSInstaller, distribution
 from .. import theme
 from ..widgets import (
     KNOWN_ERRORS,
@@ -360,9 +360,27 @@ class BuildWizardFrame(WizardFrame):
         meta = result.metadata
         self._log(f"Готово. Архив: {meta.archive}")
         self._log(f"Контрольная сумма: {meta.sha256}")
-        self.message_bar.success(
-            f"Дистрибутив собран: {meta.archive}, сумма записана в {meta.archive}.sha256."
-        )
+        # Подпись ключом открытого контейнера -- здесь, а не в установщике,
+        # потому что именно здесь известно, чей это дистрибутив. Без неё
+        # развёртывание не отличит этот архив от подменённого: файл хеша
+        # подменяется вместе с архивом.
+        try:
+            distribution.sign_distribution(result.directory, self.app.container.admin_secret)
+        except (OSError, ValueError) as exc:
+            self.message_bar.error(
+                f"Дистрибутив собран, но не подписан: {exc}. При развёртывании "
+                "его придётся подтверждать вручную."
+            )
+        else:
+            # Секрет создаётся при первом обращении у контейнеров, где его ещё
+            # не было; несохранённый, он дал бы подпись, которую этот же
+            # контейнер после перезапуска не признает.
+            self.app.save_container()
+            self._log(f"Подпись: {meta.archive}.sig")
+            self.message_bar.success(
+                f"Дистрибутив собран и подписан: {meta.archive}, сумма записана "
+                f"в {meta.archive}.sha256."
+            )
         if widget_alive(self.start_btn):
             self.start_btn.configure(state="disabled")
         for button in (self.back_btn, self.cancel_btn, self.next_btn):

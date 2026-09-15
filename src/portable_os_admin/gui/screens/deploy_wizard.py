@@ -14,11 +14,15 @@
 Контрольная сумма дистрибутива проверяется до того, как носитель тронут:
 повреждённый архив должен стоить сообщения, а не стёртой флешки и часа
 ожидания.
+
+Подпись проверяется ещё раньше -- при выборе дистрибутива. Сумма ловит порчу,
+но не подмену: подменивший архив подменит и файл хеша. Подпись ключом этого
+контейнера отвечает на вопрос «собирал ли его я».
 """
 from __future__ import annotations
 
 import tkinter as tk
-from tkinter import filedialog, ttk
+from tkinter import filedialog, messagebox, ttk
 
 from ...config.schema import InstallConfig
 from ...errors import DeviceNotEligibleError, InstallError
@@ -70,6 +74,9 @@ class DeployWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
         self.exchange_files: list[str] = []
         self.metadata = None
         self.dist_config: InstallConfig | None = None
+        #: Вердикт подписи, с которым администратор согласился при выборе.
+        #: Перед записью проверка повторяется и должна дать тот же вердикт.
+        self.signature_verdict = None
         self._running = False
 
         super().__init__(
@@ -125,8 +132,51 @@ class DeployWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
             self.metadata = None
             self.message_bar.error(str(exc))
             return False
+        verdict = distribution.verify_distribution(self.directory, self.app.container.admin_secret)
+        if not self._accept_signature(verdict):
+            self.metadata = None
+            self.signature_verdict = None
+            return False
+        self.signature_verdict = verdict
         self.dist_config = InstallConfig.from_dict(self.metadata.config)
         return True
+
+    def _accept_signature(self, verdict) -> bool:
+        """Решает по вердикту подписи, можно ли идти дальше.
+
+        Свой -- молча. Испорченный -- отказ без вариантов: подпись или описание
+        изменены, и продолжать тут не с чем. Неподписанный и чужой -- на усмотрение
+        администратора, но только явным согласием: дистрибутивы 1.0.0 подписи
+        не имеют, а чужой ключ может быть ключом коллеги, и отличить его от
+        ключа злоумышленника программа не может -- открытых ключей других
+        контейнеров у неё нет.
+        """
+        if verdict.status == distribution.SIGNED_BY_THIS_CONTAINER:
+            return True
+        if verdict.status == distribution.INVALID:
+            self.message_bar.error(
+                f"Дистрибутив отклонён: {verdict.reason}. Соберите его заново."
+            )
+            return False
+        if verdict.status == distribution.FOREIGN:
+            title = "Дистрибутив подписан другим ключом"
+            text = (
+                f"Подпись сделана не ключом этого контейнера (отпечаток {verdict.fingerprint}).\n\n"
+                "Если его собрал другой администратор — сверьте отпечаток с ним. "
+                "Подменённый дистрибутив выглядит точно так же.\n\n"
+                "Записать его на носитель?"
+            )
+        else:
+            title = "Дистрибутив не подписан"
+            text = (
+                "Подтвердить, что этот дистрибутив собран вами, нечем: так выглядят "
+                "и собранные версией 1.0.0, и подменённые.\n\n"
+                "Записать его на носитель?"
+            )
+        if messagebox.askyesno(title, text, icon="warning", default="no", parent=self):
+            return True
+        self.message_bar.error(f"{title}. Выберите другой или соберите заново.")
+        return False
 
     # -- шаг 2: пароль ------------------------------------------------------
     def _build_step_passphrase(self, body: ttk.Frame) -> None:
@@ -504,6 +554,18 @@ class DeployWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
             self.message_bar.error(
                 "На машине осталась незавершённая установка. Уберите её на панели "
                 "(«Состояние») и повторите:\n" + existing.describe()
+            )
+            return
+
+        # Подпись -- ещё раз, перед самой записью. Между выбором дистрибутива
+        # и этой кнопкой проходят минуты, и подмена за это время не должна
+        # пройти под согласием, данным на другой вердикт.
+        accepted = self.signature_verdict
+        current = distribution.verify_distribution(self.directory, self.app.container.admin_secret)
+        if accepted is None or current != accepted:
+            self.message_bar.error(
+                "Дистрибутив изменился после выбора — запись отменена. "
+                "Вернитесь к первому шагу и выберите его заново."
             )
             return
 
