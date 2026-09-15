@@ -684,8 +684,16 @@ class ConfigWizardFrame(WizardFrame):
         ttk.Label(top, text=f"Зеркало: {self.config.mirror or '(не задано)'}   Релиз: {self.config.release}").pack(
             anchor="w"
         )
-        self.connect_btn = ttk.Button(top, text="Подключиться к репозиторию", command=self._connect_repo)
-        self.connect_btn.pack(anchor="w", pady=(4, 8))
+        # Образ -- основной источник, зеркало -- запасной: в закрытом контуре
+        # сети нет, и кнопка, требующая её, была единственной на шаге.
+        sources = ttk.Frame(top)
+        sources.pack(anchor="w", pady=(4, 8))
+        self.image_packages_btn = ttk.Button(
+            sources, text="Прочитать из образа…", command=self._load_packages_from_image
+        )
+        self.image_packages_btn.pack(side="left")
+        self.connect_btn = ttk.Button(sources, text="Подключиться к репозиторию", command=self._connect_repo)
+        self.connect_btn.pack(side="left", padx=(theme.SPACE_SM, 0))
 
         self.filter_var = tk.StringVar()
         self.filter_var.trace_add("write", lambda *_: self._apply_filter())
@@ -694,7 +702,7 @@ class ConfigWizardFrame(WizardFrame):
         ttk.Label(filter_row, text="Фильтр по имени/описанию:").pack(side="left")
         ttk.Entry(filter_row, textvariable=self.filter_var, width=40).pack(side="left", padx=(6, 0))
 
-        self.catalog_label_var = tk.StringVar(value="Нажмите «Подключиться к репозиторию», чтобы увидеть пакеты.")
+        self.catalog_label_var = tk.StringVar(value="Нажмите «Прочитать из образа…», чтобы увидеть пакеты.")
         ttk.Label(body, textvariable=self.catalog_label_var, style="Hint.TLabel").pack(
             anchor="w", pady=(theme.SPACE_XS, 2)
         )
@@ -783,14 +791,81 @@ class ConfigWizardFrame(WizardFrame):
 
         run_in_background(self, fetch, on_success=self._on_catalog_loaded, on_error=self._on_catalog_error)
 
-    def _on_catalog_loaded(self, catalog: list[RepoPackage]) -> None:
+    def _ask_image_path(self) -> str:
+        """Образ, из которого читать; спрашивается один раз за сеанс мастера.
+
+        Тот же файл нужен и шагу пакетов, и «Прочитать из образа…» на шаге
+        киоска -- выбирать его дважды незачем.
+        """
+        remembered = getattr(self, "_image_path", "")
+        if remembered:
+            return remembered
+        from tkinter import filedialog
+
+        chosen = filedialog.askopenfilename(
+            parent=self,
+            title="Установочный образ, из которого читать",
+            filetypes=[("Образы", "*.iso *.img"), ("Все файлы", "*")],
+        )
+        if chosen:
+            self._image_path = chosen
+        return chosen or ""
+
+    def _load_packages_from_image(self) -> None:
+        """Каталог пакетов из установочного образа, без сети.
+
+        Монтирование и разбор идут в фоне, как и загрузка с зеркала: primary
+        РЕД ОС -- десятки мегабайт XML. Если образ прочитать не удалось, а
+        зеркало задано, `load_packages` пробует его сам -- сообщение скажет,
+        откуда список на самом деле.
+        """
+        chosen = self._ask_image_path()
+        if not chosen:
+            return
+        from ...config.repo_browser import load_packages
+        from ...install.image_source import MountedImage
+
+        target_os = self.config.target_os
+        release = self.config.release
+        mirror = self.config.mirror
+        arch = self.config.arch or platform.machine()
+        self.image_packages_btn.configure(state="disabled")
+        self.connect_btn.configure(state="disabled")
+        self.message_bar.info("Чтение списка пакетов из образа…")
+
+        def fetch():
+            with MountedImage(chosen) as image:
+                return load_packages(
+                    target_os, release, image_mountpoint=image.mountpoint, mirror=mirror, arch=arch
+                )
+
+        def loaded(result):
+            catalog, origin = result
+            self._on_catalog_loaded(catalog, origin)
+
+        def failed(exc):
+            # Выбранный файл забывается: следующая попытка спросит заново, а
+            # не будет раз за разом монтировать тот же неподходящий образ.
+            self._image_path = ""
+            self._on_catalog_error(exc)
+
+        run_in_background(self, fetch, on_success=loaded, on_error=failed)
+
+    def _on_catalog_loaded(self, catalog: list[RepoPackage], origin: str = "network") -> None:
         self.connect_btn.configure(state="normal")
+        if hasattr(self, "image_packages_btn"):
+            self.image_packages_btn.configure(state="normal")
         self._catalog = catalog
-        self.message_bar.success(f"Загружено пакетов из репозитория: {len(catalog)}")
+        if origin == "image":
+            self.message_bar.success(f"Прочитано пакетов из образа: {len(catalog)}")
+        else:
+            self.message_bar.success(f"Загружено пакетов из репозитория: {len(catalog)}")
         self._refresh_catalog(catalog)
 
     def _on_catalog_error(self, exc: BaseException) -> None:
         self.connect_btn.configure(state="normal")
+        if hasattr(self, "image_packages_btn"):
+            self.image_packages_btn.configure(state="normal")
         if isinstance(exc, KNOWN_ERRORS):
             self.message_bar.error(str(exc))
         else:
@@ -1218,16 +1293,10 @@ class ConfigWizardFrame(WizardFrame):
         раскладки -- в свои списки на шаге локализации. Выбор остаётся за
         администратором.
         """
-        from tkinter import filedialog
-
         from ...install import image_catalog
         from ...install.image_source import MountedImage
 
-        chosen = filedialog.askopenfilename(
-            parent=self,
-            title="Установочный образ, из которого читать",
-            filetypes=[("Образы", "*.iso *.img"), ("Все файлы", "*")],
-        )
+        chosen = self._ask_image_path()
         if not chosen:
             return
 
@@ -1246,6 +1315,7 @@ class ConfigWizardFrame(WizardFrame):
                 zones = image_catalog.timezones(image.mountpoint, family)
                 layouts = image_catalog.keyboard_layouts(image.mountpoint, family)
         except Exception as exc:  # noqa: BLE001 -- показываем причину, а не молчим
+            self._image_path = ""  # следующая попытка спросит файл заново
             self.message_bar.error(f"Не удалось прочитать образ: {exc}")
             return
 

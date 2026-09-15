@@ -19,6 +19,11 @@ targets (verified live against real mirrors, not guessed):
 Both sources are read-only HTTP GETs against public metadata endpoints --
 nothing here executes a destructive command, so none of this goes through
 CommandRunner's dry-run gate.
+
+Основной источник с 15.09.2026 -- не зеркало, а установочный образ
+(`list_image_packages`, `load_packages`): в закрытом контуре сети нет, а образ
+есть всегда. Зеркало осталось запасным путём. Разбор индексов общий -- формат
+метаданных не зависит от того, где они лежат.
 """
 from __future__ import annotations
 
@@ -104,7 +109,11 @@ class AptPackageSource:
             text = gzip.decompress(raw).decode("utf-8", errors="replace")
         except OSError as exc:
             raise RepoBrowseError(f"не удалось распаковать индекс пакетов: {exc}") from exc
+        return self.parse_index(text)
 
+    @staticmethod
+    def parse_index(text: str) -> list[RepoPackage]:
+        """Разбор индекса `Packages` -- общий для зеркала и образа."""
         packages: list[RepoPackage] = []
         name = version = summary = ""
         for line in text.splitlines():
@@ -133,24 +142,29 @@ class DnfPackageSource:
         if not mirror:
             raise RepoBrowseError("для просмотра пакетов нужно указать адрес репозитория (mirror)")
         base = mirror.rstrip("/")
-        repomd_raw = _fetch(f"{base}/repodata/repomd.xml")
-        try:
-            repomd = ET.fromstring(repomd_raw)
-        except ET.ParseError as exc:
-            raise RepoBrowseError(f"не удалось разобрать repomd.xml: {exc}") from exc
-
-        primary_href = None
-        for data in repomd.findall("repo:data", _RPM_NS):
-            if data.get("type") == "primary":
-                location = data.find("repo:location", _RPM_NS)
-                if location is not None:
-                    primary_href = location.get("href")
-                break
+        primary_href = self.primary_href(_fetch(f"{base}/repodata/repomd.xml"))
         if not primary_href:
             raise RepoBrowseError("в repomd.xml не найдены метаданные primary")
 
         primary_raw = _fetch(f"{base}/{primary_href}")
-        primary_path = self._decompress(primary_href, primary_raw)
+        return self.parse_primary_bytes(primary_href, primary_raw)
+
+    @staticmethod
+    def primary_href(repomd_raw: bytes) -> "str | None":
+        """Путь к метаданным primary из repomd.xml, если он там объявлен."""
+        try:
+            repomd = ET.fromstring(repomd_raw)
+        except ET.ParseError as exc:
+            raise RepoBrowseError(f"не удалось разобрать repomd.xml: {exc}") from exc
+        for data in repomd.findall("repo:data", _RPM_NS):
+            if data.get("type") == "primary":
+                location = data.find("repo:location", _RPM_NS)
+                return location.get("href") if location is not None else None
+        return None
+
+    def parse_primary_bytes(self, href: str, raw: bytes) -> list[RepoPackage]:
+        """Разбор primary в любом из сжатий -- общий для зеркала и образа."""
+        primary_path = self._decompress(href, raw)
         try:
             return self._parse_primary(primary_path)
         finally:
@@ -241,3 +255,169 @@ def get_package_source(target_os: str) -> PackageSource:
     if target_os == "redos":
         return DnfPackageSource()
     raise RepoBrowseError(f"просмотр пакетов из репозитория не поддерживается для {target_os!r}")
+
+
+#: Имена архитектур в раскладке apt. Конфигурация принимает оба написания
+#: (см. `schema.SUPPORTED_ARCH`), а каталог образа называется только так.
+_APT_ARCH = {"x86_64": "amd64", "amd64": "amd64", "aarch64": "arm64", "arm64": "arm64"}
+
+
+def list_image_packages(
+    mountpoint: str, target_os: str, release: str = "", arch: str = ""
+) -> list[RepoPackage]:
+    """Пакеты смонтированного установочного образа -- без сети.
+
+    Основной путь проекта -- закрытый контур, и именно там просмотр пакетов
+    через зеркало не работал: метаданные скачивались из интернета. Между тем
+    образ, из которого собирается носитель, сам является репозиторием, и его
+    список -- ещё и точнее зеркального: предложено будет ровно то, что потом
+    поставится, а не то, чего на DVD нет.
+
+    Раскладка та же, что уже читают `install/image_source.py` и
+    `install/image_catalog.py`: у РЕД ОС `repodata/` в корне образа, у Debian
+    `dists/<выпуск>/<компонент>/binary-<arch>/Packages*`. Файлы читаются
+    напрямую, а не через file:// -- так ошибка называет путь на образе.
+    """
+    if not mountpoint or not os.path.isdir(mountpoint):
+        raise RepoBrowseError(f"образ не смонтирован: {mountpoint!r}")
+    if target_os == "redos":
+        return _rpm_image_packages(mountpoint)
+    if target_os == "debian":
+        return _apt_image_packages(mountpoint, release, arch)
+    raise RepoBrowseError(f"просмотр пакетов образа не поддерживается для {target_os!r}")
+
+
+def _rpm_image_packages(mountpoint: str) -> list[RepoPackage]:
+    repodata = os.path.join(mountpoint, "repodata")
+    if not os.path.isdir(repodata):
+        raise RepoBrowseError("в образе нет каталога repodata/ -- это не образ РЕД ОС")
+    source = DnfPackageSource()
+    href = None
+    repomd = os.path.join(repodata, "repomd.xml")
+    if os.path.isfile(repomd):
+        with open(repomd, "rb") as handle:
+            href = source.primary_href(handle.read())
+    if not href:
+        # repomd.xml -- штатный указатель, но без него primary всё равно
+        # узнаётся по имени: `<хеш>-primary.xml.gz` (или .zst/.xz).
+        names = sorted(name for name in os.listdir(repodata) if "primary.xml" in name)
+        if not names:
+            raise RepoBrowseError("в repodata/ образа не найдены метаданные primary")
+        href = f"repodata/{names[0]}"
+    path = os.path.join(mountpoint, href)
+    try:
+        with open(path, "rb") as handle:
+            raw = handle.read()
+    except OSError as exc:
+        raise RepoBrowseError(f"не удалось прочитать {href} с образа: {exc}") from exc
+    return source.parse_primary_bytes(href, raw)
+
+
+def _apt_image_packages(mountpoint: str, release: str, arch: str) -> list[RepoPackage]:
+    dists = os.path.join(mountpoint, "dists")
+    if not os.path.isdir(dists):
+        raise RepoBrowseError("в образе нет каталога dists/ -- это не образ Debian")
+    # Выпуск из конфигурации -- если он на образе есть. Иначе любой с файлом
+    # Release: на DVD их обычно два, `trixie` и ссылка `stable` на него же,
+    # поэтому одинаковые каталоги сводятся по настоящему пути.
+    if release and os.path.isdir(os.path.join(dists, release)):
+        suites = [os.path.join(dists, release)]
+    else:
+        seen: set[str] = set()
+        suites = []
+        for name in sorted(os.listdir(dists)):
+            suite = os.path.join(dists, name)
+            real = os.path.realpath(suite)
+            if os.path.isfile(os.path.join(suite, "Release")) and real not in seen:
+                seen.add(real)
+                suites.append(suite)
+    wanted_arch = _APT_ARCH.get(arch, arch)
+
+    packages: dict[str, RepoPackage] = {}
+    read_any = False
+    for suite in suites:
+        # Компоненты не перечисляются в коде: main и contrib есть почти всегда,
+        # non-free-firmware -- с Debian 12, и берётся всё, что образ несёт.
+        components = sorted(
+            (name for name in os.listdir(suite) if os.path.isdir(os.path.join(suite, name))),
+            key=lambda name: (name != "main", name),
+        )
+        for component in components:
+            index = _apt_index(os.path.join(suite, component), wanted_arch)
+            if index is None:
+                continue
+            read_any = True
+            for package in AptPackageSource.parse_index(_read_index(index)):
+                packages.setdefault(package.name, package)
+    if not read_any:
+        raise RepoBrowseError(
+            "в dists/ образа не найден индекс пакетов"
+            + (f" для архитектуры {wanted_arch}" if wanted_arch else "")
+        )
+    return sorted(packages.values(), key=lambda p: p.name)
+
+
+def _apt_index(component_dir: str, arch: str) -> "str | None":
+    """Индекс компонента: `.gz` раньше `.xz`, сжатый раньше голого."""
+    if arch:
+        candidates = [os.path.join(component_dir, f"binary-{arch}")]
+    else:
+        candidates = sorted(
+            os.path.join(component_dir, name)
+            for name in os.listdir(component_dir)
+            if name.startswith("binary-") and name != "binary-all"
+        )
+    for binary_dir in candidates:
+        for name in ("Packages.gz", "Packages.xz", "Packages"):
+            path = os.path.join(binary_dir, name)
+            if os.path.isfile(path):
+                return path
+    return None
+
+
+def _read_index(path: str) -> str:
+    try:
+        if path.endswith(".gz"):
+            with gzip.open(path, "rt", encoding="utf-8", errors="replace") as handle:
+                return handle.read()
+        if path.endswith(".xz"):
+            with lzma.open(path, "rt", encoding="utf-8", errors="replace") as handle:
+                return handle.read()
+        with open(path, "r", encoding="utf-8", errors="replace") as handle:
+            return handle.read()
+    except (OSError, EOFError, lzma.LZMAError) as exc:
+        raise RepoBrowseError(f"не удалось прочитать индекс пакетов {path}: {exc}") from exc
+
+
+def load_packages(
+    target_os: str,
+    release: str,
+    image_mountpoint: str = "",
+    mirror: str = "",
+    arch: str = "",
+) -> "tuple[list[RepoPackage], str]":
+    """Каталог пакетов: сначала образ, сеть -- только запасной путь.
+
+    Возвращает список и откуда он взят (`image` или `network`), чтобы
+    интерфейс мог честно сказать, что показано. Если образ прочитать не
+    удалось, а зеркало задано, пробуется зеркало; если не вышло и там --
+    ошибка называет обе причины, а не только последнюю: иначе администратор в
+    закрытом контуре увидел бы «нет сети» и не узнал, что было не так с
+    образом.
+    """
+    image_error = ""
+    if image_mountpoint:
+        try:
+            return list_image_packages(image_mountpoint, target_os, release, arch), "image"
+        except RepoBrowseError as exc:
+            image_error = str(exc)
+            if not mirror:
+                raise
+    if not mirror:
+        raise RepoBrowseError("не выбран установочный образ и не задан адрес репозитория")
+    try:
+        return get_package_source(target_os).list_packages(mirror, release), "network"
+    except RepoBrowseError as exc:
+        if image_error:
+            raise RepoBrowseError(f"образ: {image_error}; репозиторий: {exc}") from exc
+        raise
