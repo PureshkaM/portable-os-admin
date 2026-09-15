@@ -27,6 +27,7 @@ from .. import theme
 from ..widgets import (
     Column,
     MessageBar,
+    ScrollableArea,
     add_field,
     data_table,
     error_guard,
@@ -88,7 +89,15 @@ class RevokeFrame(ttk.Frame):
             ),
         )
 
-        card = section_card(self)
+        # Прокрутка -- по той же причине, что и у «Обслуживания»: разделов три
+        # плюс журнал, и в штатном окне 1040x700 кнопка «Назад» и стирание
+        # уходили за нижний край без всякой возможности до них добраться
+        # (найдено живым прогоном 15.09.2026, когда подписи при подключённом
+        # сервере отзыва стали на строку длиннее).
+        outer = section_card(self)
+        scroller = ScrollableArea(outer)
+        scroller.pack(fill="both", expand=True)
+        card = scroller.content
 
         if record is None:
             bar = MessageBar(card, on_card=True)

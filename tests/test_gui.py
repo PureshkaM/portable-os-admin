@@ -1907,6 +1907,33 @@ def test_the_revoke_screen_does_not_pretend_a_mark_locks_the_medium(gui_app, tmp
     assert "не открыть ничем" in shown
 
 
+def test_the_revoke_screen_scrolls_so_back_is_always_reachable(gui_app, tmp_path):
+    """Экран отзыва длиннее окна -- и «Назад» обязан быть досягаем.
+
+    Живой прогон 15.09.2026: в штатном окне 1040x700 кнопка «Назад» и
+    стирание уходили за нижний край, а прокрутки у экрана не было -- выйти с
+    него было нечем. Проверка «ни один элемент не сплющен» этого не ловила:
+    кнопка не сплющена, она просто за краем.
+    """
+    from portable_os_admin.gui.widgets import ScrollableArea
+
+    app = gui_app
+    _open_container(app, tmp_path)
+    _issue_a_medium(app)
+    screen = _open_revoke(app)
+
+    def descendants(widget):
+        for child in widget.winfo_children():
+            yield child
+            yield from descendants(child)
+
+    scrollers = [w for w in descendants(screen) if isinstance(w, ScrollableArea)]
+    assert scrollers, "у экрана отзыва нет прокрутки"
+    inside = set(descendants(scrollers[0].content))
+    back = [w for w in inside if w.winfo_class() == "TButton" and w.cget("text") == "Назад"]
+    assert back, "«Назад» лежит вне прокручиваемой области"
+
+
 def test_a_mark_without_a_reason_is_refused(gui_app, tmp_path):
     """Через полгода «отозван» без причины не отвечает ни на один вопрос,
     ради которого в этот список смотрят."""
