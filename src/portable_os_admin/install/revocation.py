@@ -559,6 +559,22 @@ if command -v ldd >/dev/null 2>&1 && command -v readlink >/dev/null 2>&1 \\
 fi
 [ -n "$STAGED" ] || log "хвост уничтожения не скопирован в память, затирание пойдёт с диска"
 
+# Проверка копий на этой машине: какие файлы отображает скопированная оболочка.
+# Чистое ядро показывает одни копии, а на носителе РЕД ОС 15.09.2026 хвост всё
+# равно упал в первую секунду затирания -- строки ниже называют виновника.
+if [ -n "$STAGED" ]; then
+    cat > "$STAGE/maps.sh" <<'POA_MAPS'
+while read -r _a _b _c _d _e _f; do case "$_f" in /*) echo "$_f";; esac; done < /proc/$$/maps
+POA_MAPS
+    for _f in $("$LOADER" --library-path "$STAGE/lib" "$STAGE/bin/sh" "$STAGE/maps.sh" 2>&1 | sort -u); do
+        case "$_f" in
+            "$STAGE"/*) ;;
+            *) log "копия оболочки отображает не копию: $_f" ;;
+        esac
+    done
+    log "копии хвоста лежат на $(stat -f -c %T "$STAGE" 2>/dev/null)"
+fi
+
 # Порядок: сперва всё быстрое -- ключи, загрузочная часть, журналы, разметка,
 # -- и только потом затирание данных. Быстрые шаги занимают секунды, затирание
 # -- минуты и губит работающую систему; поставленное раньше, оно оставляло
@@ -624,6 +640,8 @@ if [ -n "$SYSTEM_DEV" ] && [ -n "$STAGED" ]; then
     # не понадобится. LC_ALL=C -- чтобы оболочка не полезла за файлами локали.
     cat > "$STAGE/wipe.sh" <<'POA_WIPE'
 {WIPE_TAIL}POA_WIPE
+    # Если хвост всё же погибнет, ядро напишет в консоль сигнал и адрес.
+    echo 1 > /proc/sys/kernel/print-fatal-signals 2>/dev/null
     LC_ALL=C exec "$LOADER" --library-path "$STAGE/lib" "$STAGE/bin/sh" "$STAGE/wipe.sh" \\
         "$SYSTEM_DEV" "$SYSTEM_MB" "$LOADER" "$STAGE/lib" "$STAGE/bin/dd" "$LOG" "$FINAL"
 fi
@@ -665,6 +683,7 @@ run_dd() {
 
 echo "затираю первый гигабайт тома $dev (из памяти)" >> "$log"
 run_dd if=/dev/zero of="$dev" bs=1M count=1024 conv=fsync
+echo "первый гигабайт: dd вернул $?" >> "$log"
 if [ "$total" -gt 1024 ]; then
     at=1024
     while [ "$at" -lt "$total" ]; do
