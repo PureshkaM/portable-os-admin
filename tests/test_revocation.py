@@ -330,10 +330,62 @@ def test_everything_needed_later_is_known_before_the_first_destructive_step():
     """
     script = _full_script()
     first_erase = script.index('destroy_luks "$LUKS_UUID"')
-    for fact in ("SYSTEM_DEV=$(find_volume", "lsblk -no pkname", "DISK_MB=$(( _bytes", "SYSTEM_MB=$(( _bytes"):
-        assert script.index(fact) < first_erase, f"{fact} вычисляется уже после разрушения"
-    assert 'cp "$(command -v dd)" "$STATE_DIR/bin/dd"' in script
-    assert script.index('cp "$(command -v dd)"') < first_erase
+    for fact in (
+        "SYSTEM_DEV=$(find_volume",
+        "lsblk -no pkname",
+        "DISK_MB=$(( _bytes",
+        "SYSTEM_MB=$(( _bytes",
+        "echo 1 > /proc/sys/kernel/sysrq",
+        "stage_binary /bin/sh sh",
+        'stage_binary "$(command -v dd)" dd',
+    ):
+        assert script.index(fact) < first_erase, f"{fact} делается уже после разрушения"
+
+
+def _wipe_tail(script: str) -> str:
+    start = script.index("<<'POA_WIPE'\n") + len("<<'POA_WIPE'\n")
+    return script[start:script.index("POA_WIPE\n", start)]
+
+
+def test_the_tail_after_the_data_wipe_runs_from_memory():
+    """Живая проверка РЕД ОС 15.09.2026: после затирания данных скрипт и dd
+    упали с дампом -- bash подгружал код с уже затёртого корня, и носитель так
+    и не выключился. Хвост исполняется копиями из tmpfs через загрузчик."""
+    script = _full_script()
+    table_at = script.index('of="/dev/$PARENT" bs=1M count=4 conv=fsync')
+    exec_at = script.index('LC_ALL=C exec "$LOADER" --library-path "$STAGE/lib" "$STAGE/bin/sh"')
+    assert table_at < exec_at
+
+    tail = _wipe_tail(script)
+    checked = subprocess.run(["sh", "-n"], input=tail, text=True, capture_output=True)
+    assert checked.returncode == 0, checked.stderr
+    # В хвосте -- только встроенные команды и dd через скопированный загрузчик.
+    assert '"$loader" --library-path "$lib" "$dd"' in tail
+    for outside in ("poweroff", "blockdev", "lsblk", "cryptsetup", "date "):
+        assert outside not in tail, f"хвост зовёт {outside.strip()} с диска"
+    lines = [line.strip() for line in tail.splitlines()]
+    assert "sync" not in lines, "хвост зовёт sync с диска"
+    assert "echo o > /proc/sysrq-trigger" in tail
+
+
+def test_a_staged_shell_really_runs_from_its_copies(tmp_path):
+    """Не «скопировано», а «исполняется»: копия оболочки запускается загрузчиком
+    с одними скопированными библиотеками."""
+    if not pathlib.Path("/proc/sys/kernel/random/boot_id").exists():
+        pytest.skip("нужен Linux: ld.so и ldd")
+    script = _full_script()
+    start = script.index("stage_binary() {")
+    function = script[start:script.index("\n}\n", start) + 3]
+    probe = (
+        f'STAGE="{tmp_path}/stage"\n{function}'
+        'stage_binary /bin/sh sh && stage_binary "$(command -v dd)" dd || exit 3\n'
+        'for _ld in "$STAGE"/lib/ld-linux*.so*; do LOADER=$_ld; break; done\n'
+        'LC_ALL=C "$LOADER" --library-path "$STAGE/lib" "$STAGE/bin/sh" -c "echo staged-ok"\n'
+        '"$LOADER" --library-path "$STAGE/lib" "$STAGE/bin/dd" if=/dev/zero of=/dev/null bs=1 count=1\n'
+    )
+    run = subprocess.run(["sh", "-c", probe], text=True, capture_output=True)
+    assert run.returncode == 0, run.stderr
+    assert "staged-ok" in run.stdout
 
 
 def test_the_data_wipe_comes_after_every_quick_step():

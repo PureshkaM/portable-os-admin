@@ -527,8 +527,37 @@ if command -v blockdev >/dev/null 2>&1; then
         [ -n "$_bytes" ] && SYSTEM_MB=$(( _bytes / 1048576 ))
     fi
 fi
-mkdir -p "$STATE_DIR/bin" && cp "$(command -v dd)" "$STATE_DIR/bin/dd" 2>/dev/null \\
-    && PATH="$STATE_DIR/bin:$PATH"
+
+# Выключение -- через sysrq, встроенной командой оболочки: `poweroff` -- это
+# программа на диске, а к концу уничтожения диска уже нет. Разрешается заранее,
+# потому что дистрибутив мог ограничить sysrq.
+echo 1 > /proc/sys/kernel/sysrq 2>/dev/null
+
+# Хвост уничтожения исполняется из памяти. Живая проверка РЕД ОС 15.09.2026:
+# после затирания данных упали с дампом и сам скрипт, и dd -- у РЕД ОС /bin/sh
+# это bash, и ему понадобился код, которого ещё не было в памяти, а читать его
+# было уже неоткуда. Копии одного dd мало: его библиотеки остаются на диске.
+# Поэтому оболочка и dd копируются в tmpfs вместе с библиотеками и загрузчиком,
+# и затирание данных идёт оттуда.
+STAGE="$STATE_DIR/stage"
+stage_binary() {{
+    _src=$(readlink -f "$1") || return 1
+    mkdir -p "$STAGE/bin" "$STAGE/lib" || return 1
+    cp "$_src" "$STAGE/bin/$2" || return 1
+    for _lib in $(ldd "$_src" 2>/dev/null | grep -o '/[^ ]*'); do
+        [ -e "$STAGE/lib/${{_lib##*/}}" ] || cp -L "$_lib" "$STAGE/lib/${{_lib##*/}}" 2>/dev/null
+    done
+}}
+STAGED=""
+LOADER=""
+if command -v ldd >/dev/null 2>&1 && command -v readlink >/dev/null 2>&1 \\
+        && stage_binary /bin/sh sh && stage_binary "$(command -v dd)" dd; then
+    for _ld in "$STAGE"/lib/ld-linux*.so*; do
+        [ -e "$_ld" ] && LOADER=$_ld && break
+    done
+    [ -n "$LOADER" ] && STAGED=1
+fi
+[ -n "$STAGED" ] || log "хвост уничтожения не скопирован в память, затирание пойдёт с диска"
 
 # Порядок: сперва всё быстрое -- ключи, загрузочная часть, журналы, разметка,
 # -- и только потом затирание данных. Быстрые шаги занимают секунды, затирание
@@ -580,25 +609,75 @@ sync
 
 # 6. Данные системного тома -- последним: после этого шага система теряет
 #    свой корень, и полагаться можно только на то, что уже в памяти.
+if [ "$FAILED" -eq 0 ]; then
+    log "=== ключи, загрузочная часть и разметка уничтожены, затираю данные ==="
+    FINAL="Носитель уничтожен. Для восстановления обратитесь к администратору."
+else
+    log "=== уничтожение прошло не полностью, см. строки ОШИБКА выше ==="
+    FINAL="Отзыв доведён не до конца. Обратитесь к администратору."
+fi
+sync
+
+if [ -n "$SYSTEM_DEV" ] && [ -n "$STAGED" ]; then
+    # Хвост -- отдельным файлом в памяти, и управление передаётся ему целиком:
+    # exec заменяет процесс, и ни одной страницы этого скрипта с диска больше
+    # не понадобится. LC_ALL=C -- чтобы оболочка не полезла за файлами локали.
+    cat > "$STAGE/wipe.sh" <<'POA_WIPE'
+{WIPE_TAIL}POA_WIPE
+    LC_ALL=C exec "$LOADER" --library-path "$STAGE/lib" "$STAGE/bin/sh" "$STAGE/wipe.sh" \\
+        "$SYSTEM_DEV" "$SYSTEM_MB" "$LOADER" "$STAGE/lib" "$STAGE/bin/dd" "$LOG" "$FINAL"
+fi
+
+# Запасной путь: скопировать хвост в память не вышло -- затирание с диска, и
+# выключение всё равно встроенными командами.
 if [ -n "$SYSTEM_DEV" ]; then
     wipe_data "$SYSTEM_DEV" "$SYSTEM_MB"
 fi
-
-sync
-
-if [ "$FAILED" -eq 0 ]; then
-    log "=== носитель уничтожен ==="
-    say ""
-    say "Носитель уничтожен. Для восстановления обратитесь к администратору."
-else
-    log "=== уничтожение прошло не полностью, см. строки ОШИБКА выше ==="
-    say ""
-    say "Отзыв доведён не до конца. Обратитесь к администратору."
-fi
-
-sleep 5
-poweroff -f 2>/dev/null || echo o > /proc/sysrq-trigger
+log "=== носитель уничтожен ==="
+say ""
+say "$FINAL"
+echo s > /proc/sysrq-trigger 2>/dev/null
+echo o > /proc/sysrq-trigger 2>/dev/null
+poweroff -f 2>/dev/null
 exit 0
+"""
+
+
+#: Хвост уничтожения: затирание данных и выключение. Исполняется из tmpfs
+#: скопированной оболочкой через скопированный загрузчик -- см. шаг 0 скрипта.
+#: Только встроенные команды оболочки и dd тем же загрузчиком: всякая другая
+#: программа лежит на диске, который в этот момент затирается.
+WIPE_TAIL = """\
+#!/bin/sh
+# Хвост уничтожения носителя. Исполняется из памяти: корень системы к этому
+# моменту затирается, и ни одна программа с диска уже не запустится.
+dev=$1
+total=$2
+loader=$3
+lib=$4
+dd=$5
+log=$6
+final=$7
+
+run_dd() {
+    "$loader" --library-path "$lib" "$dd" "$@" >/dev/null 2>&1
+}
+
+echo "затираю первый гигабайт тома $dev (из памяти)" >> "$log"
+run_dd if=/dev/zero of="$dev" bs=1M count=1024 conv=fsync
+if [ "$total" -gt 1024 ]; then
+    at=1024
+    while [ "$at" -lt "$total" ]; do
+        run_dd if=/dev/zero of="$dev" bs=1M count=1 seek="$at" conv=fsync || break
+        at=$((at + 32))
+    done
+    echo "данные затёрты до отметки $at МиБ" >> "$log"
+fi
+echo "=== носитель уничтожен, выключаю ===" >> "$log"
+echo "" > /dev/console 2>/dev/null
+echo "$final" > /dev/console 2>/dev/null
+echo s > /proc/sysrq-trigger 2>/dev/null
+echo o > /proc/sysrq-trigger 2>/dev/null
 """
 
 
