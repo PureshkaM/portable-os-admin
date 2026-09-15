@@ -700,6 +700,9 @@ def test_serial_console_keeps_the_screen_as_the_main_console():
         consoles = [w for w in words if w.startswith("console=")]
         assert consoles == ["console=ttyS0,115200", "console=tty0"], target_os
         assert words.index("console=tty0") > words.index("nomodeset"), target_os
+        # Без него plymouth, увидев порт, уходит в текстовый режим: квадратики
+        # вместо кириллицы и невидимый запрос пароля (живая загрузка 15.09.2026).
+        assert "plymouth.ignore-serial-consoles" in words, target_os
         # Порт сам по себе не отключает заставку -- это решает только verbose.
         assert splash in words, target_os
 
