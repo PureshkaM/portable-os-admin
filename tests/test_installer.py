@@ -645,9 +645,34 @@ def test_the_medium_gets_the_revocation_service_switched_on(session, big_removab
         big_removable_device, config, b"user-passphrase-123", dry_run=True
     )
 
+    # С 1.1.0 службу запускает таймер -- раз в пять минут, -- поэтому в
+    # автозапуск ставится он.
     links = [
         " ".join(r.argv) for r in result.plan.results
-        if r.argv[0] == "ln" and "poa-revocation.service" in " ".join(r.argv)
+        if r.argv[0] == "ln" and "poa-revocation.timer" in " ".join(r.argv)
     ]
-    assert links, "служба отзыва не включается на носителе"
-    assert any("multi-user.target.wants" in line for line in links)
+    assert links, "опрос сервера отзыва не включается на носителе"
+    assert any("timers.target.wants" in line for line in links)
+
+
+def test_every_medium_gets_its_own_device_key(session, big_removable_device, make_config):
+    """Закрытая часть -- на носитель, открытая -- в запись носителя.
+
+    Без ключа носителя сервер отвечает на его запрос 403, и сеанс киоска не
+    открывается никогда.
+    """
+    config = _revoking_config(make_config)
+    session.container.data.revocation_public_key_pem = _PUBLIC_KEY
+
+    installer = OSInstaller(session)
+    result = installer.run(big_removable_device, config, b"user-passphrase-123", dry_run=True)
+
+    written = [r.argv[1] for r in result.plan.results if r.argv[0] == "<write-file>"]
+    assert any(path.endswith("etc/poa/device.key") for path in written), (
+        "носитель уезжает без ключа, которым подписывает запрос серверу"
+    )
+    assert len(installer._device_public_key_b64) == 44
+
+    second = OSInstaller(session)
+    second.run(big_removable_device, config, b"user-passphrase-123", dry_run=True)
+    assert second._device_public_key_b64 != installer._device_public_key_b64

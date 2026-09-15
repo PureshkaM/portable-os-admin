@@ -328,6 +328,9 @@ class OSInstaller:
             service_key_b64=base64.b64encode(service_key).decode("ascii"),
             logs_luks_uuid=layout.logs_luks_uuid,
             exchange_luks_uuid=layout.exchange_luks_uuid,
+            # Открытая часть ключа носителя: её получает сервер отзыва при
+            # публикации записи и по ней проверяет запросы носителя.
+            device_public_key_b64=getattr(self, "_device_public_key_b64", ""),
             # Опись незашифрованной части и подпись к ней. Эталон живёт в
             # контейнере: тот, кто подменит загрузчик, до него не дотянется.
             boot_manifest=dict(self._boot_manifest),
@@ -660,6 +663,9 @@ class OSInstaller:
             service_key_b64=base64.b64encode(service_key).decode("ascii"),
             logs_luks_uuid=layout.logs_luks_uuid,
             exchange_luks_uuid=layout.exchange_luks_uuid,
+            # Открытая часть ключа носителя: её получает сервер отзыва при
+            # публикации записи и по ней проверяет запросы носителя.
+            device_public_key_b64=getattr(self, "_device_public_key_b64", ""),
             # Опись незашифрованной части и подпись к ней. Эталон живёт в
             # контейнере: тот, кто подменит загрузчик, до него не дотянется.
             boot_manifest=dict(self._boot_manifest),
@@ -864,18 +870,32 @@ class OSInstaller:
             plan, dry_run, confirm_device, mode=0o444,
         )
 
-        # Служба включается ссылкой, а не `systemctl enable`, и здесь же, рядом
-        # с файлами, -- ровно как служба целостности и по той же причине:
+        # Ключ носителя. Рождается здесь, при записи, а не в дистрибутиве: у
+        # каждого носителя свой, иначе сервер не отличил бы один от другого.
+        # Закрытая часть -- только на зашифрованный корень, 0400: пользователь
+        # киоска её не прочитает, а без неё запрос серверу получает 403.
+        # Открытая часть уезжает в запись носителя в контейнере.
+        private_pem, self._device_public_key_b64 = revocation.new_device_key()
+        self._write_file(
+            f"{layout.mount_root}/{revocation.DEVICE_KEY_PATH}",
+            private_pem,
+            plan, dry_run, confirm_device, mode=0o400,
+        )
+
+        # Опрос включается ссылкой таймера, а не `systemctl enable`, и здесь же,
+        # рядом с файлами, -- ровно как служба целостности и по той же причине:
         # systemd целевой системы не запущен, enable в chroot делает эту самую
         # ссылку, а команды chroot выполняются только на одном из двух путей.
         #
         # Найдено живой загрузкой 14.09.2026: на носителе РЕД ОС, собранном
         # развёртыванием дистрибутива, лежали и скрипт, и ключ, а службы в
         # автозапуске не было -- проверка отзыва не выполнялась ни разу.
-        wants = f"{layout.mount_root}/etc/systemd/system/multi-user.target.wants"
+        # С 1.1.0 службу запускает таймер (раз в пять минут) и диспетчер сети,
+        # поэтому в автозапуск ставится таймер, а не сама служба.
+        wants = f"{layout.mount_root}/etc/systemd/system/timers.target.wants"
         self._run(["mkdir", "-p", wants], plan, dry_run, confirm_device)
         self._run(
-            ["ln", "-sf", f"/{revocation.SERVICE_PATH}", f"{wants}/{revocation.SERVICE_NAME}"],
+            ["ln", "-sf", f"/{revocation.TIMER_PATH}", f"{wants}/{revocation.TIMER_NAME}"],
             plan, dry_run, confirm_device,
         )
 

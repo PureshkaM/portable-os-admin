@@ -7,7 +7,10 @@
 """
 from __future__ import annotations
 
+import pathlib
 import subprocess
+
+import pytest
 
 from portable_os_admin.config.schema import InstallConfig
 from portable_os_admin.config.validator import BuiltinConfigValidator
@@ -40,7 +43,7 @@ def test_the_request_carries_a_fresh_number_and_the_answer_is_checked_against_it
     script = _script()
 
     assert "/dev/urandom" in script, "случайное число запроса не берётся ниоткуда"
-    assert "nonce=$NONCE" in script, "случайное число не уходит в запрос"
+    assert '-H "X-POA-Nonce: $NONCE"' in script, "случайное число не уходит в запрос"
     # И ответ обязан назвать и носитель, и это самое число.
     assert '"poa-state $MEDIA_ID $NONCE "*' in script
 
@@ -60,10 +63,12 @@ def test_an_answer_without_a_valid_signature_changes_nothing():
 def test_only_the_revoked_state_destroys_anything():
     script = _script()
     assert 'if [ "$STATE" != "revoked" ]' in script, "уничтожение не привязано к состоянию"
-    # Носитель, о котором ресурс промолчал или ответил «в порядке», продолжает
-    # работать: срока доверия здесь нет намеренно.
-    assert "сети нет, проверка пропущена" in script
-    assert "ресурс недоступен, проверка пропущена" in script
+    # Сервер промолчал -- носитель не уничтожается, а пользователь узнаёт, что
+    # связи нет. Каждый такой исход уходит через no_answer, который выходит.
+    assert "сети нет, сервер не спрошен" in script
+    assert "сервер недоступен" in script
+    no_answer = script[script.index("no_answer() {"):]
+    assert "exit 0" in no_answer[: no_answer.index("}")]
 
 
 def test_the_medium_says_what_happened_before_it_powers_off():
@@ -93,9 +98,16 @@ def test_nothing_is_written_when_the_feature_is_off():
 
 
 def test_files_land_where_the_service_can_find_them():
-    files = revocation.config_files(_config(), "a1b2c3d4", "0e3f1a90-1111-2222-3333-444455556666")
-    assert set(files) == {revocation.SCRIPT_PATH, revocation.SERVICE_PATH}
+    config = _config()
+    files = revocation.config_files(config, "a1b2c3d4", "0e3f1a90-1111-2222-3333-444455556666")
+    expected = {
+        revocation.SCRIPT_PATH, revocation.SERVICE_PATH,
+        revocation.TIMER_PATH, revocation.DISPATCHER_PATH,
+    }
+    assert expected <= set(files)
+    assert (revocation.GATE_PATH in files) == revocation.gate_enabled(config)
     assert files[revocation.SCRIPT_PATH][1] == 0o755, "скрипт должен быть исполняемым"
+    assert files[revocation.DISPATCHER_PATH][1] == 0o755, "диспетчер сети не исполнит файл без права"
     assert f"/{revocation.SCRIPT_PATH}" in files[revocation.SERVICE_PATH][0]
 
 
@@ -132,6 +144,16 @@ def test_both_families_carry_what_the_check_needs():
         packages = get_backend(family).boot_packages(config)
         for tool in ("curl", "openssl"):
             assert tool in packages, f"{family}: в наборе нет {tool}"
+
+    # notify-send: у семейств он в пакетах с разными именами -- сверено по
+    # образам 15.09.2026 (libnotify-bin_0.8.6 на DVD Debian, libnotify-0.8.3 у
+    # РЕД ОС, где программа лежит в самой библиотеке).
+    assert "libnotify-bin" in get_backend("debian").boot_packages(
+        InstallConfig.create_baseline("stick", "debian")
+    )
+    assert "libnotify" in get_backend("redos").boot_packages(
+        InstallConfig.create_baseline("stick", "redos")
+    )
 
 
 def test_the_check_names_the_tool_it_lacks():
@@ -350,3 +372,172 @@ def test_a_step_that_fails_is_told_apart_from_a_medium_that_is_gone():
     assert "FAILED=1" in script
     assert "носитель уничтожен" in script
     assert "уничтожение прошло не полностью" in script
+
+
+# ----------------------------------------------------------------------
+# Протокол v2: подписанный запрос, опрос, шлюз сеанса
+# ----------------------------------------------------------------------
+def _kiosk_config():
+    config = InstallConfig.create_baseline("stick", "debian")
+    config.revocation.enabled = True
+    config.revocation.url = "https://revoke.example.org"
+    return config
+
+
+def test_the_request_is_signed_by_the_medium_before_it_leaves():
+    """Без подписи ключом носителя сервер отвечает 403 -- и должен.
+
+    Подпись ставится до отправки и накрывает ровно то, что сервер сверит:
+    идентификатор, случайное число и сведения о носителе, в этом порядке.
+    """
+    script = _script()
+
+    sign_at = script.index("openssl pkeyutl -sign")
+    send_at = script.index("curl --silent")
+    assert sign_at < send_at, "запрос уходит раньше, чем подписан"
+    assert "printf 'poa-ask %s %s %s' \"$MEDIA_ID\" \"$NONCE\" \"$INFO\"" in script
+    assert f"DEVICE_KEY=/{revocation.DEVICE_KEY_PATH}" in script
+    for header in ("X-POA-Media", "X-POA-Nonce", "X-POA-Info", "X-POA-Signature"):
+        assert f'-H "{header}: ' in script, f"в запросе нет заголовка {header}"
+
+
+def test_nothing_about_the_medium_travels_in_the_address():
+    """Адрес оседает в журналах посредников, заголовки -- нет."""
+    script = _script()
+    assert '"$URL/v2/state"' in script
+    assert "?media=" not in script and "nonce=" not in script
+
+
+def test_the_medium_tells_the_server_what_it_is():
+    """Учёт парка: версия и отпечаток машины уходят в запросе."""
+    script = _script()
+    assert 'INFO="version=$VERSION;machine=$MACHINE"' in script
+    assert "poa_fingerprint_id()" in script, "отпечаток машины не вычисляется"
+    from portable_os_admin import __version__
+
+    assert f"VERSION={__version__}" in script
+
+
+def test_a_refusal_is_not_mistaken_for_an_answer():
+    """403 означает «сервер не признал носитель» -- ни уничтожения, ни авторизации."""
+    script = _script()
+    refusal_at = script.index("    403)")
+    verify_at = script.index("openssl pkeyutl -verify")
+    assert refusal_at < verify_at
+    assert "носитель не признан" in script
+
+
+def test_only_a_verified_ok_opens_the_session():
+    """Файл авторизации пишется после проверки подписи и числа, и только на «ok»."""
+    script = _script()
+
+    verify_at = script.index("openssl pkeyutl -verify")
+    nonce_at = script.index('"poa-state $MEDIA_ID $NONCE "*')
+    open_at = script.index('mv -f "$AUTHORIZED.tmp" "$AUTHORIZED"')
+    assert verify_at < nonce_at < open_at
+    assert 'if [ "$STATE" = "ok" ]' in script[nonce_at:open_at]
+    assert "/proc/sys/kernel/random/boot_id" in script[nonce_at:open_at]
+
+
+def test_a_revoked_medium_closes_the_session_before_destroying_itself():
+    script = _script()
+    closed_at = script.index('rm -f "$AUTHORIZED"')
+    erase_at = script.index("cryptsetup luksErase")
+    assert closed_at < erase_at
+    assert script.index(': > "$STATE_DIR/destroying"') < erase_at
+
+
+def test_one_pass_at_a_time():
+    """Таймер и диспетчер сети могут сработать разом; уничтожение не повторяется."""
+    script = _script()
+    assert "flock -n 9 || exit 0" in script
+    assert '[ -e "$STATE_DIR/destroying" ] && exit 0' in script
+
+
+def test_the_user_is_told_when_the_server_cannot_be_reached():
+    """Решение пользователя 15.09.2026: без связи -- системное уведомление."""
+    script = _script()
+    assert 'notify_user critical "Нет связи с сервером авторизации"' in script
+    assert "DBUS_SESSION_BUS_ADDRESS=\"unix:path=$_bus\"" in script
+    assert "runuser -u \"$_user\"" in script
+
+
+def test_the_server_is_asked_every_five_minutes_and_when_the_network_comes_up():
+    timer = revocation.timer_unit()
+    assert "OnUnitActiveSec=5min" in timer
+    assert "WantedBy=timers.target" in timer
+
+    dispatcher = revocation.dispatcher_script()
+    checked = subprocess.run(["sh", "-n"], input=dispatcher, text=True, capture_output=True)
+    assert checked.returncode == 0, checked.stderr
+    assert "up|" in dispatcher and "--no-block" in dispatcher
+    assert revocation.SERVICE_NAME in dispatcher
+
+
+def test_the_service_itself_is_not_started_at_boot_any_more():
+    """Запускает её таймер; своя ссылка в multi-user.target дала бы второй проход."""
+    assert "[Install]" not in revocation.service_unit()
+
+
+def test_the_gate_is_valid_shell_and_bound_to_this_boot():
+    gate = revocation.gate_script()
+    checked = subprocess.run(["sh", "-n"], input=gate, text=True, capture_output=True)
+    assert checked.returncode == 0, checked.stderr
+    assert f"AUTHORIZED={revocation.AUTHORIZED_FILE}" in gate
+    assert "/proc/sys/kernel/random/boot_id" in gate
+    assert "notify-send" in gate
+
+
+def test_the_gate_refuses_without_authorization_and_waits_when_asked(tmp_path):
+    """Шлюз исполняется по-настоящему: без файла отказ, с файлом -- запуск."""
+    boot_id = pathlib.Path("/proc/sys/kernel/random/boot_id")
+    if not boot_id.exists():
+        pytest.skip("нужен Linux: /proc/sys/kernel/random/boot_id")
+
+    authorized = tmp_path / "authorized"
+    gate = tmp_path / "gate"
+    gate.write_text(
+        revocation.gate_script().replace(revocation.AUTHORIZED_FILE, str(authorized))
+    )
+    gate.chmod(0o755)
+
+    refused = subprocess.run([str(gate), "true"], capture_output=True)
+    assert refused.returncode == 1
+
+    authorized.write_text(boot_id.read_text())
+    allowed = subprocess.run([str(gate), "sh", "-c", "exit 7"], capture_output=True)
+    assert allowed.returncode == 7
+
+    authorized.write_text("another-boot\n")
+    assert subprocess.run([str(gate), "true"], capture_output=True).returncode == 1
+
+
+def test_the_gate_is_written_only_for_a_kiosk():
+    kiosk_config = _kiosk_config()
+    files = revocation.config_files(kiosk_config, "a1b2c3d4", "0e3f1a90-1111-2222-3333-444455556666")
+    assert revocation.GATE_PATH in files
+
+    console = _kiosk_config()
+    console.kiosk.enabled = False
+    files = revocation.config_files(console, "a1b2c3d4", "0e3f1a90-1111-2222-3333-444455556666")
+    assert revocation.GATE_PATH not in files
+
+
+def test_a_device_key_is_an_ed25519_pair_in_the_shape_the_server_expects():
+    import base64
+
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ed25519
+
+    private_pem, public_b64 = revocation.new_device_key()
+    key = serialization.load_pem_private_key(private_pem.encode("ascii"), password=None)
+    assert isinstance(key, ed25519.Ed25519PrivateKey)
+
+    raw = base64.b64decode(public_b64, validate=True)
+    assert len(raw) == 32 and len(public_b64) == 44
+    signature = key.sign(b"poa-ask a1b2c3d4 00 version=1;machine=00")
+    ed25519.Ed25519PublicKey.from_public_bytes(raw).verify(
+        signature, b"poa-ask a1b2c3d4 00 version=1;machine=00"
+    )
+
+    assert revocation.new_device_key()[1] != public_b64, "ключи носителей совпали"

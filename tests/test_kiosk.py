@@ -395,6 +395,50 @@ def test_firejail_is_only_wired_in_when_asked_for():
     assert 'USE_FIREJAIL="1"' in kiosk.apply_script(make_kiosk_config(firejail=True))
 
 
+def _with_revocation(config):
+    config.revocation.enabled = True
+    config.revocation.url = "https://revoke.example.org"
+    return config
+
+
+def test_allowed_applications_go_through_the_session_gate_only_with_revocation():
+    from portable_os_admin.install import revocation
+
+    assert 'SESSION_GATE=""' in kiosk.apply_script(make_kiosk_config())
+
+    script = kiosk.apply_script(_with_revocation(make_kiosk_config()))
+    assert f'SESSION_GATE="/{revocation.GATE_PATH}"' in script
+    # Шлюз -- первым, песочница -- за ним.
+    assert 'PREFIX="$SESSION_GATE $PREFIX"' in script
+    assert script.index('PREFIX="firejail $FIREJAIL_OPTS "') < script.index(
+        'PREFIX="$SESSION_GATE $PREFIX"'
+    )
+
+
+def test_a_dbus_activatable_entry_cannot_slip_past_the_gate():
+    """Такую запись среда запускает через D-Bus, не читая Exec=."""
+    script = kiosk.apply_script(_with_revocation(make_kiosk_config()))
+    assert "/^DBusActivatable[[:space:]]*=/d" in script
+
+
+def test_desktop_shortcuts_point_at_the_gated_entry():
+    """Ссылка на /usr/share/applications шла бы мимо шлюза."""
+    script = kiosk.apply_script(_with_revocation(make_kiosk_config()))
+    gate_at = script.index('PREFIX="$SESSION_GATE $PREFIX"')
+    shortcuts_at = script.index('src="$OVERRIDE_DIR/$a.desktop"')
+    assert gate_at < shortcuts_at, "ярлыки кладутся раньше, чем появились записи со шлюзом"
+
+
+def test_autostart_waits_for_the_session_to_be_authorized():
+    from portable_os_admin.install import revocation
+
+    plain = kiosk.autostart_entry(make_kiosk_config(autostart_app="mate-calc"))
+    assert "--wait" not in plain
+
+    gated = kiosk.autostart_entry(_with_revocation(make_kiosk_config(autostart_app="mate-calc")))
+    assert f"Exec=/{revocation.GATE_PATH} --wait /{kiosk.LAUNCHER_PATH} mate-calc" in gated
+
+
 def test_autostart_entry_only_exists_when_an_application_is_named(layout):
     without = get_backend("debian").scripted_files(make_kiosk_config(), layout)
     assert kiosk.AUTOSTART_PATH not in without
