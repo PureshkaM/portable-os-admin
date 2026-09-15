@@ -54,6 +54,7 @@ def publish_record(container, media_id: str) -> str:
             media_id,
             state,
             record.revocation_counter,
+            device_public_key_b64=record.device_public_key_b64,
         )
     except revocation_client.RevocationServerError as error:
         # Неудача записывается в журнал наравне с успехом: «отозван» и «ресурс
@@ -63,3 +64,18 @@ def publish_record(container, media_id: str) -> str:
         raise
     container.record_event(ACTION_PUBLISHED, media_id, state)
     return said
+
+
+def query_record(container, media_id: str):
+    """Что ресурс отзыва знает о носителе. None, если ресурс не подключён.
+
+    Только чтение: ни номер команды, ни журнал контейнера не трогаются --
+    вопрос серверу ничего не меняет ни там, ни здесь.
+    """
+    if not is_connected(container):
+        return None
+    return revocation_client.query_media(
+        container.data.revocation_server_url,
+        container.admin_authority_secret,
+        media_id,
+    )

@@ -39,11 +39,42 @@ def sent(monkeypatch):
     calls = []
 
     def fake(url, seed, media_id, state, counter, **kwargs):
-        calls.append({"url": url, "media_id": media_id, "state": state, "counter": counter})
+        calls.append({"url": url, "media_id": media_id, "state": state, "counter": counter,
+                      "key": kwargs.get("device_public_key_b64")})
         return f"принято: {state}"
 
     monkeypatch.setattr(revocation_client, "publish_state", fake)
     return calls
+
+
+def test_the_device_key_of_the_record_is_sent(sent):
+    """Без ключа носителя сервер новую запись не заводит."""
+    container = _Container()
+    container.data.media_records.append(_record(device_public_key_b64="S0VZ"))
+
+    revocation_publish.publish_record(container, "cafe0001")
+
+    assert sent[0]["key"] == "S0VZ"
+
+
+def test_nothing_is_asked_until_the_resource_is_connected(monkeypatch):
+    def refuse(*args, **kwargs):
+        raise AssertionError("спрашивать нельзя")
+
+    monkeypatch.setattr(revocation_client, "query_media", refuse)
+    assert revocation_publish.query_record(_Container(url=""), "cafe0001") is None
+
+
+def test_a_query_changes_nothing_in_the_container(monkeypatch):
+    monkeypatch.setattr(revocation_client, "query_media",
+                        lambda url, seed, media_id, **kw: revocation_client.MediaStatus("ok"))
+    container = _Container()
+    record = _record()
+    container.data.media_records.append(record)
+
+    assert revocation_publish.query_record(container, "cafe0001").state == "ok"
+    assert record.revocation_counter == 0
+    assert container.events == []
 
 
 def test_nothing_is_sent_until_the_resource_is_connected(sent):
@@ -67,6 +98,7 @@ def test_a_fresh_medium_is_announced_as_working(sent):
         "media_id": "cafe0001",
         "state": "ok",
         "counter": 1,
+        "key": "",
     }]
 
 

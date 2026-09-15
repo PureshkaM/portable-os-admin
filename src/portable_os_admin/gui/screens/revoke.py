@@ -18,10 +18,11 @@
 """
 from __future__ import annotations
 
+import datetime
 import tkinter as tk
 from tkinter import ttk
 
-from ...admin import media_detect, media_revoke
+from ...admin import media_detect, media_revoke, revocation_publish
 from .. import theme
 from ..widgets import (
     Column,
@@ -41,6 +42,25 @@ NOT_ROOT_MESSAGE = (
     "Стирание требует прав root: заголовок LUKS правит cryptsetup, обычному "
     "пользователю это недоступно. Пометить запись отозванной можно и без них."
 )
+
+
+def contact_text(status) -> str:
+    """Строка о последней связи носителя с ресурсом отзыва.
+
+    Время сервер хранит в UTC; показывается местное -- администратор сверяет
+    его со своими часами и с тем, когда носитель видели в последний раз.
+    """
+    if not status.last_seen:
+        return "Последняя связь: не выходил на связь"
+    try:
+        moment = datetime.datetime.fromisoformat(status.last_seen)
+        when = moment.astimezone().strftime("%d.%m.%Y %H:%M")
+    except ValueError:
+        when = status.last_seen
+    return (
+        f"Последняя связь: {when}, версия {status.version or '—'}, "
+        f"машина {status.machine or '—'}"
+    )
 
 
 class RevokeFrame(ttk.Frame):
@@ -74,6 +94,14 @@ class RevokeFrame(ttk.Frame):
 
         self.status_var = tk.StringVar()
         ttk.Label(card, textvariable=self.status_var, font=theme.FONT_SECTION).pack(anchor="w")
+        # Последняя связь -- только когда ресурс отзыва подключён: без него
+        # спрашивать некого, и строка «не узнать» была бы шумом.
+        self.contact_var = tk.StringVar()
+        self._server_connected = revocation_publish.is_connected(app.session.container)
+        if self._server_connected:
+            ttk.Label(card, textvariable=self.contact_var).pack(
+                anchor="w", pady=(theme.SPACE_XS, 0)
+            )
 
         # -- носитель не вернулся: только учёт ------------------------------
         ttk.Separator(card).pack(fill="x", pady=theme.SPACE_MD)
@@ -188,6 +216,27 @@ class RevokeFrame(ttk.Frame):
         )
 
         self._refresh()
+        if self._server_connected:
+            self._ask_server()
+
+    # -- последняя связь ----------------------------------------------------
+    def _ask_server(self) -> None:
+        """Спрашивает ресурс отзыва в фоне: сеть не должна держать экран."""
+        container = self.app.session.container
+        media_id = self.media_id
+
+        def work():
+            return revocation_publish.query_record(container, media_id)
+
+        run_in_background(self, work, on_success=self._show_contact,
+                          on_error=self._contact_failed)
+
+    def _show_contact(self, status) -> None:
+        if status is not None:
+            self.contact_var.set(contact_text(status))
+
+    def _contact_failed(self, exc: BaseException) -> None:
+        self.contact_var.set(f"Последняя связь: не узнать — {exc}")
 
     # -- учёт ---------------------------------------------------------------
     def _mark(self) -> None:

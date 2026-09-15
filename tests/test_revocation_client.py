@@ -202,6 +202,85 @@ def test_an_unreachable_server_is_not_a_crash():
     assert "недоступен" in str(error.value)
 
 
+DEVICE_KEY = base64.b64encode(b"\x11" * 32).decode("ascii")
+
+
+def test_the_device_key_goes_as_the_fifth_field():
+    """Без ключа носителя сервер новую запись не заводит."""
+    opener, seen = _capture(201)
+    client.publish_state("https://revoke.example.org", SEED, "cafe0001", "ok", 1,
+                         device_public_key_b64=DEVICE_KEY, opener=opener)
+    assert seen["request"].data == f"poa-media cafe0001 1 ok {DEVICE_KEY}".encode("ascii")
+
+
+def test_a_medium_without_a_key_that_the_server_does_not_know_is_explained():
+    """Носитель до 1.1.0: администратор должен прочитать «перезапишите», а не 400."""
+
+    def opener(request, timeout=None):
+        raise urllib.error.HTTPError(request.full_url, 400, "Bad Request", {}, None)
+
+    with pytest.raises(client.RevocationServerError) as error:
+        client.publish_state("https://revoke.example.org", SEED, "cafe0001", "ok", 1,
+                             opener=opener)
+    assert "до 1.1.0" in str(error.value)
+
+
+def test_a_broken_device_key_is_refused_before_anything_is_sent():
+    opener, seen = _capture(201)
+    with pytest.raises(client.RevocationServerError):
+        client.publish_state("https://revoke.example.org", SEED, "cafe0001", "ok", 1,
+                             device_public_key_b64="bm90IGEga2V5", opener=opener)
+    assert "request" not in seen
+
+
+def test_the_query_is_signed_with_the_time():
+    from cryptography.hazmat.primitives import serialization
+
+    seen = {}
+
+    def opener(request, timeout=None):
+        seen["request"] = request
+        return _Reply(200, b"poa-record cafe0001 ok 2026-09-15T10:00:00+00:00 1.1.0 ab12cd34\n")
+
+    status = client.query_media("https://revoke.example.org/", SEED, "cafe0001", opener=opener)
+
+    assert status == client.MediaStatus("ok", "2026-09-15T10:00:00+00:00", "1.1.0", "ab12cd34")
+    request = seen["request"]
+    assert request.full_url == "https://revoke.example.org/admin/media/cafe0001"
+    assert request.get_method() == "GET"
+    assert request.get_header("X-poa-key-id") == client.key_id(SEED)
+    moment = request.get_header("X-poa-time")
+    public = serialization.load_pem_public_key(client.public_key_pem(SEED).encode("ascii"))
+    public.verify(base64.b64decode(request.get_header("X-poa-signature")),
+                  f"poa-query cafe0001 {moment}".encode("ascii"))
+
+
+def test_a_medium_that_never_called_reads_as_empty_fields():
+    def opener(request, timeout=None):
+        return _Reply(200, b"poa-record cafe0001 revoked - - -\n")
+
+    assert client.query_media("https://r.example.org", SEED, "cafe0001", opener=opener) == \
+        client.MediaStatus("revoked")
+
+
+@pytest.mark.parametrize("code, words", [(403, "владелец"), (404, "не заведён")])
+def test_query_refusals_are_explained(code, words):
+    def opener(request, timeout=None):
+        raise urllib.error.HTTPError(request.full_url, code, "", {}, None)
+
+    with pytest.raises(client.RevocationServerError) as error:
+        client.query_media("https://r.example.org", SEED, "cafe0001", opener=opener)
+    assert words in str(error.value)
+
+
+def test_a_foreign_answer_to_the_query_is_not_trusted():
+    def opener(request, timeout=None):
+        return _Reply(200, b"<html>It works!</html>")
+
+    with pytest.raises(client.RevocationServerError):
+        client.query_media("https://r.example.org", SEED, "cafe0001", opener=opener)
+
+
 def test_unknown_states_are_refused_before_anything_is_sent():
     """Опечатка в состоянии не должна доехать до сервера подписанной."""
     opener, seen = _capture(204)

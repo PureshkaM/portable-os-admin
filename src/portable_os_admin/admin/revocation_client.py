@@ -19,9 +19,12 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import hashlib
+import time
 import urllib.error
 import urllib.request
+from dataclasses import dataclass
 
 from ..errors import PortableOSAdminError
 
@@ -170,18 +173,35 @@ def publish_state(
     state: str,
     counter: int,
     *,
+    device_public_key_b64: str = "",
     timeout: int = TIMEOUT_SECONDS,
     opener=urllib.request.urlopen,
 ) -> str:
     """Сообщает серверу состояние одного носителя. Возвращает строку для человека.
+
+    `device_public_key_b64` -- открытый ключ носителя. Есть -- уходит пятым
+    полем при каждой команде: для нового носителя без него сервер запись не
+    заведёт, для известного тот же ключ ничего не меняет, а другой означает
+    перевыпуск. Нет (носитель записан до 1.1.0) -- команда из четырёх полей,
+    которую сервер примет только для уже заведённой записи.
 
     `opener` подменяется в тестах: сеть в них не нужна, а проверять надо то,
     что уходит на сервер, и то, как разбирается ответ.
     """
     if state not in ("ok", "revoked"):
         raise RevocationServerError(f"неизвестное состояние носителя: {state}")
+    device_key = device_public_key_b64.strip()
+    if device_key and not _is_device_key(device_key):
+        # Испорченный ключ лучше поймать здесь, чем получить от сервера
+        # безликое «не разобрал команду».
+        raise RevocationServerError(
+            f"ключ носителя {media_id} в контейнере повреждён: это не открытый ключ Ed25519"
+        )
 
-    body = f"poa-media {media_id} {counter} {state}".encode("ascii")
+    fields = f"poa-media {media_id} {counter} {state}"
+    if device_key:
+        fields += f" {device_key}"
+    body = fields.encode("ascii")
     signature = base64.b64encode(signing_key(seed).sign(body)).decode("ascii")
     request = urllib.request.Request(
         f"{url.rstrip('/')}/admin/media/{media_id}",
@@ -198,6 +218,15 @@ def publish_state(
         with opener(request, timeout=timeout) as response:
             code = response.getcode()
     except urllib.error.HTTPError as error:
+        if error.code == 400 and not device_key:
+            # Самый вероятный 400 без ключа -- сервер впервые слышит о носителе
+            # и без ключа запись не заводит. Сказать об этом надо прямо: иначе
+            # администратор будет искать ошибку в команде, а дело в носителе.
+            raise RevocationServerError(
+                f"носитель {media_id} записан версией до 1.1.0: у него нет ключа "
+                "носителя, а без ключа ресурс отзыва носитель не заводит. "
+                "Перезапишите носитель, чтобы он получил ключ"
+            ) from error
         raise RevocationServerError(_explain(error.code, media_id)) from error
     except OSError as error:
         # Сеть, имя, сертификат -- всё сюда: администратору важно, что команда
@@ -209,6 +238,86 @@ def publish_state(
     if code == 201:
         return f"носитель {media_id} заведён на ресурсе отзыва, состояние «{state}»"
     return f"носитель {media_id}: состояние «{state}» принято ресурсом отзыва"
+
+
+@dataclass(frozen=True)
+class MediaStatus:
+    """Что сервер знает о носителе. Пустые строки -- носитель не выходил на связь."""
+
+    state: str
+    last_seen: str = ""   # UTC ISO, как записал сервер
+    version: str = ""
+    machine: str = ""
+
+
+def query_media(
+    url: str,
+    seed: bytes,
+    media_id: str,
+    *,
+    timeout: int = TIMEOUT_SECONDS,
+    opener=urllib.request.urlopen,
+) -> MediaStatus:
+    """Спрашивает сервер о своём носителе: состояние и последнюю связь.
+
+    Подписывается строка `poa-query <id> <время>`, а не случайное число:
+    запрос только читает, повтор перехваченного в пределах пяти минут отдаст
+    тот же ответ и ничего больше, а часам машины администратора, в отличие от
+    переносного носителя, доверять можно.
+    """
+    moment = str(int(time.time()))
+    message = f"poa-query {media_id} {moment}".encode("ascii")
+    signature = base64.b64encode(signing_key(seed).sign(message)).decode("ascii")
+    request = urllib.request.Request(
+        f"{url.rstrip('/')}/admin/media/{media_id}",
+        method="GET",
+        headers={
+            "X-POA-Key-Id": key_id(seed),
+            "X-POA-Time": moment,
+            "X-POA-Signature": signature,
+        },
+    )
+    try:
+        with opener(request, timeout=timeout) as response:
+            text = response.read(1024).decode("ascii")
+    except urllib.error.HTTPError as error:
+        if error.code == 404:
+            raise RevocationServerError(
+                f"носитель {media_id} не заведён на ресурсе отзыва"
+            ) from error
+        if error.code == 403:
+            raise RevocationServerError(
+                f"ресурс отзыва не ответил о носителе {media_id}: этот контейнер не "
+                "владелец носителя, ключ контейнера не допущен или часы этой машины "
+                "расходятся с сервером больше чем на пять минут"
+            ) from error
+        raise RevocationServerError(
+            f"ресурс отзыва ответил отказом (код {error.code})"
+        ) from error
+    except (OSError, UnicodeDecodeError) as error:
+        raise RevocationServerError(f"ресурс отзыва недоступен: {error}") from error
+
+    parts = text.split()
+    if (
+        len(parts) != 6
+        or parts[0] != "poa-record"
+        or parts[1] != media_id
+        or parts[2] not in ("ok", "revoked")
+    ):
+        raise RevocationServerError(
+            "ответ ресурса отзыва не разобран: по этому адресу отвечает не он "
+            "или сервер старее 1.1.0"
+        )
+    last_seen, version, machine = (value if value != "-" else "" for value in parts[3:])
+    return MediaStatus(parts[2], last_seen, version, machine)
+
+
+def _is_device_key(text: str) -> bool:
+    """Похоже ли на открытый ключ носителя: base64 ровно 32 байт."""
+    try:
+        return len(base64.b64decode(text, validate=True)) == 32
+    except (binascii.Error, ValueError):
+        return False
 
 
 def _explain(code: int, media_id: str) -> str:
