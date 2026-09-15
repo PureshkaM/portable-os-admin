@@ -561,6 +561,7 @@ class OSInstaller:
         media_name: str = "",
         media_owner: str = "",
         exchange_files: "list[str] | tuple[str, ...]" = (),
+        accepted_signature: "distribution.SignatureVerdict | None" = None,
     ) -> InstallResult:
         """Writes a built distribution onto one medium, with its own encryption.
 
@@ -585,6 +586,16 @@ class OSInstaller:
         бы второй заход: открыть контейнер, подключить носитель, открыть том,
         скопировать. Раздел в этот момент уже смонтирован -- копирование
         ничего не стоит.
+
+        `accepted_signature` -- вердикт подписи, на который администратор дал
+        согласие в мастере. Подпись проверяется здесь ещё раз, в том месте, где
+        описание дистрибутива читается для записи: проверка в интерфейсе и
+        чтение установщиком разнесены во времени, и подмена между ними не
+        должна пройти под чужим согласием. Испорченная подпись отвергается
+        всегда. Без переданного вердикта неподписанный дистрибутив не
+        отвергается -- так вызывают установщик тесты и сценарии стенда, у
+        которых мастера нет; решение о неподписанном принимает человек, и
+        принимает его в мастере.
         """
         self.session.require_open()
         self._progress = _Progress(on_step, expected=_Progress.DEPLOY_STAGES)
@@ -594,6 +605,17 @@ class OSInstaller:
         self._exchange_problems: list[str] = []
 
         self._progress.step("Проверка дистрибутива")
+        verdict = distribution.verify_distribution(directory, self.session.container.admin_secret)
+        if verdict.status == distribution.INVALID:
+            raise InstallError(
+                f"подпись дистрибутива не прошла проверку: {verdict.reason}.\n"
+                "Носитель не изменён."
+            )
+        if accepted_signature is not None and verdict != accepted_signature:
+            raise InstallError(
+                "подпись дистрибутива изменилась после того, как запись была "
+                "подтверждена.\nНоситель не изменён."
+            )
         metadata = distribution.read_metadata(directory)
         config = InstallConfig.from_dict(metadata.config)
         backend = get_backend(config.target_os)

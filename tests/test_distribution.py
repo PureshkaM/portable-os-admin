@@ -191,6 +191,66 @@ def _edit_metadata(directory, **changes):
     path.write_text(json.dumps(data), encoding="utf-8")
 
 
+def _deployable(directory, kiosk_config):
+    """Дистрибутив, который установщик согласится развернуть сухим прогоном."""
+    directory.mkdir()
+    archive = directory / distribution.ARCHIVE_NAME
+    archive.write_bytes(b"not a real archive")
+    metadata = distribution.DistributionMetadata.for_config(
+        kiosk_config, release="trixie", arch="amd64", rootfs_bytes=1024, emulated=False
+    )
+    metadata.sha256 = distribution.sha256_of(str(archive))
+    distribution.write_metadata(str(directory), metadata)
+    distribution.write_checksum(str(archive))
+    return directory
+
+
+def test_the_installer_refuses_a_distribution_whose_signature_is_broken(
+    session, kiosk_config, big_device, tmp_path
+):
+    """Проверка в мастере -- не единственная: установщик читает описание сам."""
+    directory = _deployable(tmp_path / "dist", kiosk_config)
+    distribution.sign_distribution(str(directory), session.container.admin_secret)
+    _edit_metadata(directory, name="not-what-was-signed")
+
+    with pytest.raises(InstallError) as error:
+        OSInstaller(session).deploy_distribution(
+            big_device, str(directory), b"user-passphrase", dry_run=True, confirm_device="/dev/sdb"
+        )
+    assert "подпись" in str(error.value)
+
+
+def test_the_installer_refuses_when_the_verdict_changed_after_consent(
+    session, kiosk_config, big_device, tmp_path
+):
+    """Согласие давалось на подписанный дистрибутив, а к записи подпись исчезла."""
+    directory = _deployable(tmp_path / "dist", kiosk_config)
+    signature = distribution.sign_distribution(str(directory), session.container.admin_secret)
+    accepted = distribution.verify_distribution(str(directory), session.container.admin_secret)
+    assert accepted.status == distribution.SIGNED_BY_THIS_CONTAINER
+
+    os.remove(signature)
+    with pytest.raises(InstallError):
+        OSInstaller(session).deploy_distribution(
+            big_device, str(directory), b"user-passphrase", dry_run=True,
+            confirm_device="/dev/sdb", accepted_signature=accepted,
+        )
+
+
+def test_the_installer_writes_a_distribution_signed_by_this_container(
+    session, kiosk_config, big_device, tmp_path
+):
+    directory = _deployable(tmp_path / "dist", kiosk_config)
+    distribution.sign_distribution(str(directory), session.container.admin_secret)
+    accepted = distribution.verify_distribution(str(directory), session.container.admin_secret)
+
+    result = OSInstaller(session).deploy_distribution(
+        big_device, str(directory), b"user-passphrase", dry_run=True,
+        confirm_device="/dev/sdb", accepted_signature=accepted,
+    )
+    assert result.media_record.media_id
+
+
 def test_a_distribution_signed_by_this_container_verifies(tmp_path):
     archive = _built_distribution(tmp_path)
     path = distribution.sign_distribution(str(tmp_path), SECRET)

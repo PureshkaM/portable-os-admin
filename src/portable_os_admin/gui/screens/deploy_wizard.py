@@ -609,6 +609,9 @@ class DeployWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
                 media_name=self.media_name,
                 media_owner=self.media_owner,
                 exchange_files=self.exchange_files,
+                # Установщик сверит подпись ещё раз там, где читает описание, и
+                # откажет, если вердикт уже не тот, на который дано согласие.
+                accepted_signature=accepted,
             )
 
         run_in_background(self, work, on_success=self._done, on_error=self._failed)
