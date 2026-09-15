@@ -448,8 +448,10 @@ destroy_luks() {{
 # открывает.
 wipe_data() {{
     _dev=$1
-    _total=0
-    if command -v blockdev >/dev/null 2>&1; then
+    # Размер приходит готовым: к этому шагу blockdev может уже не запуститься
+    # (см. шаг 0). Запрос здесь -- лишь запасной путь для вызова без размера.
+    _total=${{2:-0}}
+    if [ "$_total" -le 0 ] && command -v blockdev >/dev/null 2>&1; then
         _bytes=$(blockdev --getsize64 "$_dev" 2>/dev/null)
         [ -n "$_bytes" ] && _total=$(( _bytes / 1048576 ))
     fi
@@ -498,24 +500,61 @@ say ""
 say "Носитель отозван администратором. Доступ к данным прекращён."
 say "Идёт уничтожение носителя, не выключайте машину."
 
+# 0. Всё, что понадобится позже, -- сейчас, пока система цела.
+#
+#    Живая проверка 15.09.2026: затирание данных системного тома отрезает
+#    работающей системе её же корень (overlay поверх squashfs, лежащего на этом
+#    томе), и следующие программы уже не запускаются -- в журнале порта
+#    «SQUASHFS error: Failed to read block». Тогда шаг разметки не выполнился:
+#    lsblk и blockdev читать было не с чего, GPT осталась целой. Поэтому
+#    устройства и размеры вычисляются до первого разрушительного шага, а dd
+#    копируется в память: сама оболочка и её встроенные команды живут в
+#    памяти, а внешняя программа -- нет.
+SYSTEM_DEV=$(find_volume "$LUKS_UUID")
+PARENT=""
+DISK_MB=0
+SYSTEM_MB=0
+if [ -n "$SYSTEM_DEV" ] && command -v lsblk >/dev/null 2>&1; then
+    PARENT=$(lsblk -no pkname "$SYSTEM_DEV" 2>/dev/null | head -1)
+fi
+if command -v blockdev >/dev/null 2>&1; then
+    if [ -n "$PARENT" ] && [ -b "/dev/$PARENT" ]; then
+        _bytes=$(blockdev --getsize64 "/dev/$PARENT" 2>/dev/null)
+        [ -n "$_bytes" ] && DISK_MB=$(( _bytes / 1048576 ))
+    fi
+    if [ -n "$SYSTEM_DEV" ]; then
+        _bytes=$(blockdev --getsize64 "$SYSTEM_DEV" 2>/dev/null)
+        [ -n "$_bytes" ] && SYSTEM_MB=$(( _bytes / 1048576 ))
+    fi
+fi
+mkdir -p "$STATE_DIR/bin" && cp "$(command -v dd)" "$STATE_DIR/bin/dd" 2>/dev/null \\
+    && PATH="$STATE_DIR/bin:$PATH"
+
+# Порядок: сперва всё быстрое -- ключи, загрузочная часть, журналы, разметка,
+# -- и только потом затирание данных. Быстрые шаги занимают секунды, затирание
+# -- минуты и губит работающую систему; поставленное раньше, оно оставляло
+# недоделанным всё, что шло за ним.
+
 # 1. Системный том -- главное. Уничтожается заголовок раздела, а не отображения:
 #    luksErase работает с диском, и открытый сейчас том этому не мешает.
 destroy_luks "$LUKS_UUID" "системный том"
-SYSTEM_DEV=$VOLUME_DEV
+# Разметка и затирание данных -- только от того тома, чей UUID destroy_luks
+# сверил. Найденный на шаге 0 путь без этой сверки на чужой машине мог бы
+# оказаться посторонним диском.
+if [ -z "$SYSTEM_DEV" ] || [ "$VOLUME_DEV" != "$SYSTEM_DEV" ]; then
+    log "системный том не подтверждён сверкой UUID: разметка и данные не трогаются"
+    SYSTEM_DEV=""
+    PARENT=""
+fi
 
 # 2. Том обмена -- отдельный контейнер со своим ключом.
 destroy_luks "$EXCHANGE_UUID" "том обмена"
 
-# 3. Данные системного тома.
-if [ -n "$SYSTEM_DEV" ]; then
-    wipe_data "$SYSTEM_DEV"
-fi
-
-# 4. Загрузочная часть: отозванный носитель не должен грузиться вообще.
+# 3. Загрузочная часть: отозванный носитель не должен грузиться вообще.
 wipe_boot "$BOOT_UUID" "раздел /boot"
 wipe_boot "$ESP_UUID" "раздел ESP"
 
-# 5. Том журналов -- последним из томов: до этой строки каждый шаг писался
+# 4. Том журналов -- последним из томов: до этой строки каждый шаг писался
 #    именно в него. Дальше журнал переезжает в память.
 if [ -n "$LOGS_UUID" ]; then
     log "том журналов уничтожается следующим, дальше строки только в памяти"
@@ -524,25 +563,25 @@ if [ -n "$LOGS_UUID" ]; then
     destroy_luks "$LOGS_UUID" "том журналов"
 fi
 
-# 6. Разметка -- в самом конце и только от уже проверенного раздела. Затирается
-#    и начало, и хвост: в хвосте лежит запасная копия GPT.
-if [ -n "$SYSTEM_DEV" ] && command -v lsblk >/dev/null 2>&1; then
-    PARENT=$(lsblk -no pkname "$SYSTEM_DEV" 2>/dev/null | head -1)
-    if [ -n "$PARENT" ] && [ -b "/dev/$PARENT" ]; then
-        dd if=/dev/zero of="/dev/$PARENT" bs=1M count=4 conv=fsync >/dev/null 2>&1
-        DISK_MB=0
-        if command -v blockdev >/dev/null 2>&1; then
-            DISK_BYTES=$(blockdev --getsize64 "/dev/$PARENT" 2>/dev/null)
-            [ -n "$DISK_BYTES" ] && DISK_MB=$(( DISK_BYTES / 1048576 ))
-        fi
-        if [ "$DISK_MB" -gt 8 ]; then
-            dd if=/dev/zero of="/dev/$PARENT" bs=1M count=4 seek=$(( DISK_MB - 4 )) \\
-                conv=fsync >/dev/null 2>&1
-        fi
-        log "разметка затёрта (/dev/$PARENT)"
-    else
-        log "родительский диск не определён, разметка оставлена как есть"
+# 5. Разметка -- только от уже проверенного раздела. Затирается и начало, и
+#    хвост: в хвосте лежит запасная копия GPT.
+if [ -n "$PARENT" ] && [ -b "/dev/$PARENT" ]; then
+    dd if=/dev/zero of="/dev/$PARENT" bs=1M count=4 conv=fsync >/dev/null 2>&1
+    if [ "$DISK_MB" -gt 8 ]; then
+        dd if=/dev/zero of="/dev/$PARENT" bs=1M count=4 seek=$(( DISK_MB - 4 )) \\
+            conv=fsync >/dev/null 2>&1
     fi
+    log "разметка затёрта (/dev/$PARENT)"
+else
+    log "родительский диск не определён, разметка оставлена как есть"
+fi
+
+sync
+
+# 6. Данные системного тома -- последним: после этого шага система теряет
+#    свой корень, и полагаться можно только на то, что уже в памяти.
+if [ -n "$SYSTEM_DEV" ]; then
+    wipe_data "$SYSTEM_DEV" "$SYSTEM_MB"
 fi
 
 sync

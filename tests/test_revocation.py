@@ -311,12 +311,44 @@ def test_the_revoked_medium_stops_being_bootable():
     assert 'wipe_boot "$ESP_UUID"' in script
     assert "AAAA-BBBB" in script and "55555555-6666-7777-8888-999999999999" in script
 
-    # Разметка -- в самом конце и только от проверенного раздела: ошибиться
-    # здесь диском страшнее, чем пропустить шаг.
-    disk_at = script.index("lsblk -no pkname")
+    # Разметка -- только от проверенного раздела: ошибиться здесь диском
+    # страшнее, чем пропустить шаг. Родительский диск вычисляется от системного
+    # тома, найденного по UUID.
+    parent_at = script.index("lsblk -no pkname")
+    assert "$SYSTEM_DEV" in script[parent_at - 200 : parent_at]
     boot_at = script.index('wipe_boot "$BOOT_UUID"')
-    assert boot_at < disk_at
-    assert "$SYSTEM_DEV" in script[disk_at - 200 : disk_at]
+    table_at = script.index('of="/dev/$PARENT" bs=1M count=4 conv=fsync')
+    assert boot_at < table_at
+
+
+def test_everything_needed_later_is_known_before_the_first_destructive_step():
+    """Живая проверка 15.09.2026: затирание данных отрезает системе корень.
+
+    После него lsblk и blockdev уже не запускались («SQUASHFS error: Failed to
+    read block»), и GPT осталась целой. Устройство, диск и размеры вычисляются
+    до первого luksErase, а dd копируется в память.
+    """
+    script = _full_script()
+    first_erase = script.index('destroy_luks "$LUKS_UUID"')
+    for fact in ("SYSTEM_DEV=$(find_volume", "lsblk -no pkname", "DISK_MB=$(( _bytes", "SYSTEM_MB=$(( _bytes"):
+        assert script.index(fact) < first_erase, f"{fact} вычисляется уже после разрушения"
+    assert 'cp "$(command -v dd)" "$STATE_DIR/bin/dd"' in script
+    assert script.index('cp "$(command -v dd)"') < first_erase
+
+
+def test_the_data_wipe_comes_after_every_quick_step():
+    """Затирание данных губит работающую систему -- всё быстрое идёт раньше него."""
+    script = _full_script()
+    data_at = script.index('wipe_data "$SYSTEM_DEV" "$SYSTEM_MB"')
+    for step in (
+        'destroy_luks "$LUKS_UUID"',
+        'destroy_luks "$EXCHANGE_UUID"',
+        'wipe_boot "$BOOT_UUID"',
+        'wipe_boot "$ESP_UUID"',
+        'destroy_luks "$LOGS_UUID"',
+        'of="/dev/$PARENT" bs=1M count=4 conv=fsync',
+    ):
+        assert script.index(step) < data_at, f"{step} стоит после затирания данных"
 
 
 def test_the_service_has_no_deadline_that_would_stop_destruction_halfway():
