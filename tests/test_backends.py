@@ -666,6 +666,41 @@ def test_graphical_boot_parameter_matches_the_family():
         assert "quiet" not in verbose, target_os
 
 
+def test_verbose_boot_drops_quiet_and_splash_on_both_families():
+    """Подробная загрузка главнее `quiet` и без заставки обоих семейств."""
+    for target_os in ("debian", "redos"):
+        config = InstallConfig.create_default("stick", target_os)
+        config.boot.quiet = True
+        config.boot.verbose = True
+        words = get_backend(target_os).kernel_cmdline(config).split()
+
+        assert "systemd.show_status=1" in words, target_os
+        for noise in ("quiet", "splash", "rhgb"):
+            assert noise not in words, (target_os, noise)
+
+
+def test_serial_console_keeps_the_screen_as_the_main_console():
+    """Regression: `console=ttyS0` для стенда уводил запрос пароля LUKS в порт.
+
+    Ядро делает главной последнюю названную консоль, поэтому `tty0` обязана
+    стоять последней -- в том числе после параметров администратора.
+    """
+    for target_os, splash in (("debian", "splash"), ("redos", "rhgb")):
+        config = InstallConfig.create_default("stick", target_os)
+        config.boot.kernel_parameters = "nomodeset"
+        config.boot.serial_console = True
+        words = get_backend(target_os).kernel_cmdline(config).split()
+
+        consoles = [w for w in words if w.startswith("console=")]
+        assert consoles == ["console=ttyS0,115200", "console=tty0"], target_os
+        assert words.index("console=tty0") > words.index("nomodeset"), target_os
+        # Порт сам по себе не отключает заставку -- это решает только verbose.
+        assert splash in words, target_os
+
+        config.boot.serial_console = False
+        assert "console=" not in get_backend(target_os).kernel_cmdline(config), target_os
+
+
 # ----------------------------------------------------------------------
 # Чего не должно быть в базовой системе
 # ----------------------------------------------------------------------

@@ -22,7 +22,7 @@ from ...config.schema import (
     LUKS_KDFS,
     InstallConfig,
 )
-from ...config.validator import ConfigValidationUnavailableError
+from ...config.validator import ConfigValidationUnavailableError, boot_warnings
 from ...install import machine_binding
 from ...install.emulation import probe as probe_emulation
 from .. import theme
@@ -298,6 +298,24 @@ class ConfigWizardFrame(WizardFrame):
                 hint="добавляются к тем, что задаёт программа; nomodeset отключает KMS — сеанс не запустится",
                 width=36,
             )
+        # Подробная загрузка -- в обоих режимах: это первое, о чём просят, когда
+        # носитель не грузится, и искать её в экспертном незачем.
+        self.verbose_boot_var = tk.BooleanVar(value=self.config.boot.verbose)
+        ttk.Checkbutton(
+            form, text="Подробная загрузка (без заставки, для диагностики)",
+            variable=self.verbose_boot_var,
+        ).grid(row=row, column=1, sticky="w", pady=4)
+        row += 1
+        self.serial_console_var = tk.BooleanVar(value=self.config.boot.serial_console)
+        if self.expert_mode:
+            # Только для стенда. Экран остаётся главной консолью -- в отличие
+            # от `console=` в параметрах ядра, из-за которого пароль вводили
+            # вслепую.
+            ttk.Checkbutton(
+                form, text="Дублировать вывод в последовательный порт (ttyS0)",
+                variable=self.serial_console_var,
+            ).grid(row=row, column=1, sticky="w", pady=4)
+            row += 1
         self.timezone_var = tk.StringVar(value=loc.timezone)
         self.timezone_combo, row = add_choice(
             form, row, "Часовой пояс:", self.timezone_var,
@@ -377,6 +395,8 @@ class ConfigWizardFrame(WizardFrame):
         self.config.localisation.x11_layouts = self.x11_layouts_var.get().strip()
         self.config.localisation.timezone = self.timezone_var.get().strip()
         self.config.boot.kernel_parameters = self.kernel_params_var.get().strip()
+        self.config.boot.verbose = self.verbose_boot_var.get()
+        self.config.boot.serial_console = self.serial_console_var.get()
 
     def _validate_step_basics(self) -> bool:
         if not self.config.name:
@@ -1652,6 +1672,11 @@ class ConfigWizardFrame(WizardFrame):
         # when the distribution's own validator was unavailable, and hiding that
         # would overstate what was verified.
         note = getattr(self.app.config_manager, "native_validation_note", "")
+        # Предупреждения менеджер не хранит -- они не меняют вердикт, -- поэтому
+        # спрашиваются здесь, чтобы «корректна» не заслонила их.
+        warnings = boot_warnings(self.config)
+        if warnings:
+            note = "\n".join(filter(None, [note, *("Внимание: " + w for w in warnings)]))
         if self.config.validation_status == "valid":
             self._set_validation_status(
                 "Статус проверки: корректна" + (f"\n{note}" if note else "")

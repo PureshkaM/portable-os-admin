@@ -16,7 +16,7 @@ import re
 import shutil
 import subprocess
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Protocol
 
 from .schema import (
@@ -63,6 +63,28 @@ def kickstart_syntax_version(family: str, release: str) -> str:
 class ValidationResult:
     ok: bool
     errors: list[str]
+    #: Не мешает сборке, но администратор должен об этом знать. Отдельно от
+    #: ошибок: `ok` от предупреждений не зависит.
+    warnings: list[str] = field(default_factory=list)
+
+
+def boot_warnings(config: InstallConfig) -> list[str]:
+    """Параметры ядра, которые соберутся, но сломают носитель у человека.
+
+    `console=` в `kernel_parameters` -- тот самый случай: его вписывали для
+    стенда, а ядро делает главной последнюю названную консоль, и на живой
+    машине запрос пароля LUKS уходил в последовательный порт -- на экране не
+    было ни звёздочек, ни самого запроса. Ошибкой это не сделано: у
+    администратора бывает законная причина, но молча пропускать нельзя.
+    """
+    if re.search(r"(^|\s)console=", config.boot.kernel_parameters or ""):
+        return [
+            "в параметрах ядра задан console= — запрос пароля LUKS может уйти в "
+            "последовательный порт и не появиться на экране; для стенда включите "
+            "«Вывод загрузки в последовательный порт» (boot.serial_console): он "
+            "оставляет экран главной консолью"
+        ]
+    return []
 
 
 class ConfigValidator(Protocol):
@@ -152,7 +174,7 @@ class BuiltinConfigValidator:
         errors += self._auto_update_errors(config)
         errors += self._revocation_errors(config)
 
-        return ValidationResult(ok=not errors, errors=errors)
+        return ValidationResult(ok=not errors, errors=errors, warnings=boot_warnings(config))
 
     def _auto_update_errors(self, config: InstallConfig) -> list[str]:
         errors: list[str] = []

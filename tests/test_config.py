@@ -206,6 +206,35 @@ def test_a_configuration_written_before_localisation_existed_still_loads():
     assert config.hostname == "portable-os"
 
 
+def test_a_configuration_written_before_verbose_boot_existed_still_loads():
+    """Старый `boot` без `verbose` и `serial_console` открывается с умолчаниями."""
+    config = InstallConfig.from_dict(
+        {
+            "name": "old",
+            "target_os": "redos",
+            "release": "8.0",
+            "boot": {"quiet": True, "kernel_parameters": "nomodeset", "from_the_future": 1},
+        }
+    )
+
+    assert config.boot.quiet is True
+    assert config.boot.kernel_parameters == "nomodeset"
+    assert config.boot.verbose is False
+    assert config.boot.serial_console is False
+
+
+def test_console_in_kernel_parameters_is_warned_about_not_passed_silently(make_config):
+    config = make_config()
+    assert BuiltinConfigValidator().validate(config).warnings == []
+
+    config.boot.kernel_parameters = "nomodeset console=ttyS0,115200"
+    result = BuiltinConfigValidator().validate(config)
+
+    # Предупреждение, а не ошибка: сборка не запрещена, но молча не проходит.
+    assert result.ok
+    assert any("serial_console" in w for w in result.warnings)
+
+
 def test_the_new_fields_reach_the_installed_system_not_just_the_schema():
     """Поле, которое никуда не передаётся, — худший вид «настраиваемости».
 
