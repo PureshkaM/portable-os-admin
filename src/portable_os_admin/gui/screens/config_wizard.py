@@ -302,7 +302,7 @@ class ConfigWizardFrame(WizardFrame):
         # носитель не грузится, и искать её в экспертном незачем.
         self.verbose_boot_var = tk.BooleanVar(value=self.config.boot.verbose)
         ttk.Checkbutton(
-            form, text="Подробная загрузка (без заставки, для диагностики)",
+            form, text="Подробная загрузка",
             variable=self.verbose_boot_var,
         ).grid(row=row, column=1, sticky="w", pady=4)
         row += 1

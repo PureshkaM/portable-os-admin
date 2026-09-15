@@ -666,17 +666,23 @@ def test_graphical_boot_parameter_matches_the_family():
         assert "quiet" not in verbose, target_os
 
 
-def test_verbose_boot_drops_quiet_and_splash_on_both_families():
-    """Подробная загрузка главнее `quiet` и без заставки обоих семейств."""
-    for target_os in ("debian", "redos"):
+def test_verbose_boot_drops_quiet_but_keeps_the_boot_screen_on_both_families():
+    """Подробная загрузка главнее `quiet`, но заставку оставляет.
+
+    Заставкой носитель спрашивает пароль, привязку к машине и код
+    восстановления; снять её в подробном режиме значило бы снова ввести
+    обратно то, что исправлено 31.08.2026: графика пропадала ровно тогда,
+    когда администратор хотел видеть подробности загрузки.
+    """
+    for target_os, splash in (("debian", "splash"), ("redos", "rhgb")):
         config = InstallConfig.create_default("stick", target_os)
         config.boot.quiet = True
         config.boot.verbose = True
         words = get_backend(target_os).kernel_cmdline(config).split()
 
         assert "systemd.show_status=1" in words, target_os
-        for noise in ("quiet", "splash", "rhgb"):
-            assert noise not in words, (target_os, noise)
+        assert "quiet" not in words, target_os
+        assert splash in words, target_os
 
 
 def test_serial_console_keeps_the_screen_as_the_main_console():

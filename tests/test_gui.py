@@ -1089,8 +1089,14 @@ def test_building_a_distribution_is_reachable_and_asks_for_no_medium(gui_app, tm
 # ----------------------------------------------------------------------
 # Развёртывание дистрибутива на носитель
 # ----------------------------------------------------------------------
-def _write_distribution(directory, **overrides):
-    """Каталог, который мастер развёртывания должен принять за дистрибутив."""
+def _write_distribution(directory, secret=None, **overrides):
+    """Каталог, который мастер развёртывания должен принять за дистрибутив.
+
+    `secret` -- секрет контейнера, которым дистрибутив подписывается, как это
+    делает сборка. Без подписи мастер спрашивает согласия модальным окном, и
+    тест под Xvfb висит на нём вечно: ответить некому (найдено 15.09.2026 --
+    полный прогон простоял двенадцать минут).
+    """
     from portable_os_admin.install import distribution
 
     directory.mkdir(parents=True, exist_ok=True)
@@ -1108,7 +1114,62 @@ def _write_distribution(directory, **overrides):
     for key, value in overrides.items():
         setattr(metadata, key, value)
     distribution.write_metadata(str(directory), metadata)
+    if secret is not None:
+        distribution.sign_distribution(str(directory), secret)
     return metadata
+
+
+def _deploy_wizard(app, tmp_path):
+    from portable_os_admin.gui.screens.deploy_wizard import DeployWizardFrame
+
+    _open_container(app, tmp_path)
+    app.show_frame(DeployWizardFrame)
+    app.update()
+    return app._current_frame
+
+
+def test_an_unsigned_distribution_needs_explicit_consent(gui_app, tmp_path, monkeypatch):
+    """Неподписанный -- только явным согласием; «нет» оставляет на первом шаге."""
+    asked = []
+    answer = {"value": False}
+
+    def fake_askyesno(title, *args, **kwargs):
+        asked.append(title)
+        return answer["value"]
+
+    monkeypatch.setattr("tkinter.messagebox.askyesno", fake_askyesno)
+    wizard = _deploy_wizard(gui_app, tmp_path)
+    _write_distribution(tmp_path / "dist")
+    wizard.directory_var.set(str(tmp_path / "dist"))
+    wizard.save_step(0)
+
+    assert wizard.validate_step(0) is False
+    assert asked == ["Дистрибутив не подписан"]
+
+    answer["value"] = True
+    assert wizard.validate_step(0) is True
+
+
+def test_a_broken_signature_is_refused_without_asking(gui_app, tmp_path, monkeypatch):
+    """Испорченная подпись -- не вопрос к человеку, а отказ."""
+    import json
+
+    from portable_os_admin.install import distribution
+
+    monkeypatch.setattr(
+        "tkinter.messagebox.askyesno",
+        lambda *a, **k: pytest.fail("испорченную подпись предложили принять"),
+    )
+    wizard = _deploy_wizard(gui_app, tmp_path)
+    _write_distribution(tmp_path / "dist", secret=gui_app.container.admin_secret)
+    described = tmp_path / "dist" / distribution.METADATA_NAME
+    data = json.loads(described.read_text(encoding="utf-8"))
+    data["name"] = "not-what-was-signed"
+    described.write_text(json.dumps(data), encoding="utf-8")
+
+    wizard.directory_var.set(str(tmp_path / "dist"))
+    wizard.save_step(0)
+    assert wizard.validate_step(0) is False
 
 
 def test_deploy_wizard_reads_the_distribution_before_asking_for_a_medium(gui_app, tmp_path):
@@ -1133,7 +1194,7 @@ def test_deploy_wizard_reads_the_distribution_before_asking_for_a_medium(gui_app
     assert wizard.validate_step(0) is False
     assert wizard.metadata is None
 
-    _write_distribution(tmp_path / "dist")
+    _write_distribution(tmp_path / "dist", secret=app.container.admin_secret)
     wizard.directory_var.set(str(tmp_path / "dist"))
     wizard.save_step(0)
     assert wizard.validate_step(0) is True
@@ -1156,7 +1217,7 @@ def test_deploy_wizard_shows_what_it_is_about_to_write(gui_app, tmp_path):
     app.update()
     wizard = app._current_frame
 
-    metadata = _write_distribution(tmp_path / "dist")
+    metadata = _write_distribution(tmp_path / "dist", secret=app.container.admin_secret)
     wizard.directory_var.set(str(tmp_path / "dist"))
     wizard.save_step(0)
     wizard.validate_step(0)
@@ -1190,7 +1251,7 @@ def test_deploy_refuses_when_the_device_confirmation_does_not_match(gui_app, tmp
     app.update()
     wizard = app._current_frame
 
-    _write_distribution(tmp_path / "dist")
+    _write_distribution(tmp_path / "dist", secret=app.container.admin_secret)
     wizard.directory_var.set(str(tmp_path / "dist"))
     wizard.save_step(0)
     wizard.validate_step(0)
@@ -1267,7 +1328,7 @@ def test_a_long_write_can_be_aborted_from_the_interface(gui_app, tmp_path, monke
     app.update()
     wizard = app._current_frame
 
-    _write_distribution(tmp_path / "dist")
+    _write_distribution(tmp_path / "dist", secret=app.container.admin_secret)
     wizard.directory_var.set(str(tmp_path / "dist"))
     wizard.save_step(0)
     wizard.validate_step(0)
@@ -1312,7 +1373,7 @@ def test_an_abort_is_reported_as_a_decision_not_a_failure(gui_app, tmp_path):
     app.update()
     wizard = app._current_frame
 
-    _write_distribution(tmp_path / "dist")
+    _write_distribution(tmp_path / "dist", secret=app.container.admin_secret)
     wizard.directory_var.set(str(tmp_path / "dist"))
     wizard.save_step(0)
     wizard.validate_step(0)
@@ -1771,7 +1832,7 @@ def test_the_erase_button_stays_disabled_until_the_path_is_repeated(gui_app, tmp
     app.update()
     wizard = app._current_frame
 
-    _write_distribution(tmp_path / "dist")
+    _write_distribution(tmp_path / "dist", secret=app.container.admin_secret)
     wizard.directory_var.set(str(tmp_path / "dist"))
     wizard.save_step(0)
     wizard.validate_step(0)
