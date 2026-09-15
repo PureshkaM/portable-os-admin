@@ -565,6 +565,16 @@ class ScrollableArea(ttk.Frame):
         self.bind("<Enter>", self._bind_wheel)
         self.bind("<Leave>", self._unbind_wheel)
 
+    def scroll_to_top(self) -> None:
+        """Вернуть область к началу -- для нового содержимого на старом месте.
+
+        Canvas помнит смещение, а не содержимое: мастер, сменив шаг, получал
+        новый шаг прокрученным туда, где пользователь оставил предыдущий, и
+        короткий шаг выглядел пустым белым полем (найдено прогоном 15.09.2026
+        на мастере конфигурации).
+        """
+        self._canvas.yview_moveto(0)
+
     def _on_content_resize(self, _event) -> None:
         self._canvas.configure(scrollregion=self._canvas.bbox("all"))
         self._sync_scrollbar()
@@ -1010,6 +1020,8 @@ class WizardFrame(ttk.Frame):
         self.hint_var.set(self.step_hints[self.step_index])
         self._rail.set_current(self.step_index)
         self.build_step(self.step_index, self.body)
+        # Новый шаг -- с начала, а не с того места, где остался прошлый.
+        self._scroller.scroll_to_top()
         self.back_btn.configure(state=("normal" if self.step_index > 0 else "disabled"))
         is_last = self.step_index == total - 1
         self.next_btn.configure(text=(self.finish_label if is_last else "Далее"))

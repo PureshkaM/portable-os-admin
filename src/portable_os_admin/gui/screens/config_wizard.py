@@ -899,11 +899,11 @@ class ConfigWizardFrame(WizardFrame):
             self.catalog_table.insert("", "end", values=(pkg.name, pkg.version, pkg.summary))
         if len(items) > CATALOG_DISPLAY_LIMIT:
             self.catalog_label_var.set(
-                f"Найдено в репозитории: {len(items)} — показаны первые {CATALOG_DISPLAY_LIMIT}, "
+                f"Найдено: {len(items)} — показаны первые {CATALOG_DISPLAY_LIMIT}, "
                 "уточните фильтр, чтобы найти нужный пакет."
             )
         else:
-            self.catalog_label_var.set(f"Найдено в репозитории: {len(items)}.")
+            self.catalog_label_var.set(f"Найдено: {len(items)}.")
 
     def _apply_filter(self) -> None:
         if not self._catalog:
@@ -1205,19 +1205,20 @@ class ConfigWizardFrame(WizardFrame):
         # носителем, которого у него нет в руках.
         revocation = self.config.revocation
         self.revocation_enabled_var = tk.BooleanVar(value=revocation.enabled)
-        box = ttk.LabelFrame(body, text="Отзыв носителя через сеть", padding=theme.SPACE_SM)
+        box = ttk.LabelFrame(body, text="Отзыв и авторизация сеанса", padding=theme.SPACE_SM)
         box.pack(fill="x", pady=(theme.SPACE_MD, 0))
         ttk.Checkbutton(
             box,
-            text="Спрашивать ресурс отзыва при каждой загрузке",
+            text="Спрашивать сервер отзыва раз в 5 минут и при подключении к сети",
             variable=self.revocation_enabled_var,
         ).pack(anchor="w")
         server = self.app.session.container.data.revocation_server_url
         ttk.Label(
             box,
             text=(
-                f"Ресурс: {server}. Ответ «отозван» уничтожает заголовок LUKS "
-                "носителя — необратимо."
+                f"Сервер: {server}. В режиме киоска приложения запускаются только "
+                "после его подтверждения. Ответ «отозван» уничтожает носитель "
+                "целиком — необратимо."
                 if server
                 else "Контейнер не знаком ни с одним ресурсом отзыва: «Обслуживание» → "
                 "«Подключиться». Без этого носитель проверять ответ нечем."
