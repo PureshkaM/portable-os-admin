@@ -368,6 +368,25 @@ def test_the_tail_after_the_data_wipe_runs_from_memory():
     assert "echo o > /proc/sysrq-trigger" in tail
 
 
+def test_destruction_cannot_be_killed_from_outside():
+    """Живая проверка РЕД ОС 15.09.2026: через ~15 секунд после начала
+    затирания оболочка и dd получали сигнал 6 извне и носитель оставался
+    разрушенным наполовину. Уничтожение глушит сигналы и уходит из cgroup
+    службы -- и то, и другое до первого разрушительного шага."""
+    script = _full_script()
+    ignore_at = script.index("trap '' TERM INT HUP QUIT ABRT PIPE")
+    cgroup_at = script.index("cgroup.procs")
+    first_destructive = script.index('destroy_luks "$LUKS_UUID"')
+    assert ignore_at < first_destructive
+    assert cgroup_at < first_destructive
+
+    # Хвост ставит игнор заново: exec сбрасывает перехватчики, а игнор dd
+    # достаётся по наследству.
+    tail = _wipe_tail(script)
+    assert "trap '' TERM INT HUP QUIT ABRT PIPE" in tail
+    assert tail.index("trap ''") < tail.index("run_dd if=/dev/zero")
+
+
 def test_a_staged_shell_really_runs_from_its_copies(tmp_path):
     """Не «скопировано», а «исполняется»: копия оболочки запускается загрузчиком
     с одними скопированными библиотеками."""
