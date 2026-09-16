@@ -736,8 +736,12 @@ class ConfigWizardFrame(WizardFrame):
         # сети нет, и кнопка, требующая её, была единственной на шаге.
         sources = ttk.Frame(top)
         sources.pack(anchor="w", pady=(4, 8))
+        # Каталог читается сам, когда шаг открывается: образ уже выбран, и
+        # требовать нажатия ради того, что программа может сделать без спроса,
+        # значит тратить внимание администратора впустую. Кнопка остаётся для
+        # обратного случая -- перечитать, если образ подменили.
         self.image_packages_btn = ttk.Button(
-            sources, text="Прочитать из образа…", command=self._load_packages_from_image
+            sources, text="Перечитать из образа", command=self._load_packages_from_image
         )
         self.image_packages_btn.pack(side="left")
         self.connect_btn = ttk.Button(sources, text="Подключиться к репозиторию", command=self._connect_repo)
@@ -750,10 +754,23 @@ class ConfigWizardFrame(WizardFrame):
         ttk.Label(filter_row, text="Фильтр по имени/описанию:").pack(side="left")
         ttk.Entry(filter_row, textvariable=self.filter_var, width=40).pack(side="left", padx=(6, 0))
 
-        self.catalog_label_var = tk.StringVar(value="Нажмите «Прочитать из образа…», чтобы увидеть пакеты.")
+        self.catalog_label_var = tk.StringVar(value="Читаю пакеты из образа…")
         ttk.Label(body, textvariable=self.catalog_label_var, style="Hint.TLabel").pack(
             anchor="w", pady=(theme.SPACE_XS, 2)
         )
+
+        # Шаг открылся -- каталог читается сам, если образ выбран и ещё не
+        # прочитан. Стоит именно здесь, после подписи: блок её и правит, а
+        # порядок построения виджетов -- не деталь оформления, а условие
+        # работоспособности (пять тестов интерфейса падали ровно на этом).
+        # `after` вместо прямого вызова: фоновая задача не должна трогать
+        # виджеты, пока шаг ещё строится.
+        if getattr(self, "_image_path", "") and not getattr(self, "_catalog", None):
+            self.after(100, self._load_packages_from_image)
+        elif not getattr(self, "_image_path", ""):
+            self.catalog_label_var.set(
+                "Образ не выбран на первом шаге: список пакетов взять неоткуда."
+            )
 
         lists = ttk.Frame(body)
         lists.pack(fill="both", expand=True)
@@ -951,24 +968,14 @@ class ConfigWizardFrame(WizardFrame):
         return line
 
     def _ask_image_path(self) -> str:
-        """Образ, из которого читать; спрашивается один раз за сеанс мастера.
+        """Образ, выбранный на первом шаге. Второй раз не спрашивается.
 
-        Тот же файл нужен и шагу пакетов, и «Прочитать из образа…» на шаге
-        киоска -- выбирать его дважды незачем.
+        До 16.09.2026 здесь открывался диалог: образ выбирался лениво, из шага
+        пакетов или из шага киоска, и администратор указывал один и тот же файл
+        дважды. Теперь образ -- поле первого шага, и всё, что от него нужно
+        дальше, уже прочитано; остаётся вернуть путь.
         """
-        remembered = getattr(self, "_image_path", "")
-        if remembered:
-            return remembered
-        from tkinter import filedialog
-
-        chosen = filedialog.askopenfilename(
-            parent=self,
-            title="Установочный образ, из которого читать",
-            filetypes=[("Образы", "*.iso *.img"), ("Все файлы", "*")],
-        )
-        if chosen:
-            self._image_path = chosen
-        return chosen or ""
+        return getattr(self, "_image_path", "")
 
     def _load_packages_from_image(self) -> None:
         """Каталог пакетов из установочного образа, без сети.
