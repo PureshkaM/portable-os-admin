@@ -554,9 +554,12 @@ class _StubInstaller:
 def _stub_install(monkeypatch):
     """Patches out the installer and the root check, so these tests behave the
     same on a developer machine as on the root shell of a test VM."""
+    from portable_os_admin.admin import media_release as media_release_module
     from portable_os_admin.gui.screens import install_wizard as install_wizard_module
 
-    monkeypatch.setattr(install_wizard_module, "OSInstaller", _StubInstaller)
+    # Подменяется одно место на все три пути выпуска: мастер больше не создаёт
+    # установщик сам -- его создаёт служба выпуска (зона И3).
+    monkeypatch.setattr(media_release_module, "OSInstaller", _StubInstaller)
     monkeypatch.setattr(install_wizard_module, "_is_root", lambda: True)
     # The wizard refuses to start while an unfinished install is on the machine
     # -- correctly, since a second run on top of an open LUKS mapping corrupts
@@ -1344,14 +1347,15 @@ def test_a_long_write_can_be_aborted_from_the_interface(gui_app, tmp_path, monke
 
     aborted = []
 
-    class FakeInstaller:
-        medium_modified = True
-        unreleased_resources = ()
+    class FakeRelease:
+        """Мастер держит службу выпуска, а не установщик (зона И3)."""
+
+        installer = None
 
         def abort(self):
             aborted.append(True)
 
-    wizard._installer = FakeInstaller()
+    wizard._release = FakeRelease()
     wizard._running = True
     wizard.cancel_btn.configure(text="Прервать запись", command=wizard._abort)
 
@@ -1533,8 +1537,9 @@ def test_the_chosen_packages_reach_the_build(gui_app, tmp_path, monkeypatch):
     frame.image_path = str(tmp_path / "image.iso")
     frame.destination = str(tmp_path)
 
-    from portable_os_admin.gui.screens import build_wizard as module
+    from portable_os_admin.admin import media_release as module
 
+    # Установщик создаёт служба выпуска, а не мастер: подменять надо её (зона И3).
     monkeypatch.setattr(module, "OSInstaller", _FakeInstaller)
     frame.step_index = frame.step_titles.index("Сборка")
     frame._render_step()

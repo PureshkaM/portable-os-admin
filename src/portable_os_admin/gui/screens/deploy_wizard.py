@@ -27,7 +27,8 @@ from tkinter import filedialog, messagebox, ttk
 from ...config.schema import InstallConfig
 from ...errors import DeviceNotEligibleError, InstallError
 from ...install.command_runner import InstallAborted
-from ...install import OSInstaller, distribution, leftovers
+from ...admin import MediaReleaseService
+from ...install import distribution, leftovers
 from .. import theme
 from ..elevate import invoking_user_home
 from .. import preferences
@@ -594,12 +595,13 @@ class DeployWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
         self._log(f"Дистрибутив: {self.directory}")
 
         passphrase_bytes = self.passphrase.encode("utf-8")
-        installer = OSInstaller(self.app.session)
-        # Нужен пути отказа, чтобы спросить у него, тронут ли носитель.
-        self._installer = installer
+        release = MediaReleaseService(self.app.session)
+        # Держим службу, а не установщик: у неё же спрашивают на пути отказа,
+        # тронут ли носитель, и её же просят остановиться по кнопке.
+        self._release = release
 
         def work():
-            return installer.deploy_distribution(
+            return release.deploy_distribution(
                 device,
                 self.directory,
                 passphrase_bytes,
@@ -623,12 +625,12 @@ class DeployWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
         загрузится, — но уборка отработает: тома закроются, разделы
         размонтируются, и следующая попытка не упрётся в занятые ресурсы.
         """
-        installer = getattr(self, "_installer", None)
-        if installer is None or not self._running:
+        release = getattr(self, "_release", None)
+        if release is None or not self._running:
             return
         self.cancel_btn.configure(state="disabled")
         self.message_bar.info("Прерываю: жду, пока остановится текущая команда…")
-        installer.abort()
+        release.abort()
 
     def _restore_cancel(self) -> None:
         if widget_alive(self.cancel_btn):
@@ -667,7 +669,8 @@ class DeployWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
 
     def _failed(self, exc: BaseException) -> None:
         self._stop_progress()
-        installer = getattr(self, "_installer", None)
+        release = getattr(self, "_release", None)
+        installer = release.installer if release is not None else None
         if installer is not None and not getattr(installer, "medium_modified", True):
             suffix = " Носитель не изменён — запись остановилась до того, как его тронули."
         else:

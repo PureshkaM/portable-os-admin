@@ -13,6 +13,7 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, ttk
 
+from ...admin import MediaReleaseService
 from ...install import OSInstaller, distribution
 from .. import theme
 from ..widgets import (
@@ -339,10 +340,11 @@ class BuildWizardFrame(WizardFrame):
         self.message_bar.info("Идёт сборка.")
         self._log(f"--- СБОРКА ДИСТРИБУТИВА {config.name} ---")
 
-        installer = OSInstaller(self.app.session)
+        release = MediaReleaseService(self.app.session)
+        self._release = release
 
         def work():
-            return installer.build_distribution(
+            return release.build_distribution(
                 config,
                 self.destination,
                 image_path=self.image_path,

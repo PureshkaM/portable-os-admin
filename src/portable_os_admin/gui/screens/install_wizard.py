@@ -6,9 +6,9 @@ install/devices.py) and the manual-entry fallback wasn't obvious enough to
 find. Here both are always shown together on the same step, with explicit
 text explaining when/why to use the manual field.
 
-The real (dry_run=False) install run is a single, already-tested, unchanged
-call into OSInstaller.run() -- this wizard does not touch installer.py or
-command_runner.py at all, it only moves that blocking call off the UI
+The real (dry_run=False) install run is a single call into the release
+service (admin/media_release.py) -- this wizard does not touch installer.py
+or command_runner.py at all, it only moves that blocking call off the UI
 thread (see gui/widgets.py run_in_background) so the window doesn't appear
 to hang for however long partitioning/LUKS/debootstrap take.
 """
@@ -22,7 +22,8 @@ from tkinter import filedialog
 
 from ...errors import DeviceNotEligibleError, InstallError
 from ...install.command_runner import InstallAborted
-from ...install import BlockDevice, OSInstaller
+from ...admin import MediaReleaseService
+from ...install import BlockDevice
 from ...install import image_source, leftovers
 from ...install.emulation import probe as probe_emulation
 from ...install.installer import IMAGE_FAMILY
@@ -611,12 +612,13 @@ class InstallWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
         self._log(f"--- УСТАНОВКА НА {device.path} ---")
 
         passphrase_bytes = self.passphrase.encode("utf-8")
-        installer = OSInstaller(self.app.session)
-        # Kept so the failure path can ask it whether the medium was written to.
-        self._installer = installer
+        release = MediaReleaseService(self.app.session)
+        # Держим службу, а не установщик: она же останавливает работу по кнопке
+        # и она же отдаёт установщик пути отказа -- спросить, тронут ли носитель.
+        self._release = release
 
         def do_install():
-            return installer.run(
+            return release.install_from_image(
                 device,
                 self.selected_config,
                 passphrase_bytes,
@@ -651,12 +653,12 @@ class InstallWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
         закроются, разделы размонтируются, и следующая попытка не упрётся в
         занятые ресурсы.
         """
-        installer = getattr(self, "_installer", None)
-        if installer is None or not self._running:
+        release = getattr(self, "_release", None)
+        if release is None or not self._running:
             return
         self.cancel_btn.configure(state="disabled")
         self.message_bar.info("Прерываю: жду, пока остановится текущая команда…")
-        installer.abort()
+        release.abort()
 
     def _stop_progress(self) -> None:
         self._running = False
@@ -714,7 +716,8 @@ class InstallWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
         # the stick had been erased in all of them. Telling an administrator
         # their medium is gone when it is intact costs them the data they then
         # do not bother to recover.
-        installer = getattr(self, "_installer", None)
+        release = getattr(self, "_release", None)
+        installer = release.installer if release is not None else None
         if installer is not None and not getattr(installer, "medium_modified", True):
             suffix = " Носитель не изменён — установка остановилась до записи на него."
         else:
