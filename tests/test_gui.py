@@ -2455,14 +2455,22 @@ def test_configurations_travel_between_administrators_through_the_screen(gui_app
     colleague_manager.save(colleague)
     parcel = tmp_path / ("parcel" + exchange.EXCHANGE_SUFFIX)
 
+    # Обмен переехал на свой экран (зона И4): на списке конфигураций он
+    # занимал четыре кнопки из девяти и стоял рядом с «Удалить», то есть
+    # предлагался как равный ей по последствиям. Выбранная строка уезжает
+    # туда вместе с переходом, поэтому выбирать заново не приходится.
     app.show_frame(ConfigsListFrame)
+    configs = app._current_frame
+    configs.table.selection_set(configs.table.get_children()[0])
+    configs._open_share()
+    app.update()
     screen = app._current_frame
+    assert screen.config_name == "stick1", "выбор не доехал до экрана обмена"
     monkeypatch.setattr(
         "tkinter.simpledialog.askstring",
         lambda *a, **k: colleague_code,
     )
     monkeypatch.setattr("tkinter.filedialog.asksaveasfilename", lambda *a, **k: str(parcel))
-    screen.table.selection_set(screen.table.get_children()[0])
     screen._send_selected()
     app.update()
 
@@ -2477,7 +2485,9 @@ def test_configurations_travel_between_administrators_through_the_screen(gui_app
     startup.password_var.set("CorrectHorse456")
     startup._open()
     app.update()
-    app.show_frame(ConfigsListFrame)
+    from portable_os_admin.gui.screens.configs_share import ConfigsShareFrame
+
+    app.show_frame(ConfigsShareFrame)
     receiver = app._current_frame
     monkeypatch.setattr("tkinter.filedialog.askopenfilename", lambda *a, **k: str(parcel))
     monkeypatch.setattr("tkinter.messagebox.askyesno", lambda *a, **k: True)

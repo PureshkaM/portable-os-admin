@@ -10,7 +10,6 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import ttk
 
-from ...config import exchange
 from ...config.validator import ConfigValidationUnavailableError
 from .. import theme
 from ..widgets import (
@@ -57,32 +56,29 @@ class ConfigsListFrame(ttk.Frame):
         create_row.pack(fill="x", pady=(theme.SPACE_SM, theme.SPACE_XS))
         ttk.Button(create_row, text="Создать новую конфигурацию", command=self._create_new).pack(side="left")
 
-        # Пять кнопок в строку помещаются не в любом окне: при наименьшем
-        # (900x600) «Назад» оставалось 37 пикселей от нужных 126, то есть её
-        # не было видно. Ряд переносит не поместившееся на следующую строку.
+        # Кнопок стало шесть вместо девяти.
+        #
+        # Четыре из них были про обмен с другим администратором: «Мой код
+        # обмена…», «Отправить…», «Отправить все…», «Принять…». Они не
+        # действия над выбранной строкой, а работа с чужим контейнером, и
+        # стояли рядом с «Удалить» -- то есть предлагались как равные по
+        # последствиям. Обмен к тому же делают редко: конфигурацию пишут один
+        # раз и потом ей пользуются, а занимала эта работа треть экрана.
+        # Теперь она за одной кнопкой, на своём экране, где рядом сказано, что
+        # код публичный и почему его можно диктовать вслух.
+        #
+        # Ряд переносит не поместившееся на следующую строку: при окне 900x600
+        # «Назад» оставалось 37 пикселей от нужных 126, то есть её не было
+        # видно вовсе.
         button_row(
             card,
             (
                 ("Редактировать", self._edit_selected),
                 ("Проверить", self._validate_selected),
                 ("Установить…", self._install_selected),
+                ("Поделиться…", self._open_share),
                 ("Удалить", self._delete_selected),
                 ("Назад", self.app.show_dashboard),
-            ),
-            pady=(0, theme.SPACE_XS),
-        )
-
-        # Обмен с другим администратором стоит отдельным рядом: это не
-        # действие над выбранной строкой, а работа с чужим контейнером, и
-        # смешивать их в одном ряду значило бы предлагать «Удалить» и
-        # «Отправить» как равные по последствиям.
-        button_row(
-            card,
-            (
-                ("Мой код обмена…", self._show_my_code),
-                ("Отправить…", self._send_selected),
-                ("Отправить все…", self._send_all),
-                ("Принять…", self._receive),
             ),
             pady=(0, theme.SPACE_SM),
         )
@@ -92,106 +88,18 @@ class ConfigsListFrame(ttk.Frame):
 
         self._refresh_table()
 
-    # -- обмен с другим администратором -------------------------------------
-    def _show_my_code(self) -> None:
-        """Свой код -- то, что администратор диктует или пересылает коллеге.
+    def _open_share(self) -> None:
+        """Обмен с другим администратором -- на своём экране.
 
-        Код публичный: перехват не даёт ничего, расшифровать присланное может
-        только этот контейнер. Поэтому он показывается прямо на экране, а не
-        под подтверждением.
+        Выбранная строка уезжает туда вместе с переходом: выбор -- уже ответ,
+        и спрашивать его второй раз значит искать в списке то, что только что
+        выделили. Ничего не выбрано -- тоже законно: отправить можно все.
         """
-        from tkinter import messagebox
+        from .configs_share import ConfigsShareFrame
 
-        with error_guard(self.message_bar):
-            identity = exchange.identity_of(self.app.container)
-            self.app.save_container()
-            self.clipboard_clear()
-            self.clipboard_append(identity.code)
-            messagebox.showinfo(
-                "Мой код обмена",
-                f"Отпечаток: {identity.fingerprint}\n\n{identity.code}\n\n"
-                "Код скопирован в буфер обмена. Его можно передавать открыто: "
-                "он только шифрует присланное вам, но не расшифровывает.",
-                parent=self,
-            )
-
-    def _send_selected(self) -> None:
-        name = self._selected_name()
-        if name is None:
-            return
-        self._send([name])
-
-    def _send_all(self) -> None:
-        names = self.app.config_manager.list_configs(self.app.container)
-        if not names:
-            self.message_bar.error("Отправлять нечего: в контейнере нет конфигураций.")
-            return
-        self._send(names)
-
-    def _send(self, names: "list[str]") -> None:
-        from tkinter import filedialog, simpledialog
-
-        code = simpledialog.askstring(
-            "Код получателя",
-            "Код администратора, которому предназначена посылка:",
-            parent=self,
-        )
-        if not code:
-            return
-        with error_guard(self.message_bar):
-            payload = [
-                (name, self.app.container.find_config(name).data)
-                for name in names
-                if self.app.container.find_config(name) is not None
-            ]
-            blob = exchange.pack(self.app.container, payload, code)
-            self.app.save_container()
-            target = filedialog.asksaveasfilename(
-                parent=self,
-                title="Куда сохранить посылку",
-                defaultextension=exchange.EXCHANGE_SUFFIX,
-                initialfile=("configs" if len(payload) > 1 else payload[0][0])
-                + exchange.EXCHANGE_SUFFIX,
-            )
-            if not target:
-                return
-            Path(target).write_bytes(blob)
-            self.message_bar.success(
-                f"Посылка сохранена: {target}. Конфигураций внутри: {len(payload)}. "
-                "Открыть её сможет только владелец указанного кода."
-            )
-
-    def _receive(self) -> None:
-        from tkinter import filedialog, messagebox
-
-        source = filedialog.askopenfilename(
-            parent=self,
-            title="Посылка от другого администратора",
-            filetypes=[("Посылка", "*" + exchange.EXCHANGE_SUFFIX), ("Все файлы", "*")],
-        )
-        if not source:
-            return
-        with error_guard(self.message_bar):
-            sender, configs = exchange.unpack(self.app.container, Path(source).read_bytes())
-            names = ", ".join(name for name, _ in configs)
-            # Отправитель называется до того, как что-то попадёт в контейнер:
-            # по присланной конфигурации собирают носитель, и «от кого» здесь
-            # такой же вопрос, как «что внутри».
-            if not messagebox.askyesno(
-                "Принять конфигурации",
-                f"Отправитель, отпечаток {sender.fingerprint}.\n\n"
-                f"В посылке: {names}.\n\n"
-                "Одноимённые конфигурации в контейнере будут заменены. Принять?",
-                parent=self,
-            ):
-                return
-            for name, data in configs:
-                self.app.container.put_config(name, data)
-            self.app.save_container()
-            self.message_bar.success(
-                f"Принято конфигураций: {len(configs)} (от {sender.fingerprint})."
-            )
-        self._refresh_table()
+        selection = self.table.selection()
+        name = self._names[self.table.index(selection[0])] if selection else ""
+        self.app.show_frame(ConfigsShareFrame, config_name=name)
 
     def _refresh_table(self) -> None:
         for item in self.table.get_children():
