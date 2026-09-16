@@ -33,11 +33,11 @@ from .backends.base import (
     PLYMOUTH_THEME_NAME,
     RECOVERY_DIR,
     SERVICE_KEY_DIR,
-    SERVICE_KEY_PATH,
 )
 from .command_runner import BOOTSTRAP_TIMEOUT, CommandPlan, CommandResult, CommandRunner
 from . import distribution, overlay
 from . import integrity
+from . import medium
 from .devices import BlockDevice, busy_holders, check_install_eligible
 from .disk import (
     DiskManager,
@@ -986,11 +986,18 @@ class OSInstaller:
         # Лежит на зашифрованном корне, то есть доступен только после того, как
         # корень открыт парольной фразой; 0400 и владелец root, потому что в
         # работающей системе его не читает никто, кроме systemd-cryptsetup.
-        run(["mkdir", "-p", f"{layout.mount_root}/{SERVICE_KEY_DIR}"])
-        self._write_file(
-            f"{layout.mount_root}/{SERVICE_KEY_PATH}", identity.boot_key, plan, dry_run,
-            confirm_device, binary=True, mode=0o400,
-        )
+        # Путь спрашивается у вида носителя, а не берётся константой: у токена
+        # ключ живёт в чипе, и файла на носителе не будет вовсе (см.
+        # `install/medium.py`). Сегодня вид один -- флешка, -- и ответ тот же
+        # самый; смысл в том, что при появлении второго вида меняется одно
+        # место, а не каждое обращение к константе.
+        key_path = medium.profile().service_key_path
+        if key_path:
+            run(["mkdir", "-p", f"{layout.mount_root}/{SERVICE_KEY_DIR}"])
+            self._write_file(
+                f"{layout.mount_root}/{key_path}", identity.boot_key, plan, dry_run,
+                confirm_device, binary=True, mode=0o400,
+            )
 
         self._write_revocation_key(config, identity, plan, dry_run, confirm_device)
 
