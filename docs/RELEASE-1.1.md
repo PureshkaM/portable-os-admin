@@ -51,7 +51,7 @@
 `gui/screens/build_wizard.py`, `gui/screens/deploy_wizard.py`; C —
 `config/repo_browser.py`, `install/image_catalog.py`, `config/schema.py`
 (`BootConfig`), `gui/screens/config_wizard.py`, построение командной строки ядра
-в бэкендах. Тимлид — `install/revocation.py`, `install/installer.py`,
+в бэкендах. Тимлид — `install/revocation/`, `install/installer.py`,
 `install/kiosk/`, `install/desktop_roles.py`, `container/models.py`.
 
 ## Протокол отзыва v2
