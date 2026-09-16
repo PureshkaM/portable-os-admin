@@ -2150,7 +2150,15 @@ def test_numbers_are_aligned_right(gui_app, tmp_path):
     """
     app = gui_app
     _open_container(app, tmp_path)
-    app.show_section("exchange")
+    # Обмен открывается так, как до него доходит человек: действием над
+    # выбранным носителем. Разделом слева он быть перестал (зона И4), и тест,
+    # открывающий его прежним путём, остался бы зелёным, проверяя дорогу,
+    # которой больше не ходят.
+    _issue_a_medium(app)
+    dashboard = app._current_frame
+    dashboard._refresh_table()
+    dashboard.table.selection_set("46aed677")
+    dashboard._open_selected_exchange()
     app.update()
     table = app._current_frame.files_table
 
@@ -2300,7 +2308,14 @@ def test_no_control_is_squashed_at_the_smallest_window(gui_app, tmp_path):
         return found
 
     complaints = []
-    for section in ("media", "configs", "logs", "exchange", "recovery", "maintenance"):
+    # Разделы берутся из самой навигации, а не переписываются сюда списком:
+    # переписанный список пережил бы правку навигации молча и перестал бы
+    # проверять то, что появилось. «Журналы» и «Обмен» разделами быть
+    # перестали (зона И4), но их окна проверяются тем же -- они открываются
+    # действием над носителем.
+    from portable_os_admin.gui.shell import SECTIONS
+
+    for section in [key for key, _title, _hint in SECTIONS] + ["logs", "exchange"]:
         app.show_section(section)
         _pump(app, lambda: app._current_frame.winfo_width() > 1, timeout=5.0)
         app.update_idletasks()

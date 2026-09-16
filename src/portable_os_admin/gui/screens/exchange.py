@@ -34,11 +34,13 @@ from ..widgets import (
 
 
 class ExchangeFrame(ttk.Frame):
-    def __init__(self, parent: tk.Widget, app):
+    def __init__(self, parent: tk.Widget, app, media_id: str = ""):
         super().__init__(parent, style="Window.TFrame")
         self.app = app
         self.manager = ExchangeManager()
         self._actions = MediaActions(app.session)
+        #: Носитель, выбранный на панели до входа сюда.
+        self._preselected = media_id
         self._volume = None
         self._records = []
 
@@ -148,6 +150,14 @@ class ExchangeFrame(ttk.Frame):
 
         self.bind("<Destroy>", self._on_destroy)
         self._refresh_media()
+        # Носитель, выбранный на панели, -- уже ответ. Спрашивать его второй
+        # раз значит заставлять администратора искать в выпадающем списке
+        # строку, которую он только что выделил.
+        if self._preselected:
+            for index, record in enumerate(self._records):
+                if record.media_id == self._preselected:
+                    self.media_box.current(index)
+                    break
 
     # ------------------------------------------------------------------
     # Medium selection and connection

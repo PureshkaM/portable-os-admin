@@ -128,6 +128,10 @@ class DashboardFrame(ttk.Frame):
             (
                 ("Проверить целостность", self._open_selected_integrity),
                 ("Журналы носителя", self._open_selected_logs),
+                # «Обмен» перестал быть разделом слева: файлы кладут не «вообще»,
+                # а на конкретный носитель, и разделом экран первым делом
+                # спрашивал, на какой -- при том что строка уже выделена.
+                ("Обмен носителя", self._open_selected_exchange),
                 ("Переименовать", self._rename_selected),
                 ("Отзыв…", self._open_selected_revoke),
             ),
@@ -279,6 +283,14 @@ class DashboardFrame(ttk.Frame):
         спрашивать второй раз незачем.
         """
         self.app.show_section("logs", media_id=self._selected_media_id())
+
+    def _open_selected_exchange(self) -> None:
+        """Раздел обмена того носителя, который выбран в таблице."""
+        media_id = self._selected_media_id()
+        if not media_id:
+            self.message_bar.error("Выберите носитель в списке.")
+            return
+        self.app.show_section("exchange", media_id=media_id)
 
     def _open_build(self) -> None:
         from .build_wizard import BuildWizardFrame
