@@ -196,6 +196,47 @@ def test_redos_installs_the_bootloader_by_copying_signed_binaries():
     assert "efibootmgr" not in joined
 
 
+def test_the_medium_id_reaches_the_script_whole():
+    """Живой прогон 16.09.2026: носитель спрашивал сервер о несуществующем
+    идентификаторе и получал 403 на каждой проверке. ID с приставкой
+    администратора приезжал в скрипт половиной -- его собирали обратно из
+    имени dm-отображения, отрезая часть после последнего дефиса. Пока ID был
+    из восьми знаков, это работало; с приставкой перестало."""
+    from portable_os_admin.install.disk import build_media_layout, plan_partitions
+
+    config = InstallConfig.create_baseline("stick", "debian")
+    config.revocation.enabled = True
+    config.revocation.url = "https://revoke.example.org"
+    media_id = "51839da0-63dd0905"
+    uuid = "0e3f1a90-1111-2222-3333-444455556666"
+
+    layout = build_media_layout(
+        plan_partitions("/dev/sdb", config.disk),
+        mapper_name=f"poa-{media_id}",
+        mount_root="/mnt/root",
+        media_id=media_id,
+    )
+    layout.luks_uuid = uuid
+    files = get_backend("debian").scripted_files(config, layout)
+    script = files["usr/local/sbin/poa-revocation"][0]
+    assert f"MEDIA_ID={media_id}" in script
+    assert "MEDIA_ID=63dd0905" not in script
+    # Тем же путём едет и скрипт регистрации машины -- он называет тот же ID.
+    register = files["usr/local/sbin/poa-machine-register"][0]
+    assert f"MEDIA_ID={media_id}" in register
+
+    # Раскладка без поля -- как у носителей, записанных прежней версией:
+    # приставка `poa-` отсекается целиком, а не режется по дефису.
+    old = build_media_layout(
+        plan_partitions("/dev/sdb", config.disk),
+        mapper_name=f"poa-{media_id}",
+        mount_root="/mnt/root",
+    )
+    old.luks_uuid = uuid
+    old_script = get_backend("debian").scripted_files(config, old)["usr/local/sbin/poa-revocation"][0]
+    assert f"MEDIA_ID={media_id}" in old_script
+
+
 def test_the_distribution_keeps_the_bootloader_it_was_given():
     """Эталон не должен терять то, что нельзя восстановить.
 

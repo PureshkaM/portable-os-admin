@@ -64,6 +64,12 @@ class MediaLayout:
     mapper_name: str
     mapper_path: str
     mount_root: str
+    #: Идентификатор носителя целиком. Раньше его восстанавливали обратно из
+    #: `mapper_name`, отрезая часть после последнего дефиса; с 1.1.0 ID сам
+    #: содержит дефис (приставка администратора), и такое восстановление
+    #: отдавало половину -- носитель спрашивал сервер о несуществующем
+    #: идентификаторе (живой прогон 16.09.2026). Теперь он едет полем.
+    media_id: str = ""
     esp_uuid: str = ""
     boot_uuid: str = ""
     root_uuid: str = ""
@@ -127,7 +133,9 @@ def plan_partitions(device: str, layout: DiskLayoutConfig) -> PartitionPlan:
     return PartitionPlan(device=device, partitions=partitions)
 
 
-def build_media_layout(plan: PartitionPlan, mapper_name: str, mount_root: str) -> MediaLayout:
+def build_media_layout(
+    plan: PartitionPlan, mapper_name: str, mount_root: str, media_id: str = ""
+) -> MediaLayout:
     esp, boot, system, logs, exchange = (plan.partition_path(spec) for spec in plan.partitions)
     return MediaLayout(
         device=plan.device,

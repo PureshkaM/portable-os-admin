@@ -280,6 +280,7 @@ class OSInstaller:
             partition_plan,
             mapper_name=f"poa-{media_id}",
             mount_root=f"/mnt/poa-install-{media_id}",
+            media_id=media_id,
         )
 
         plan = CommandPlan(device=device.path)
@@ -653,6 +654,7 @@ class OSInstaller:
             plan_partitions(device.path, config.disk),
             mapper_name=f"poa-{media_id}",
             mount_root=f"/mnt/poa-install-{media_id}",
+            media_id=media_id,
         )
         plan = CommandPlan(device=device.path)
         state = _TeardownState()

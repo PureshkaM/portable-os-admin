@@ -1346,7 +1346,19 @@ echo "poa-boot: меню загрузки написано для ядра $vers
             files.update(
                 revocation.config_files(
                     config,
-                    media_id=layout.mapper_name.rsplit("-", 1)[-1],
+                    # Идентификатор берётся из раскладки, а не собирается
+                    # обратно из имени отображения. Прежнее
+                    # `mapper_name.rsplit("-", 1)[-1]` верно резало имя, пока
+                    # ID был из восьми знаков; с приставкой администратора
+                    # (`poa-51839da0-63dd0905`) оно отдавало только собственную
+                    # часть, носитель спрашивал сервер о несуществующем
+                    # идентификаторе и получал 403 -- живой прогон 16.09.2026.
+                    # Запасной путь -- для старых раскладок без поля: отсекать
+                    # приставку `poa-` целиком, а не резать по дефису.
+                    media_id=(
+                        getattr(layout, "media_id", "")
+                        or layout.mapper_name.removeprefix("poa-")
+                    ),
                     luks_uuid=layout.luks_uuid,
                     # Отзыв уничтожает носитель целиком, а не один том, поэтому
                     # скрипту нужны все части раскладки: служебные тома -- это
@@ -1391,7 +1403,9 @@ echo "poa-boot: меню загрузки написано для ядра $vers
             machine_binding.KEY_SCRIPT_PATH: (machine_binding.key_script(config), 0o755),
         }
         if layout is not None and layout.mapper_name:
-            media_id = layout.mapper_name.rsplit("-", 1)[-1]
+            # Полный ID, а не хвост имени отображения: с приставкой
+            # администратора в ID появился дефис (см. `MediaLayout.media_id`).
+            media_id = getattr(layout, "media_id", "") or layout.mapper_name.removeprefix("poa-")
             files[machine_binding.REGISTER_SCRIPT_PATH] = (
                 machine_binding.register_script(config, media_id), 0o755
             )
