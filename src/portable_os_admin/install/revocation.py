@@ -395,15 +395,6 @@ else
     log "выйти из cgroup службы не вышло, уничтожение идёт в ней"
 fi
 
-# Временно, до выяснения отправителя сигнала: аудит называет того, кто зовёт
-# kill. Демон аудита останавливается, иначе записи уйдут в /var/log -- том,
-# который уничтожается на шаге 4; без демона ядро печатает их в консоль.
-if command -v auditctl >/dev/null 2>&1; then
-    systemctl stop auditd >/dev/null 2>&1
-    auditctl -D >/dev/null 2>&1
-    auditctl -a always,exit -F arch=b64 -S kill -S tgkill -F sig=6 -k poa >/dev/null 2>&1
-fi
-
 find_volume() {{
     _uuid=$1
     [ -n "$_uuid" ] || return 1
