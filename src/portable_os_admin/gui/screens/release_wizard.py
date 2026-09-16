@@ -148,6 +148,18 @@ class ReleaseWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
         первый шаг, и запомненный план показывал бы шаги прошлой ветви.
         """
         source = ("source", "Источник", "")
+        if not self.source_kind:
+            # Источник ещё не прочитан -- обещать шаги нечем.
+            #
+            # Рельс слева существует затем, чтобы ответить «что впереди и
+            # сколько осталось». Показать до выбора «Носитель» и «Пароль»
+            # значит пообещать ветвь, которую администратор, может быть, и не
+            # выберет: он вправе собирать дистрибутив, где носителя нет вовсе.
+            # Честный ответ здесь -- назвать причину, а не выдумать путь.
+            return [
+                source,
+                ("unknown", "Дальше — по источнику", ""),
+            ]
         if self.source_kind == SOURCE_DISTRIBUTION:
             return [
                 source,
@@ -467,6 +479,23 @@ class ReleaseWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
         self.message_bar.error(f"{title}. Выберите другой или соберите заново.")
         return False
 
+    def _build_step_unknown(self, body: ttk.Frame) -> None:
+        """Шаг-заглушка: до него не доходят, но нарисовать его должно быть чем.
+
+        План пересобирается проверкой первого шага, а номер увеличивается уже
+        после неё, поэтому администратор сюда не попадает. Строитель всё равно
+        нужен: раздача ищет метод по имени ключа, и ключ без метода -- это
+        падение в середине выпуска вместо честного шага.
+        """
+        ttk.Label(
+            body,
+            text="Сначала выберите источник: от него зависит, что будет дальше — "
+            "запись носителя или сборка дистрибутива.",
+            wraplength=theme.TEXT_WRAP,
+            justify="left",
+            foreground=theme.TEXT_MUTED,
+        ).pack(anchor="w")
+
     # -- шаг: конфигурация -------------------------------------------------
     def _build_step_config(self, body: ttk.Frame) -> None:
         if self.image_info is not None:
@@ -693,8 +722,22 @@ class ReleaseWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
         return True
 
     # -- шаг: сборка -------------------------------------------------------
+    def _chosen_config(self):
+        """Выбранная конфигурация -- по имени, если объекта ещё нет.
+
+        Объект заполняет проверка шага «Конфигурация», но попасть на шаги
+        сборки можно и минуя её (мастер открывают на нужном шаге). Имя же
+        известно всегда, а открытие по имени -- ровно то, что делал отдельный
+        мастер сборки в каждом таком месте.
+        """
+        if self.selected_config is None and self.selected_config_name:
+            self.selected_config = self.app.config_manager.open(
+                self.app.container, self.selected_config_name
+            )
+        return self.selected_config
+
     def _build_step_run(self, body: ttk.Frame) -> None:
-        config = self.selected_config
+        config = self._chosen_config()
         summary = ttk.Frame(body)
         summary.pack(fill="x")
         for label, value in (

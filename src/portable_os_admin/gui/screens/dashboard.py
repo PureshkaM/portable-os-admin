@@ -33,20 +33,17 @@ class DashboardFrame(ttk.Frame):
         actions = ttk.Frame(self, style="Window.TFrame")
         actions.pack(side="bottom", fill="x", padx=theme.SPACE_LG, pady=(theme.SPACE_MD, 0))
 
-        # Установка -- то, ради чего программу открывают; одна акцентная
-        # кнопка говорит об этом без единого слова пояснения.
+        # Одна кнопка вместо трёх.
+        #
+        # Их было три -- «Установка ОС», «Собрать дистрибутив», «Развернуть
+        # дистрибутив», -- и администратор выбирал между ними раньше, чем
+        # понимал разницу. Разница же вся в том, что у него под рукой: есть
+        # установочный образ -- систему надо ставить, есть готовый дистрибутив
+        # -- его надо записать. Мастер спрашивает источник и выводит путь сам
+        # (зона И5).
         ttk.Button(
-            actions, text="Установка ОС", style="Accent.TButton", command=self._open_install
+            actions, text="Выпустить носитель", style="Accent.TButton", command=self._open_release
         ).pack(side="left")
-        # Порядок повторяет порядок работы: сначала собрать дистрибутив, потом
-        # разворачивать его на носители -- по одному или тиражом.
-        for text, command in (
-            ("Собрать дистрибутив", self._open_build),
-            ("Развернуть дистрибутив", self._open_deploy),
-        ):
-            ttk.Button(actions, text=text, command=command).pack(
-                side="left", padx=(theme.SPACE_SM, 0)
-            )
 
         # Заголовок раздела, а не программы: имя программы уже стоит над
         # списком разделов слева, и повторять его здесь значит занимать
@@ -292,18 +289,8 @@ class DashboardFrame(ttk.Frame):
             return
         self.app.show_section("exchange", media_id=media_id)
 
-    def _open_build(self) -> None:
-        from .build_wizard import BuildWizardFrame
+    def _open_release(self) -> None:
+        from .release_wizard import ReleaseWizardFrame
 
-        self.app.show_frame(BuildWizardFrame)
-
-    def _open_deploy(self) -> None:
-        from .deploy_wizard import DeployWizardFrame
-
-        self.app.show_frame(DeployWizardFrame)
-
-    def _open_install(self) -> None:
-        from .install_wizard import InstallWizardFrame
-
-        self.app.show_frame(InstallWizardFrame)
+        self.app.show_frame(ReleaseWizardFrame)
 

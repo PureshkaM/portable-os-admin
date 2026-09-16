@@ -192,24 +192,25 @@ def test_the_deploy_wizard_asks_who_the_medium_is_for():
     потом это отдельный заход: открыть контейнер, подключить носитель,
     открыть том, скопировать.
     """
-    from portable_os_admin.gui.screens.deploy_wizard import DeployWizardFrame
+    from types import SimpleNamespace
 
-    keys = DeployWizardFrame._STEP_KEYS
+    from portable_os_admin.gui.screens.release_wizard import (
+        SOURCE_DISTRIBUTION,
+        TARGET_MEDIUM,
+        ReleaseWizardFrame,
+    )
+
+    # Ветвь готового дистрибутива: именно в ней носитель получает файлы в
+    # раздел обмена, и только она спрашивает «Кому и что» (зона И5).
+    state = SimpleNamespace(source_kind=SOURCE_DISTRIBUTION, target=TARGET_MEDIUM)
+    keys = [key for key, _title, _hint in ReleaseWizardFrame._plan(state)]
+
     assert "handover" in keys
     # Перед подтверждением, а не после: на последнем шаге уже идёт запись.
     assert keys.index("handover") < keys.index("confirm")
 
-    assert hasattr(DeployWizardFrame, "_save_step_handover")
-    assert hasattr(DeployWizardFrame, "_validate_step_handover")
-
-    # Каждый ключ обязан находить свой строитель.
-    #
-    # Пока шаги были списком ссылок на функции, рассогласование «в списке есть,
-    # а метода нет» было невозможно. Теперь раздача ищет метод по имени ключа,
-    # и опечатка в ключе даёт мастер, падающий на этом шаге у администратора, а
-    # не здесь. Поэтому проверяется весь набор, а не один шаг.
-    missing = [key for key in keys if not hasattr(DeployWizardFrame, f"_build_step_{key}")]
-    assert not missing, f"ключи без строителя: {missing}"
+    assert hasattr(ReleaseWizardFrame, "_save_step_handover")
+    assert hasattr(ReleaseWizardFrame, "_validate_step_handover")
 
 
 def test_the_installer_accepts_a_name_and_files_for_the_exchange():

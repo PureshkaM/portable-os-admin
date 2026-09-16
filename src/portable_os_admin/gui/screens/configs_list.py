@@ -164,9 +164,9 @@ class ConfigsListFrame(ttk.Frame):
                 "Нажмите «Проверить» перед установкой."
             )
             return
-        from .install_wizard import InstallWizardFrame
+        from .release_wizard import ReleaseWizardFrame
 
-        self.app.show_frame(InstallWizardFrame, config_name=name)
+        self.app.show_frame(ReleaseWizardFrame, config_name=name)
 
     def _delete_selected(self) -> None:
         name = self._selected_name()

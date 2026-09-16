@@ -22,7 +22,7 @@ from portable_os_admin.gui.screens import config_wizard as config_wizard_module
 from portable_os_admin.gui.screens import device_step as device_step_module
 from portable_os_admin.gui.screens.config_wizard import ConfigWizardFrame
 from portable_os_admin.gui.screens.configs_list import ConfigsListFrame
-from portable_os_admin.gui.screens.install_wizard import InstallWizardFrame
+from portable_os_admin.gui.screens.release_wizard import ReleaseWizardFrame
 from portable_os_admin.gui.screens.startup import StartupFrame
 from portable_os_admin.install import machine_binding
 
@@ -228,15 +228,24 @@ def test_the_handover_step_refuses_a_medium_without_an_owner(gui_app, tmp_path):
     восстановления, и опознать звонящего будет нечем. Поэтому поле обязательное
     -- единственное обязательное на этом шаге.
     """
-    from portable_os_admin.gui.screens.deploy_wizard import DeployWizardFrame
+    from portable_os_admin.gui.screens.release_wizard import ReleaseWizardFrame
 
     app = gui_app
     _open_container(app, tmp_path)
-    app.show_frame(DeployWizardFrame)
+    app.show_frame(ReleaseWizardFrame)
     app.update()
     wizard = app._current_frame
 
-    # Шаг открывается напрямую: проверяется он сам, а не дорога к нему.
+    # Шаг принадлежит ветви готового дистрибутива: файлы в раздел обмена
+    # установщик принимает только при развёртывании. Поэтому источник
+    # выбирается по-настоящему, а не подставляется в обход мастера -- иначе
+    # тест проверял бы состояние, в которое интерфейс не приводит.
+    _write_distribution(tmp_path / "dist", secret=app.container.admin_secret)
+    wizard.source_var.set(str(tmp_path / "dist"))
+    wizard.save_step(0)
+    assert wizard.validate_step(0) is True, wizard.message_bar.var.get()
+
+    # Дальше шаг открывается напрямую: проверяется он сам, а не дорога к нему.
     wizard.step_index = wizard.step_titles.index("Кому и что")
     wizard._render_step()
     app.update()
@@ -555,25 +564,26 @@ def _stub_install(monkeypatch):
     """Patches out the installer and the root check, so these tests behave the
     same on a developer machine as on the root shell of a test VM."""
     from portable_os_admin.admin import media_release as media_release_module
-    from portable_os_admin.gui.screens import install_wizard as install_wizard_module
+    from portable_os_admin.gui.screens import release_wizard as release_wizard_module
 
     # Подменяется одно место на все три пути выпуска: мастер больше не создаёт
     # установщик сам -- его создаёт служба выпуска (зона И3).
     monkeypatch.setattr(media_release_module, "OSInstaller", _StubInstaller)
-    monkeypatch.setattr(install_wizard_module, "_is_root", lambda: True)
+    monkeypatch.setattr(release_wizard_module, "is_root", lambda: True)
     # The wizard refuses to start while an unfinished install is on the machine
     # -- correctly, since a second run on top of an open LUKS mapping corrupts
     # both. That check reads global system state, so on a machine where a real
     # install happens to be running these tests would fail for a reason that
     # has nothing to do with them. Observed exactly that way, while a genuine
     # install was writing to a stick in the next process.
-    monkeypatch.setattr(install_wizard_module.leftovers, "find", lambda: None)
-    return install_wizard_module
+    monkeypatch.setattr(release_wizard_module.leftovers, "find", lambda: None)
+    return release_wizard_module
 
 
 def _fill_install_wizard(app, wizard, device="/dev/sdb", size="32"):
-    # the image comes first: it decides which configurations can be used at all
-    wizard.image_path_var.set(_throwaway_image(app))
+    # Источник идёт первым: из него выводится и путь выпуска, и то, какие
+    # конфигурации вообще годятся.
+    wizard.source_var.set(_throwaway_image(app))
     wizard._go_next()
     app.update()
 
@@ -605,13 +615,13 @@ def test_install_wizard_records_media_and_recovery(gui_app, tmp_path, monkeypatc
     _open_container(app, tmp_path)
     _make_validated_debian_config(app)
 
-    app.show_frame(InstallWizardFrame)
+    app.show_frame(ReleaseWizardFrame)
     wizard = app._current_frame
-    assert isinstance(wizard, InstallWizardFrame)
+    assert isinstance(wizard, ReleaseWizardFrame)
 
     _fill_install_wizard(app, wizard)
     wizard.confirm_device_var.set("/dev/sdb")
-    wizard._start_install()
+    wizard._start_write()
     _pump(app, lambda: not wizard._running)
 
     # the wizard asks for a real install -- there is no longer a preview mode
@@ -632,7 +642,10 @@ def test_install_wizard_records_media_and_recovery(gui_app, tmp_path, monkeypatc
     # нигде: ни в контейнере, ни здесь. Прежняя приписка «запишите его»
     # выносила содержимое контейнера наружу на каждом собранном носителе.
     message = wizard.message_bar.var.get()
-    assert "Установка завершена" in message
+    # Слова общие на обе ветви записи: установка с образа и запись готового
+    # дистрибутива дают один и тот же результат -- готовый носитель. Разные
+    # слова про одно и то же были наследием трёх мастеров (зона И5).
+    assert "Носитель готов" in message
     assert "запишите его" not in message
     assert all(not record.code for record in app.session.container.data.recovery_records)
 
@@ -670,14 +683,14 @@ def test_install_wizard_passes_the_real_device_not_the_form_fields(gui_app, tmp_
     _open_container(app, tmp_path)
     _make_validated_debian_config(app)
 
-    app.show_frame(InstallWizardFrame)
+    app.show_frame(ReleaseWizardFrame)
     wizard = app._current_frame
     # the size field is deliberately left at a rounded, slightly wrong value:
     # the real byte count has to come from the system, not from this text
     _fill_install_wizard(app, wizard, size="29")
 
     wizard.confirm_device_var.set("/dev/sdb")
-    wizard._start_install()
+    wizard._start_write()
     _pump(app, lambda: not wizard._running)
 
     assert _StubInstaller.last_device.size_bytes == 32_000_000_000
@@ -693,14 +706,14 @@ def test_install_wizard_says_root_is_needed_instead_of_failing_inside_parted(gui
     operation, and only then gets a permission error from a tool they never
     invoked -- exactly the "errors in your face" behaviour the wizard exists to
     avoid. Nothing has been written yet at that point, so refusing is free."""
-    install_wizard_module = _stub_install(monkeypatch)
-    monkeypatch.setattr(install_wizard_module, "_is_root", lambda: False)
+    release_wizard_module = _stub_install(monkeypatch)
+    monkeypatch.setattr(release_wizard_module, "is_root", lambda: False)
 
     app = gui_app
     _open_container(app, tmp_path)
     _make_validated_debian_config(app)
 
-    app.show_frame(InstallWizardFrame)
+    app.show_frame(ReleaseWizardFrame)
     wizard = app._current_frame
     _fill_install_wizard(app, wizard)
 
@@ -709,7 +722,7 @@ def test_install_wizard_says_root_is_needed_instead_of_failing_inside_parted(gui
 
     # ...and starting anyway is refused without touching the device
     wizard.confirm_device_var.set("/dev/sdb")
-    wizard._start_install()
+    wizard._start_write()
     app.update()
     assert "root" in wizard.message_bar.var.get()
     assert wizard._running is False
@@ -722,12 +735,12 @@ def test_install_wizard_blocks_mismatched_confirmation(gui_app, tmp_path, monkey
     _open_container(app, tmp_path)
     _make_validated_debian_config(app)
 
-    app.show_frame(InstallWizardFrame)
+    app.show_frame(ReleaseWizardFrame)
     wizard = app._current_frame
     _fill_install_wizard(app, wizard)
 
     wizard.confirm_device_var.set("/dev/sdX-wrong")
-    wizard._start_install()
+    wizard._start_write()
     app.update()
 
     assert "не совпадает" in wizard.message_bar.var.get()
@@ -764,7 +777,7 @@ def test_install_wizard_lists_what_will_be_destroyed(gui_app, tmp_path, monkeypa
     app = gui_app
     _open_container(app, tmp_path)
     _make_validated_debian_config(app)
-    app.show_frame(InstallWizardFrame)
+    app.show_frame(ReleaseWizardFrame)
     wizard = app._current_frame
     _fill_install_wizard(app, wizard)
 
@@ -794,9 +807,9 @@ def test_install_wizard_shows_no_valid_configs_guidance(gui_app, tmp_path):
     app = gui_app
     _open_container(app, tmp_path)
 
-    app.show_frame(InstallWizardFrame)
+    app.show_frame(ReleaseWizardFrame)
     wizard = app._current_frame
-    wizard.image_path_var.set(_throwaway_image(app))
+    wizard.source_var.set(_throwaway_image(app))
     wizard._go_next()  # image -> configuration
     app.update()
 
@@ -879,7 +892,7 @@ def test_configurations_are_marked_against_the_chosen_image(gui_app, tmp_path, m
     all. A configuration written for another family cannot be used with it, and
     saying so in the list is more useful than an error after the choice."""
     from portable_os_admin.config import InstallConfig
-    from portable_os_admin.gui.screens import install_wizard as install_wizard_module
+    from portable_os_admin.gui.screens import release_wizard as release_wizard_module
     from portable_os_admin.install.image_source import ImageInfo
 
     app = gui_app
@@ -894,15 +907,15 @@ def test_configurations_are_marked_against_the_chosen_image(gui_app, tmp_path, m
         architectures=("amd64",), label="Debian 13.6 DVD",
     )
     monkeypatch.setattr(
-        install_wizard_module.image_source, "probe", lambda path: debian_image
+        release_wizard_module.image_source, "probe", lambda path: debian_image
     )
 
-    app.show_frame(InstallWizardFrame)
+    app.show_frame(ReleaseWizardFrame)
     wizard = app._current_frame
-    assert wizard.step_titles[0] == "Образ ОС"
+    assert wizard.step_titles[0] == "Источник"
 
-    wizard.image_path_var.set(_throwaway_image(app))
-    wizard._examine_image(wizard.image_path_var.get())
+    wizard.source_var.set(_throwaway_image(app))
+    wizard._examine_image(wizard.source_var.get())
     _pump(app, lambda: wizard.image_info is not None)
     wizard._go_next()
     app.update()
@@ -1074,19 +1087,29 @@ def test_building_a_distribution_is_reachable_and_asks_for_no_medium(gui_app, tm
     for one -- no device step, no confirmation, no passphrase. That absence is
     the point: it is what makes this operation safe to run at any time.
     """
-    from portable_os_admin.gui.screens.build_wizard import BuildWizardFrame
+    from portable_os_admin.gui.screens.release_wizard import (
+        TARGET_DISTRIBUTION,
+        ReleaseWizardFrame,
+    )
 
     app = gui_app
     _open_container(app, tmp_path)
-    app.show_frame(BuildWizardFrame)
+    app.show_frame(ReleaseWizardFrame)
     app.update()
     wizard = app._current_frame
+    assert isinstance(wizard, ReleaseWizardFrame)
 
-    assert isinstance(wizard, BuildWizardFrame)
+    # Ветвь выбирается так же, как её выбирает человек: образ на первом шаге и
+    # «собрать дистрибутив» рядом с ним.
+    wizard.source_var.set(_throwaway_image(app))
+    wizard.target_var.set(TARGET_DISTRIBUTION)
+    wizard._go_next()
+    app.update()
+
     titles = " ".join(wizard.step_titles).lower()
     for medium_word in ("носитель", "пароль", "подтверждение"):
         assert medium_word not in titles, f"в сборке дистрибутива спрашивается «{medium_word}»"
-    assert "образ" in titles
+    assert "сборка" in titles
 
 
 # ----------------------------------------------------------------------
@@ -1123,10 +1146,10 @@ def _write_distribution(directory, secret=None, **overrides):
 
 
 def _deploy_wizard(app, tmp_path):
-    from portable_os_admin.gui.screens.deploy_wizard import DeployWizardFrame
+    from portable_os_admin.gui.screens.release_wizard import ReleaseWizardFrame
 
     _open_container(app, tmp_path)
-    app.show_frame(DeployWizardFrame)
+    app.show_frame(ReleaseWizardFrame)
     app.update()
     return app._current_frame
 
@@ -1143,7 +1166,7 @@ def test_an_unsigned_distribution_needs_explicit_consent(gui_app, tmp_path, monk
     monkeypatch.setattr("tkinter.messagebox.askyesno", fake_askyesno)
     wizard = _deploy_wizard(gui_app, tmp_path)
     _write_distribution(tmp_path / "dist")
-    wizard.directory_var.set(str(tmp_path / "dist"))
+    wizard.source_var.set(str(tmp_path / "dist"))
     wizard.save_step(0)
 
     assert wizard.validate_step(0) is False
@@ -1170,7 +1193,7 @@ def test_a_broken_signature_is_refused_without_asking(gui_app, tmp_path, monkeyp
     data["name"] = "not-what-was-signed"
     described.write_text(json.dumps(data), encoding="utf-8")
 
-    wizard.directory_var.set(str(tmp_path / "dist"))
+    wizard.source_var.set(str(tmp_path / "dist"))
     wizard.save_step(0)
     assert wizard.validate_step(0) is False
 
@@ -1181,24 +1204,33 @@ def test_deploy_wizard_reads_the_distribution_before_asking_for_a_medium(gui_app
     Порядок шагов здесь и есть защита: каталог, который не дистрибутив,
     отвергается на первом шаге, когда флешку ещё даже не спрашивали.
     """
-    from portable_os_admin.gui.screens.deploy_wizard import DeployWizardFrame
+    from portable_os_admin.gui.screens.release_wizard import ReleaseWizardFrame
 
     app = gui_app
     _open_container(app, tmp_path)
-    app.show_frame(DeployWizardFrame)
+    app.show_frame(ReleaseWizardFrame)
     app.update()
     wizard = app._current_frame
-    assert isinstance(wizard, DeployWizardFrame)
-    assert wizard.step_titles[0].lower().startswith("дистрибутив")
+    assert isinstance(wizard, ReleaseWizardFrame)
+    # Первый шаг спрашивает источник, и он же решает путь выпуска. Пока
+    # источник не прочитан, носителя в плане нет вовсе -- это и есть защита:
+    # каталог, который не дистрибутив, отвергается раньше, чем спросят флешку.
+    #
+    # Проверяется именно здесь, до выбора: после того как дистрибутив принят,
+    # носитель в плане появляется законно, и та же проверка ниже отрицала бы
+    # правильное поведение.
+    assert wizard.step_titles[0] == "Источник"
+    assert "носитель" not in " ".join(wizard.step_titles).lower()
+    assert wizard.metadata is None
 
-    wizard.directory_var.set(str(tmp_path / "пусто"))
+    wizard.source_var.set(str(tmp_path / "пусто"))
     (tmp_path / "пусто").mkdir()
     wizard.save_step(0)
     assert wizard.validate_step(0) is False
     assert wizard.metadata is None
 
     _write_distribution(tmp_path / "dist", secret=app.container.admin_secret)
-    wizard.directory_var.set(str(tmp_path / "dist"))
+    wizard.source_var.set(str(tmp_path / "dist"))
     wizard.save_step(0)
     assert wizard.validate_step(0) is True
     assert wizard.metadata.target_os == "redos"
@@ -1212,16 +1244,16 @@ def test_deploy_wizard_shows_what_it_is_about_to_write(gui_app, tmp_path):
     забыть про неё — значит выдать носитель, ни разу не выполнявшийся на
     настоящем процессоре своей архитектуры.
     """
-    from portable_os_admin.gui.screens.deploy_wizard import DeployWizardFrame
+    from portable_os_admin.gui.screens.release_wizard import ReleaseWizardFrame
 
     app = gui_app
     _open_container(app, tmp_path)
-    app.show_frame(DeployWizardFrame)
+    app.show_frame(ReleaseWizardFrame)
     app.update()
     wizard = app._current_frame
 
     metadata = _write_distribution(tmp_path / "dist", secret=app.container.admin_secret)
-    wizard.directory_var.set(str(tmp_path / "dist"))
+    wizard.source_var.set(str(tmp_path / "dist"))
     wizard.save_step(0)
     wizard.validate_step(0)
     wizard.device_path = "/dev/sdz"
@@ -1246,16 +1278,16 @@ def test_deploy_wizard_shows_what_it_is_about_to_write(gui_app, tmp_path):
 
 def test_deploy_refuses_when_the_device_confirmation_does_not_match(gui_app, tmp_path):
     """Последняя защита от записи не на тот диск, и она проверяется до root."""
-    from portable_os_admin.gui.screens.deploy_wizard import DeployWizardFrame
+    from portable_os_admin.gui.screens.release_wizard import ReleaseWizardFrame
 
     app = gui_app
     _open_container(app, tmp_path)
-    app.show_frame(DeployWizardFrame)
+    app.show_frame(ReleaseWizardFrame)
     app.update()
     wizard = app._current_frame
 
     _write_distribution(tmp_path / "dist", secret=app.container.admin_secret)
-    wizard.directory_var.set(str(tmp_path / "dist"))
+    wizard.source_var.set(str(tmp_path / "dist"))
     wizard.save_step(0)
     wizard.validate_step(0)
     wizard.device_path = "/dev/sdz"
@@ -1269,7 +1301,7 @@ def test_deploy_refuses_when_the_device_confirmation_does_not_match(gui_app, tmp
     app.update()
 
     wizard.confirm_device_var.set("/dev/sda")
-    wizard._start()
+    wizard._start_write()
     app.update()
 
     assert wizard._running is False
@@ -1288,8 +1320,9 @@ def test_dashboard_offers_both_halves_and_fits_its_buttons(gui_app, tmp_path):
     dashboard = app._current_frame
 
     shown = _visible_text(dashboard)
-    assert "Собрать дистрибутив" in shown
-    assert "Развернуть дистрибутив" in shown
+    # Одна кнопка вместо трёх: путь выпуска выводится из источника, а не
+    # выбирается кнопкой до начала работы (зона И5).
+    assert "Выпустить носитель" in shown
 
     app.update_idletasks()
     # Минимальная ширина окна, а не текущая: пользователь вправе сжать окно до
@@ -1323,16 +1356,16 @@ def test_a_long_write_can_be_aborted_from_the_interface(gui_app, tmp_path, monke
     контейнер. Но вместе с ней отключалась и единственная кнопка, которой
     можно было остановить работу: оставалось закрыть программу целиком.
     """
-    from portable_os_admin.gui.screens.deploy_wizard import DeployWizardFrame
+    from portable_os_admin.gui.screens.release_wizard import ReleaseWizardFrame
 
     app = gui_app
     _open_container(app, tmp_path)
-    app.show_frame(DeployWizardFrame)
+    app.show_frame(ReleaseWizardFrame)
     app.update()
     wizard = app._current_frame
 
     _write_distribution(tmp_path / "dist", secret=app.container.admin_secret)
-    wizard.directory_var.set(str(tmp_path / "dist"))
+    wizard.source_var.set(str(tmp_path / "dist"))
     wizard.save_step(0)
     wizard.validate_step(0)
     wizard.device_path = "/dev/sdz"
@@ -1368,17 +1401,17 @@ def test_a_long_write_can_be_aborted_from_the_interface(gui_app, tmp_path, monke
 
 def test_an_abort_is_reported_as_a_decision_not_a_failure(gui_app, tmp_path):
     """«Ошибка» там, где человек сам нажал «Прервать», сбивает с толку."""
-    from portable_os_admin.gui.screens.deploy_wizard import DeployWizardFrame
+    from portable_os_admin.gui.screens.release_wizard import ReleaseWizardFrame
     from portable_os_admin.install.command_runner import InstallAborted
 
     app = gui_app
     _open_container(app, tmp_path)
-    app.show_frame(DeployWizardFrame)
+    app.show_frame(ReleaseWizardFrame)
     app.update()
     wizard = app._current_frame
 
     _write_distribution(tmp_path / "dist", secret=app.container.admin_secret)
-    wizard.directory_var.set(str(tmp_path / "dist"))
+    wizard.source_var.set(str(tmp_path / "dist"))
     wizard.save_step(0)
     wizard.validate_step(0)
     wizard.device_path = "/dev/sdz"
@@ -1391,7 +1424,7 @@ def test_an_abort_is_reported_as_a_decision_not_a_failure(gui_app, tmp_path):
     wizard._render_step()
     app.update()
 
-    wizard._failed(InstallAborted("работа прервана администратором"))
+    wizard._write_failed(InstallAborted("работа прервана администратором"))
     app.update()
 
     shown = wizard.message_bar.var.get()
@@ -1451,16 +1484,28 @@ def test_an_empty_hostname_does_not_produce_a_nameless_system(gui_app, tmp_path)
 # Свои пакеты администратора: путь от кнопки до сборки
 # ----------------------------------------------------------------------
 def _build_wizard_with_config(app, tmp_path, target_os="redos"):
-    """Мастер сборки с уже выбранной проверенной конфигурацией."""
-    from portable_os_admin.gui.screens.build_wizard import BuildWizardFrame
+    """Единый мастер в ветви тиража, с уже выбранной проверенной конфигурацией.
+
+    Ветвь выбирается не подстановкой поля в обход мастера, а так же, как её
+    выбирает человек: образ на первом шаге плюс «собрать дистрибутив». Иначе
+    тест проверял бы состояние, в которое интерфейс не приводит.
+    """
+    from portable_os_admin.gui.screens.release_wizard import (
+        TARGET_DISTRIBUTION,
+        ReleaseWizardFrame,
+    )
 
     config = app.config_manager.create(app.container, "stick1", target_os)
     config.validation_status = "valid"
     app.config_manager.save(app.container, config)
 
-    app.show_frame(BuildWizardFrame)
+    app.show_frame(ReleaseWizardFrame)
     app.update()
     frame = app._current_frame
+    frame.source_var.set(_throwaway_image(app))
+    frame.target_var.set(TARGET_DISTRIBUTION)
+    frame._go_next()
+    app.update()
     frame.selected_config_name = config.name
     return frame
 
@@ -1504,7 +1549,7 @@ def test_a_package_for_the_wrong_family_is_refused_at_once(gui_app, tmp_path):
     right = tmp_path / "rudesktop.rpm"
     right.write_bytes(b"not a real package either")
 
-    from portable_os_admin.gui.screens import build_wizard as module
+    from portable_os_admin.gui.screens import release_wizard as module
 
     module.filedialog.askopenfilenames = lambda **kwargs: (str(wrong), str(right))
     frame._browse_packages()
@@ -1544,7 +1589,7 @@ def test_the_chosen_packages_reach_the_build(gui_app, tmp_path, monkeypatch):
     frame.step_index = frame.step_titles.index("Сборка")
     frame._render_step()
     app.update()
-    frame._start()
+    frame._start_build()
     app.update()
 
     assert captured.get("extra_packages") == [str(package)], (
@@ -1585,7 +1630,7 @@ def test_a_successful_choice_takes_down_the_previous_refusal(gui_app, tmp_path):
     frame._render_step()
     app.update()
 
-    from portable_os_admin.gui.screens import build_wizard as module
+    from portable_os_admin.gui.screens import release_wizard as module
 
     wrong = tmp_path / "client.deb"
     wrong.write_bytes(b"not a real package")
@@ -1706,14 +1751,13 @@ def test_every_wizard_ends_with_a_verb_not_with_ok():
     одном: кнопка, завершающая мастер, должна говорить, что произойдёт.
     «Готово» на шаге, где стирается носитель, -- это согласие вслепую.
     """
-    from portable_os_admin.gui.screens.build_wizard import BuildWizardFrame
     from portable_os_admin.gui.screens.config_wizard import ConfigWizardFrame
-    from portable_os_admin.gui.screens.deploy_wizard import DeployWizardFrame
-    from portable_os_admin.gui.screens.install_wizard import InstallWizardFrame
+    from portable_os_admin.gui.screens.release_wizard import ReleaseWizardFrame
 
     import inspect
 
-    for wizard in (BuildWizardFrame, ConfigWizardFrame, DeployWizardFrame, InstallWizardFrame):
+    # Мастеров два, а не четыре: три мастера выпуска слились в один (зона И5).
+    for wizard in (ConfigWizardFrame, ReleaseWizardFrame):
         source = inspect.getsource(wizard.__init__)
         assert "finish_label" in source, f"{wizard.__name__}: кнопка финала не названа"
         # «Готово» -- то самое слово, которое ничего не говорит.
@@ -1829,16 +1873,16 @@ def test_the_erase_button_stays_disabled_until_the_path_is_repeated(gui_app, tmp
     она отвечает за случай, когда устройство подменили между набором и
     нажатием, -- и её проверяет соседний тест.
     """
-    from portable_os_admin.gui.screens.deploy_wizard import DeployWizardFrame
+    from portable_os_admin.gui.screens.release_wizard import ReleaseWizardFrame
 
     app = gui_app
     _open_container(app, tmp_path)
-    app.show_frame(DeployWizardFrame)
+    app.show_frame(ReleaseWizardFrame)
     app.update()
     wizard = app._current_frame
 
     _write_distribution(tmp_path / "dist", secret=app.container.admin_secret)
-    wizard.directory_var.set(str(tmp_path / "dist"))
+    wizard.source_var.set(str(tmp_path / "dist"))
     wizard.save_step(0)
     wizard.validate_step(0)
     wizard.device_path = "/dev/sdz"
@@ -2339,9 +2383,9 @@ def test_the_deploy_wizard_remembers_the_distribution_for_the_next_stick(gui_app
     тот диск.
     """
     from portable_os_admin.gui import preferences
-    from portable_os_admin.gui.screens.deploy_wizard import (
-        DISTRIBUTION_PREFERENCE_KEY,
-        DeployWizardFrame,
+    from portable_os_admin.gui.screens.release_wizard import (
+        SOURCE_PREFERENCE_KEY,
+        ReleaseWizardFrame,
     )
 
     store = {}
@@ -2350,20 +2394,20 @@ def test_the_deploy_wizard_remembers_the_distribution_for_the_next_stick(gui_app
 
     app = gui_app
     _open_container(app, tmp_path)
-    app.show_frame(DeployWizardFrame)
+    app.show_frame(ReleaseWizardFrame)
     wizard = app._current_frame
     app.update()
 
-    assert wizard.directory_var.get() == "", "мастер начал не с пустого поля"
-    wizard.directory_var.set(str(tmp_path / "dist"))
-    wizard._save_step_distribution()
-    assert store.get(DISTRIBUTION_PREFERENCE_KEY) == str(tmp_path / "dist")
+    assert wizard.source_var.get() == "", "мастер начал не с пустого поля"
+    wizard.source_var.set(str(tmp_path / "dist"))
+    wizard._save_step_source()
+    assert store.get(SOURCE_PREFERENCE_KEY) == str(tmp_path / "dist")
 
     # Следующая флешка: тот же дистрибутив уже подставлен.
-    app.show_frame(DeployWizardFrame)
+    app.show_frame(ReleaseWizardFrame)
     again = app._current_frame
     app.update()
-    assert again.directory_var.get() == str(tmp_path / "dist"), "путь не запомнился"
+    assert again.source_var.get() == str(tmp_path / "dist"), "путь не запомнился"
 
     # Пароль -- никогда.
     assert again.passphrase == "", "пароль запомнился между запусками"
@@ -2515,16 +2559,20 @@ def test_the_build_wizard_offers_a_place_to_put_the_distribution(gui_app, tmp_pa
     переезда конфигураций внутрь контейнера может не быть вовсе. Мастер тогда
     падал на построении шага: `configs_dir` исчез вместе с ним.
     """
-    from portable_os_admin.gui.screens.build_wizard import BuildWizardFrame
+    from portable_os_admin.gui.screens.release_wizard import ReleaseWizardFrame
 
     app = gui_app
     _open_container(app, tmp_path)
     _make_validated_debian_config(app)
 
-    app.show_frame(BuildWizardFrame)
+    app.show_frame(ReleaseWizardFrame)
     wizard = app._current_frame
     app.update()
-    wizard.image_var.set(_throwaway_image(app))
+    wizard.source_var.set(_throwaway_image(app))
+    # Каталог для дистрибутива спрашивается только в ветви тиража.
+    from portable_os_admin.gui.screens.release_wizard import TARGET_DISTRIBUTION
+
+    wizard.target_var.set(TARGET_DISTRIBUTION)
     wizard._go_next()
     app.update()
     wizard.config_table.selection_set(wizard.config_table.get_children()[0])
