@@ -194,15 +194,22 @@ def test_the_deploy_wizard_asks_who_the_medium_is_for():
     """
     from portable_os_admin.gui.screens.deploy_wizard import DeployWizardFrame
 
-    builders = [getattr(f, "__name__", "") for f in DeployWizardFrame._STEP_BUILDERS]
-    assert "_build_step_handover" in builders
+    keys = DeployWizardFrame._STEP_KEYS
+    assert "handover" in keys
     # Перед подтверждением, а не после: на последнем шаге уже идёт запись.
-    assert builders.index("_build_step_handover") < builders.index("_build_step_confirm")
+    assert keys.index("handover") < keys.index("confirm")
 
-    savers = [getattr(f, "__name__", "") for f in DeployWizardFrame._STEP_SAVERS if f]
-    validators = [getattr(f, "__name__", "") for f in DeployWizardFrame._STEP_VALIDATORS if f]
-    assert "_save_step_handover" in savers
-    assert "_validate_step_handover" in validators
+    assert hasattr(DeployWizardFrame, "_save_step_handover")
+    assert hasattr(DeployWizardFrame, "_validate_step_handover")
+
+    # Каждый ключ обязан находить свой строитель.
+    #
+    # Пока шаги были списком ссылок на функции, рассогласование «в списке есть,
+    # а метода нет» было невозможно. Теперь раздача ищет метод по имени ключа,
+    # и опечатка в ключе даёт мастер, падающий на этом шаге у администратора, а
+    # не здесь. Поэтому проверяется весь набор, а не один шаг.
+    missing = [key for key in keys if not hasattr(DeployWizardFrame, f"_build_step_{key}")]
+    assert not missing, f"ключи без строителя: {missing}"
 
 
 def test_the_installer_accepts_a_name_and_files_for_the_exchange():

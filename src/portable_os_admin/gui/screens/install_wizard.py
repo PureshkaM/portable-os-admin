@@ -738,27 +738,31 @@ class InstallWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
             self.message_bar.error(f"Непредвиденная ошибка: {exc}{suffix}")
 
     # -- WizardFrame hooks ------------------------------------------------
-    _STEP_BUILDERS = [
-        _build_step_image, _build_step_config, DeviceStepMixin._build_step_device, _build_step_passphrase, _build_step_confirm
-    ]
-    _STEP_SAVERS = [_save_step_image, None, DeviceStepMixin._save_step_device, _save_step_passphrase, None]
-    _STEP_VALIDATORS = [
-        _validate_step_image, _validate_step_config, DeviceStepMixin._validate_step_device, _validate_step_passphrase, None
-    ]
+    #: Шаги адресуются ключом, а не номером.
+    #:
+    #: Номер молча указывает не на тот шаг, стоит вставить новый: «шаг «Кому и
+    #: что» вставлен между паролем и подтверждением, и `step_index = 3` с тех
+    #: пор открывал не тот шаг -- молча, потому что рисуется он так же». Ключ
+    #: вставку переживает. Он же -- то, чем будет ветвиться путь выпуска, когда
+    #: три мастера сольются в один (зона И5): у трёх ветвей номера шагов
+    #: столкнутся неизбежно, а ключи -- нет.
+    #:
+    #: Шаг без сохранителя или проверяльщика просто не объявляет их: `getattr`
+    #: с умолчанием вместо `None` в списке -- то же самое, но без второго
+    #: места, где порядок надо держать в согласии с первым.
+    _STEP_KEYS = ("image", "config", "device", "passphrase", "confirm")
 
     def build_step(self, index: int, body: ttk.Frame) -> None:
-        self._STEP_BUILDERS[index](self, body)
+        getattr(self, f"_build_step_{self._STEP_KEYS[index]}")(body)
 
     def save_step(self, index: int) -> None:
-        saver = self._STEP_SAVERS[index]
+        saver = getattr(self, f"_save_step_{self._STEP_KEYS[index]}", None)
         if saver is not None:
-            saver(self)
+            saver()
 
     def validate_step(self, index: int) -> bool:
-        validator = self._STEP_VALIDATORS[index]
-        if validator is None:
-            return True
-        return validator(self)
+        validator = getattr(self, f"_validate_step_{self._STEP_KEYS[index]}", None)
+        return True if validator is None else validator()
 
     def on_finish(self) -> None:
         self.app.show_dashboard()

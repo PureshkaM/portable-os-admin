@@ -692,39 +692,24 @@ class DeployWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
             self.message_bar.error(f"Непредвиденная ошибка: {exc}{suffix}")
 
     # -- связка -------------------------------------------------------------
-    _STEP_BUILDERS = [
-        _build_step_distribution,
-        DeviceStepMixin._build_step_device,
-        _build_step_passphrase,
-        _build_step_handover,
-        _build_step_confirm,
-    ]
-    _STEP_SAVERS = [
-        _save_step_distribution,
-        DeviceStepMixin._save_step_device,
-        _save_step_passphrase,
-        _save_step_handover,
-        None,
-    ]
-    _STEP_VALIDATORS = [
-        _validate_step_distribution,
-        DeviceStepMixin._validate_step_device,
-        _validate_step_passphrase,
-        _validate_step_handover,
-        None,
-    ]
+    #: Шаги адресуются ключом, а не номером. Именно здесь номер уже подводил:
+    #: шаг «Кому и что» вставили между паролем и подтверждением, и `step_index
+    #: = 3` с тех пор открывал не тот шаг -- молча, потому что рисуется он так
+    #: же. Ключ вставку переживает, и он же -- то, чем будет ветвиться путь
+    #: выпуска при слиянии трёх мастеров (зона И5).
+    _STEP_KEYS = ("distribution", "device", "passphrase", "handover", "confirm")
 
     def build_step(self, index: int, body: ttk.Frame) -> None:
-        self._STEP_BUILDERS[index](self, body)
+        getattr(self, f"_build_step_{self._STEP_KEYS[index]}")(body)
 
     def save_step(self, index: int) -> None:
-        saver = self._STEP_SAVERS[index]
+        saver = getattr(self, f"_save_step_{self._STEP_KEYS[index]}", None)
         if saver is not None:
-            saver(self)
+            saver()
 
     def validate_step(self, index: int) -> bool:
-        validator = self._STEP_VALIDATORS[index]
-        return True if validator is None else validator(self)
+        validator = getattr(self, f"_validate_step_{self._STEP_KEYS[index]}", None)
+        return True if validator is None else validator()
 
     def on_finish(self) -> None:
         self.app.show_dashboard()

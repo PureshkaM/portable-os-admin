@@ -402,35 +402,27 @@ class BuildWizardFrame(WizardFrame):
                 button.configure(state="normal")
 
     # -- wiring -------------------------------------------------------------
-    _STEP_BUILDERS = [
-        _build_step_image,
-        _build_step_config,
-        _build_step_packages,
-        _build_step_destination,
-        _build_step_run,
-    ]
-    _STEP_SAVERS = [_save_step_image, None, None, _save_step_destination, None]
-    _STEP_VALIDATORS = [
-        _validate_step_image,
-        _validate_step_config,
-        # Своих пакетов может не быть вовсе, и это обычный случай: проверять
-        # здесь нечего, отобранные проверены при выборе.
-        None,
-        _validate_step_destination,
-        None,
-    ]
+    #: Шаги адресуются ключом, а не номером: номер молча указывает не на тот
+    #: шаг, стоит вставить новый, и этот дефект проект уже ловил. Ключ вставку
+    #: переживает, и он же -- то, чем будет ветвиться путь выпуска при слиянии
+    #: трёх мастеров (зона И5).
+    #:
+    #: Шаг «Свои пакеты» не объявляет ни сохранителя, ни проверяльщика, и это
+    #: не упущение: своих пакетов может не быть вовсе -- обычный случай, --
+    #: а отобранные проверены в момент выбора.
+    _STEP_KEYS = ("image", "config", "packages", "destination", "run")
 
     def build_step(self, index: int, body: ttk.Frame) -> None:
-        self._STEP_BUILDERS[index](self, body)
+        getattr(self, f"_build_step_{self._STEP_KEYS[index]}")(body)
 
     def save_step(self, index: int) -> None:
-        saver = self._STEP_SAVERS[index]
+        saver = getattr(self, f"_save_step_{self._STEP_KEYS[index]}", None)
         if saver is not None:
-            saver(self)
+            saver()
 
     def validate_step(self, index: int) -> bool:
-        validator = self._STEP_VALIDATORS[index]
-        return True if validator is None else validator(self)
+        validator = getattr(self, f"_validate_step_{self._STEP_KEYS[index]}", None)
+        return True if validator is None else validator()
 
     def on_finish(self) -> None:
         self.app.show_dashboard()
