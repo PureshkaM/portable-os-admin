@@ -87,7 +87,7 @@ poa-media <id> <номер> <ok|revoked> <ключ носителя: base64 сы
 
 ```
 GET /v2/state
-X-POA-Media: <id, 8 hex>
+X-POA-Media: <id: «приставка-носитель», 8+8 hex; до 1.1.0 — 8 hex>
 X-POA-Nonce: <32 hex>
 X-POA-Info: version=<версия>;machine=<8 hex отпечатка машины>
 X-POA-Signature: <base64 подписи ключом носителя>
