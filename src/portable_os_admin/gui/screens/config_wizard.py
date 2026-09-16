@@ -17,6 +17,7 @@ from tkinter import ttk
 import json
 
 from ...config.repo_browser import RepoPackage, get_package_source
+from ...admin import read_image_facts
 from ...config.schema import (
     LUKS_CIPHERS,
     LUKS_KDFS,
@@ -184,6 +185,34 @@ class ConfigWizardFrame(WizardFrame):
         if self.config_name is not None:
             name_entry.configure(state="disabled")
 
+        # Образ спрашивается первым и один раз: из него читаются семейство,
+        # выпуск, архитектура, языки, пояса, раскладки и приложения. До
+        # 16.09.2026 эти значения брались из кортежей в коде, а образ
+        # предлагалось прочитать кнопкой на шаге пакетов -- то есть правда о
+        # дистрибутиве была делом добровольным и лежала не на своём месте.
+        ttk.Label(form, text="Установочный образ:").grid(
+            row=row, column=0, sticky="ne", padx=(0, 10), pady=(10, 4)
+        )
+        self.image_var = tk.StringVar(value=getattr(self, "_image_path", ""))
+        image_row_frame = ttk.Frame(form)
+        image_row_frame.grid(row=row, column=1, sticky="w", pady=(10, 4))
+        ttk.Entry(
+            image_row_frame, textvariable=self.image_var, width=34, state="readonly"
+        ).pack(side="left")
+        ttk.Button(
+            image_row_frame, text="Выбрать…", command=self._choose_image
+        ).pack(side="left", padx=(theme.SPACE_XS, 0))
+        row += 1
+        self.image_status_var = tk.StringVar(value=self._image_status_text())
+        ttk.Label(
+            form,
+            textvariable=self.image_status_var,
+            style="Hint.TLabel",
+            wraplength=theme.HINT_WRAP,
+            justify="left",
+        ).grid(row=row, column=1, sticky="w", pady=(0, theme.SPACE_XS))
+        row += 1
+
         ttk.Label(form, text="Целевая ОС:").grid(row=row, column=0, sticky="ne", padx=(0, 10), pady=(10, 4))
         os_frame = ttk.Frame(form)
         os_frame.grid(row=row, column=1, sticky="w", pady=(10, 4))
@@ -243,7 +272,7 @@ class ConfigWizardFrame(WizardFrame):
             row,
             "Архитектура носителя:",
             self.arch_var,
-            [ARCH_SAME_AS_HOST, *ARCH_CHOICES],
+            self._arch_values(),
             width=22,
             on_change=self._on_arch_changed,
         )
@@ -274,7 +303,7 @@ class ConfigWizardFrame(WizardFrame):
         self.locale_var = tk.StringVar(value=loc.locale)
         self.locale_combo, row = add_choice(
             form, row, "Язык системы:", self.locale_var,
-            ("ru_RU.UTF-8", "en_US.UTF-8"), width=22, editable=True,
+            self._choice_values("locales"), width=22, editable=True,
         )
         self.keymap_var = tk.StringVar(value=loc.keymap)
         if self.expert_mode:
@@ -283,7 +312,7 @@ class ConfigWizardFrame(WizardFrame):
             # осмысленной только для того, кто собирает консольную систему.
             self.keymap_combo, row = add_choice(
                 form, row, "Раскладка консоли:", self.keymap_var,
-                ("us", "ru"), width=22, editable=True,
+                self._choice_values("keyboard_layouts"), width=22, editable=True,
             )
         self.x11_layouts_var = tk.StringVar(value=loc.x11_layouts)
         _, row = add_field(
@@ -319,8 +348,7 @@ class ConfigWizardFrame(WizardFrame):
         self.timezone_var = tk.StringVar(value=loc.timezone)
         self.timezone_combo, row = add_choice(
             form, row, "Часовой пояс:", self.timezone_var,
-            ("UTC", "Europe/Moscow", "Europe/Kaliningrad", "Asia/Yekaterinburg",
-             "Asia/Novosibirsk", "Asia/Krasnoyarsk", "Asia/Irkutsk", "Asia/Vladivostok"),
+            self._choice_values("timezones"),
             width=22, editable=True,
         )
 
@@ -811,6 +839,117 @@ class ConfigWizardFrame(WizardFrame):
 
         run_in_background(self, fetch, on_success=self._on_catalog_loaded, on_error=self._on_catalog_error)
 
+    def _choose_image(self) -> None:
+        """Выбор образа и чтение всего, что он о себе знает, одним разом."""
+        from tkinter import filedialog
+
+        chosen = filedialog.askopenfilename(
+            parent=self,
+            title="Установочный образ дистрибутива",
+            filetypes=[("Образы", "*.iso *.img"), ("Все файлы", "*")],
+        )
+        if not chosen:
+            return
+        self._image_path = chosen
+        self.image_var.set(chosen)
+        self.image_status_var.set("Читаю образ…")
+        run_in_background(
+            self,
+            lambda: read_image_facts(chosen, packages=list(self.config.packages)),
+            on_success=self._on_image_facts,
+            on_error=self._on_image_facts_error,
+        )
+
+    def _on_image_facts(self, facts) -> None:
+        """Подставляет всё, что образ рассказал о себе, и запирает поля.
+
+        Правило простое (решение 16.09.2026): дал образ список -- поле
+        ограничено этим списком, потому что носитель с чужим значением не
+        соберётся; не дал -- поле открыто, и рядом стоит причина.
+        """
+        self._image_facts = facts
+        if facts.launchers:
+            self._package_launchers = facts.launchers
+            if hasattr(self, "launcher_box"):
+                self._refresh_launchers()
+        info = facts.info
+        if info is not None:
+            # Семейство и выпуск образ знает точнее любого списка в коде.
+            if hasattr(self, "target_os_var") and info.family:
+                self.target_os_var.set(info.family)
+                self._on_target_os_changed()
+            if hasattr(self, "release_var") and info.release:
+                self.release_var.set(info.release)
+        self._apply_image_choices()
+        self.image_status_var.set(self._image_status_text())
+
+    def _on_image_facts_error(self, exc: BaseException) -> None:
+        self._image_facts = None
+        self.image_status_var.set(f"Образ прочитать не удалось: {exc}")
+
+    def _facts(self):
+        return getattr(self, "_image_facts", None)
+
+    def _choice_values(self, name: str) -> "list[str]":
+        """Значения для поля: из образа, если он их дал, иначе пусто."""
+        facts = self._facts()
+        if facts is None:
+            return []
+        choices = getattr(facts, name, None)
+        return list(choices.values) if choices is not None and choices.known else []
+
+    def _arch_values(self) -> "list[str]":
+        facts = self._facts()
+        if facts is None or not facts.architectures.known:
+            return [ARCH_SAME_AS_HOST]
+        return [ARCH_SAME_AS_HOST, *facts.architectures.values]
+
+    def _apply_image_choices(self) -> None:
+        """Закрывает поля списками образа, а без списка -- открывает их."""
+        facts = self._facts()
+        if facts is None:
+            return
+        pairs = (
+            ("locale_combo", facts.locales),
+            ("timezone_combo", facts.timezones),
+            ("keymap_combo", facts.keyboard_layouts),
+        )
+        for attr, choices in pairs:
+            combo = getattr(self, attr, None)
+            if combo is None:
+                continue
+            if choices.known:
+                combo.configure(values=list(choices.values), state="readonly")
+            else:
+                combo.configure(values=[], state="normal")
+        arch_combo = getattr(self, "arch_combo", None)
+        if arch_combo is not None:
+            arch_combo.configure(values=self._arch_values())
+
+    def _image_status_text(self) -> str:
+        """Одна строка о том, что дал образ и чего не дал -- и почему."""
+        facts = self._facts()
+        if facts is None:
+            return "Образ не выбран: значения вводятся вручную."
+        if not facts.usable:
+            return f"Образ прочитать не удалось: {facts.failure}"
+        info = facts.info
+        parts = [f"{info.label}: {info.family} {info.release}"]
+        missing = []
+        for name, choices in (
+            ("языки", facts.locales),
+            ("пояса", facts.timezones),
+            ("раскладки", facts.keyboard_layouts),
+        ):
+            if choices.known:
+                parts.append(f"{name}: {len(choices.values)}")
+            else:
+                missing.append(choices.reason)
+        line = ", ".join(parts)
+        if missing:
+            line += ". " + "; ".join(missing) + " -- эти поля открыты для ввода"
+        return line
+
     def _ask_image_path(self) -> str:
         """Образ, из которого читать; спрашивается один раз за сеанс мастера.
 
@@ -1078,9 +1217,6 @@ class ConfigWizardFrame(WizardFrame):
 
         list_actions = ttk.Frame(inner)
         list_actions.pack(fill="x", pady=(0, theme.SPACE_SM))
-        ttk.Button(
-            list_actions, text="Прочитать из образа…", command=self._read_image_catalog
-        ).pack(side="left")
 
         self._refresh_launchers()
 
@@ -1296,89 +1432,6 @@ class ConfigWizardFrame(WizardFrame):
             style="Hint.TLabel",
             wraplength=theme.TEXT_WRAP,
         ).pack(anchor="w")
-
-    def _read_image_catalog(self) -> None:
-        """Читает из установочного образа то, что иначе вводится по памяти.
-
-        Записи приложений, локали, часовые пояса и раскладки лежат в самом
-        образе, и он единственный источник, который не устареет: список,
-        написанный в коде, разойдётся с дистрибутивом на следующем выпуске.
-
-        Образ монтируется на время чтения. Это требует прав, и приложение их
-        уже имеет -- оно запускается через polkit, -- но если монтирование не
-        удалось, надо сказать об этом, а не оставить пустой список: пустой
-        список выглядит как «в образе ничего нет».
-
-        Ничего не подставляется само. Прочитанное становится **предложением**:
-        имена приложений попадают в выпадающий список поля, локали, пояса и
-        раскладки -- в свои списки на шаге локализации. Выбор остаётся за
-        администратором.
-        """
-        from ...install import image_catalog
-        from ...install.image_source import MountedImage
-
-        chosen = self._ask_image_path()
-        if not chosen:
-            return
-
-        family = self.config.target_os
-        try:
-            with MountedImage(chosen) as image:
-                applications = image_catalog.desktop_applications(image.mountpoint, family)
-                # Связка «пакет -> его запускатели»: из неё складываются
-                # галочки на шаге киоска. Спрашиваем только про выбранные
-                # пакеты -- полный перебор образа занял бы минуты, а нужен
-                # ответ про десяток имён.
-                launchers = image_catalog.launchers_by_package(
-                    image.mountpoint, family, list(self.config.packages)
-                )
-                locales = image_catalog.locales(image.mountpoint, family)
-                zones = image_catalog.timezones(image.mountpoint, family)
-                layouts = image_catalog.keyboard_layouts(image.mountpoint, family)
-        except Exception as exc:  # noqa: BLE001 -- показываем причину, а не молчим
-            self._image_path = ""  # следующая попытка спросит файл заново
-            self.message_bar.error(f"Не удалось прочитать образ: {exc}")
-            return
-
-        self._package_launchers = launchers
-        if hasattr(self, "launcher_box"):
-            self._refresh_launchers()
-        if locales and hasattr(self, "locale_combo"):
-            self.locale_combo.configure(values=locales)
-        if zones and hasattr(self, "timezone_combo"):
-            self.timezone_combo.configure(values=zones)
-        if layouts and hasattr(self, "keymap_combo"):
-            self.keymap_combo.configure(values=[code for code, _name in layouts])
-
-        parts = []
-        if launchers:
-            parts.append(
-                f"запускателей у выбранных пакетов: {sum(len(v) for v in launchers.values())}"
-            )
-        if applications:
-            parts.append(f"приложений в образе: {len(applications)}")
-        if locales:
-            parts.append(f"локалей: {len(locales)}")
-        if zones:
-            parts.append(f"часовых поясов: {len(zones)}")
-        if layouts:
-            parts.append(f"раскладок: {len(layouts)}")
-        if not parts:
-            self.message_bar.error(
-                "В образе не нашлось ни списков, ни записей приложений. "
-                "Похоже, это не установочный образ поддерживаемого семейства."
-            )
-            return
-        note = "Прочитано из образа — " + ", ".join(parts) + "."
-        if not applications and family != "redos":
-            # Сказано прямо: иначе администратор будет искать, что сделал не
-            # так, а дело в самом образе.
-            note += (
-                " Записей приложений на установочном DVD Debian нет: в нём"
-                " отсутствует файл Contents, по которому их можно было бы"
-                " перечислить."
-            )
-        self.message_bar.info(note)
 
     def _save_step_profile(self) -> None:
         self.config.profile = self.profile_var.get()
