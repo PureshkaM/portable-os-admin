@@ -39,7 +39,12 @@ from .command_runner import BOOTSTRAP_TIMEOUT, CommandPlan, CommandResult, Comma
 from . import distribution, overlay
 from . import integrity
 from .devices import BlockDevice, busy_holders, check_install_eligible
-from .disk import DiskManager, MediaLayout, build_media_layout, plan_partitions
+from .disk import (
+    DiskManager,
+    MediaIdentity,
+    MediaLayout,
+    build_media_identity,
+)
 from .image_source import MountedImage, inspect_mounted
 from . import machine_binding
 from .luks import LuksManager
@@ -172,16 +177,14 @@ class OSInstaller:
         #: поколение графической оболочки: ограничения киоска у Plasma 5 и 6
         #: разные, а по выпуску дистрибутива поколение не выводится.
         self._image = None
-        #: Опись незашифрованной части носителя: путь -> sha256. Снимается в
-        #: самом конце записи, когда загрузчик уже стоит, а initramfs собран,
-        #: -- опись, снятая раньше, описывала бы не тот носитель, который
-        #: получит пользователь.
-        self._boot_manifest: dict[str, str] = {}
-        #: Выданные коды восстановления этого прогона: (слот, код, соль).
-        #: Заполняется при создании keyslot'ов и читается там, где собираются
-        #: записи для контейнера администратора, -- иначе список пришлось бы
-        #: протаскивать через три возврата подряд.
-        self._recovery_issued: list = []
+        #: Удостоверение носителя, который пишется сейчас: идентификатор,
+        #: раскладка с UUID томов, ключи, выданные коды и опись загрузчика.
+        #: Одним объектом, а не россыпью полей установщика: опись, коды и ключ
+        #: носителя рождаются на разных шагах записи, и пока каждое лежало
+        #: своим полем, добираться до них приходилось через `getattr` с пустым
+        #: значением по умолчанию -- то есть молча получать пустоту там, где
+        #: шаг не отработал.
+        self._identity: "MediaIdentity | None" = None
         #: True once anything has been written to the medium. Read by the
         #: interface when a run fails, so it can say whether the stick's former
         #: contents are gone -- several failures (a mismatched image, a device
@@ -204,6 +207,17 @@ class OSInstaller:
         self.runner.abort()
 
     @property
+    def _device_public_key_b64(self) -> str:
+        """Открытая часть ключа носителя, который пишется сейчас.
+
+        Само значение живёт в удостоверении, рядом с остальным, что уникально
+        для этого носителя. Раньше оно было отдельным полем установщика, и
+        добираться до него приходилось через `getattr(..., "")`: поле
+        появлялось только если отзыв включён, а читали его безусловно.
+        """
+        return self._identity.device_public_key_b64 if self._identity else ""
+
+    @property
     def unreleased_resources(self) -> tuple[str, ...]:
         """Что осталось занятым после уборки. Читается интерфейсом при отказе."""
         return tuple(self._unreleased)
@@ -219,6 +233,91 @@ class OSInstaller:
             + MIN_SYSTEM_PARTITION_MB
         )
         check_install_eligible(device, required_mb * MIB, require_unmounted=require_unmounted)
+
+    def _new_identity(self, device: BlockDevice, config: InstallConfig) -> MediaIdentity:
+        """Заводит удостоверение носителя -- одинаково для обоих путей записи.
+
+        Одно место, где носитель получает имя. Пока идентификатор, раскладка и
+        имя dm-отображения рождались отдельно в `run` и в
+        `deploy_distribution`, каждый путь собирал их по-своему, и новое поле
+        попадало в один, а во второй -- нет. Отсюда же и приставка
+        администратора в ID: она добавляется здесь, и все, кому ID нужен,
+        получают его целиком, а не отрезанным от имени тома.
+        """
+        media_id = crypto.new_media_id(
+            distribution.key_fingerprint(self.session.container.admin_secret)[:8]
+        )
+        identity = build_media_identity(media_id, device.path, config.disk)
+        self._identity = identity
+        return identity
+
+    def _save_records(
+        self,
+        identity: MediaIdentity,
+        device: BlockDevice,
+        config: InstallConfig,
+        media_name: str,
+        media_owner: str,
+    ) -> "tuple[MediaRecord, list[RecoveryRecord]]":
+        """Заводит записи контейнера по удостоверению носителя -- обоими путями.
+
+        Раньше эти тридцать строк стояли дважды, в `run` и в
+        `deploy_distribution`, и разъезжались: путь установки до 12.09.2026 не
+        заполнял имя и владельца, и носитель попадал в список безымянной
+        строкой без владельца, хотя записи заводит такие же. Теперь поля
+        берутся из одного объекта, и забыть их в одном из путей нечем.
+        """
+        media_record = MediaRecord(
+            media_id=identity.media_id,
+            luks_uuid=identity.layout.luks_uuid,
+            label=device.model or device.path,
+            # Имя даёт администратор при записи: здесь он и решает, кому
+            # носитель пойдёт. После записи носитель попадает в список, где
+            # строки различаются только идентификаторами.
+            name=media_name.strip(),
+            # Владелец -- то, чем восстановление опознаёт человека, а не только
+            # носитель. Мастер выдачи требует это поле; пустым оно остаётся
+            # лишь у носителей, записанных до 11.09.2026, и экран выдачи кода
+            # говорит об этом прямо, а не молчит.
+            owner=media_owner.strip(),
+            config_name=config.name,
+            target_os=config.target_os,
+            # Without this key the log and exchange volumes of this medium can
+            # never be opened from an administrator machine again -- there is
+            # no second copy anywhere.
+            service_key_b64=base64.b64encode(identity.service_key).decode("ascii"),
+            logs_luks_uuid=identity.layout.logs_luks_uuid,
+            exchange_luks_uuid=identity.layout.exchange_luks_uuid,
+            # Открытая часть ключа носителя: её получает сервер отзыва при
+            # публикации записи и по ней проверяет запросы носителя.
+            device_public_key_b64=identity.device_public_key_b64,
+            # Опись незашифрованной части и подпись к ней. Эталон живёт в
+            # контейнере: тот, кто подменит загрузчик, до него не дотянется.
+            boot_manifest=dict(identity.boot_manifest),
+            boot_manifest_signature=integrity.sign(
+                identity.boot_manifest, self.session.container.admin_secret
+            ),
+        )
+        recovery_records = [
+            RecoveryRecord(
+                media_id=identity.media_id,
+                slot=slot,
+                # Код не сохраняется: он выводится из секрета администратора и
+                # вычисляется в момент выдачи. Хранить его значило бы держать
+                # в контейнере то, что и так можно получить, -- и выносить это
+                # наружу при каждом обращении.
+                code="",
+                salt_b64=base64.b64encode(salt).decode("ascii"),
+            )
+            for slot, _code, salt in identity.issued_recovery
+        ]
+
+        # "Установка.Контейнер.Сохранение" -- caller still owns flushing the
+        # container to disk via ContainerManager.save().
+        self.session.container.add_media_record(media_record)
+        for record in recovery_records:
+            self.session.container.add_recovery_record(record)
+        return media_record, recovery_records
 
     def run(
         self,
@@ -272,16 +371,9 @@ class OSInstaller:
         # дистрибутива, и она там есть -- см. deploy_distribution.
         self.check_possible(device, config, require_unmounted=False)
 
-        media_id = crypto.new_media_id(
-            distribution.key_fingerprint(self.session.container.admin_secret)[:8]
-        )
-        partition_plan = plan_partitions(device.path, config.disk)
-        layout = build_media_layout(
-            partition_plan,
-            mapper_name=f"poa-{media_id}",
-            mount_root=f"/mnt/poa-install-{media_id}",
-            media_id=media_id,
-        )
+        identity = self._new_identity(device, config)
+        media_id = identity.media_id
+        layout = identity.layout
 
         plan = CommandPlan(device=device.path)
         state = _TeardownState()
@@ -296,8 +388,8 @@ class OSInstaller:
                 source_url, release, self._source_core_packages,
                 backend.normalize_arch(config.arch),
             )
-            recovery_code, recovery_salt, service_key = self._install(
-                device, config, backend, layout, media_id, user_passphrase, plan, state,
+            self._install(
+                device, config, backend, identity, user_passphrase, plan, state,
                 image_url=source_url, release=release, dry_run=dry_run, confirm_device=confirm_device,
             )
         except Exception as exc:
@@ -313,53 +405,9 @@ class OSInstaller:
             # and the next install would collide with a stale mapper name.
             self._teardown(layout, state, plan, dry_run=dry_run, confirm_device=confirm_device)
 
-        media_record = MediaRecord(
-            media_id=media_id,
-            luks_uuid=layout.luks_uuid,
-            label=device.model or device.path,
-            # Имя и владелец -- то же самое, что и на пути развёртывания, и
-            # заполняются те же поля. Этот путь оставался без них до
-            # 12.09.2026: носитель, собранный «Установить…», попадал в список
-            # безымянной строкой без владельца, хотя записи заводит такие же.
-            name=media_name.strip(),
-            owner=media_owner.strip(),
-            config_name=config.name,
-            target_os=config.target_os,
-            # Without this key the log and exchange volumes of this medium can
-            # never be opened from an administrator machine again -- there is
-            # no second copy anywhere.
-            service_key_b64=base64.b64encode(service_key).decode("ascii"),
-            logs_luks_uuid=layout.logs_luks_uuid,
-            exchange_luks_uuid=layout.exchange_luks_uuid,
-            # Открытая часть ключа носителя: её получает сервер отзыва при
-            # публикации записи и по ней проверяет запросы носителя.
-            device_public_key_b64=getattr(self, "_device_public_key_b64", ""),
-            # Опись незашифрованной части и подпись к ней. Эталон живёт в
-            # контейнере: тот, кто подменит загрузчик, до него не дотянется.
-            boot_manifest=dict(self._boot_manifest),
-            boot_manifest_signature=integrity.sign(
-                self._boot_manifest, self.session.container.admin_secret
-            ),
+        media_record, recovery_records = self._save_records(
+            identity, device, config, media_name, media_owner
         )
-        recovery_records = [
-            RecoveryRecord(
-                media_id=media_id,
-                slot=slot,
-                # Код не сохраняется: он выводится из секрета администратора и
-                # вычисляется в момент выдачи. Хранить его значило бы держать
-                # в контейнере то, что и так можно получить, -- и выносить это
-                # наружу при каждом обращении.
-                code="",
-                salt_b64=base64.b64encode(salt).decode("ascii"),
-            )
-            for slot, code, salt in self._recovery_issued
-        ]
-
-        # "Установка.Контейнер.Сохранение" -- caller still owns flushing the
-        # container to disk via ContainerManager.save().
-        self.session.container.add_media_record(media_record)
-        for record in recovery_records:
-            self.session.container.add_recovery_record(record)
 
         return InstallResult(
             media_record=media_record,
@@ -647,21 +695,14 @@ class OSInstaller:
 
         self.check_possible(device, config, require_unmounted=False)
 
-        media_id = crypto.new_media_id(
-            distribution.key_fingerprint(self.session.container.admin_secret)[:8]
-        )
-        layout = build_media_layout(
-            plan_partitions(device.path, config.disk),
-            mapper_name=f"poa-{media_id}",
-            mount_root=f"/mnt/poa-install-{media_id}",
-            media_id=media_id,
-        )
+        identity = self._new_identity(device, config)
+        layout = identity.layout
         plan = CommandPlan(device=device.path)
         state = _TeardownState()
 
         try:
-            recovery_code, recovery_salt, service_key = self._deploy(
-                device, config, backend, layout, media_id, user_passphrase, plan, state,
+            self._deploy(
+                device, config, backend, identity, user_passphrase, plan, state,
                 directory=directory, metadata=metadata,
                 dry_run=dry_run, confirm_device=confirm_device,
             )
@@ -673,50 +714,9 @@ class OSInstaller:
         else:
             self._teardown(layout, state, plan, dry_run=dry_run, confirm_device=confirm_device)
 
-        media_record = MediaRecord(
-            media_id=media_id,
-            luks_uuid=layout.luks_uuid,
-            label=device.model or device.path,
-            # Имя даёт администратор при записи: здесь он и решает, кому
-            # носитель пойдёт. После записи носитель попадает в список, где
-            # строки различаются только идентификаторами.
-            name=media_name.strip(),
-            # Владелец -- то, чем восстановление опознаёт человека, а не только
-            # носитель. Мастер выдачи требует это поле; пустым оно остаётся
-            # лишь у носителей, записанных до 11.09.2026, и экран выдачи кода
-            # говорит об этом прямо, а не молчит.
-            owner=media_owner.strip(),
-            config_name=config.name,
-            target_os=config.target_os,
-            service_key_b64=base64.b64encode(service_key).decode("ascii"),
-            logs_luks_uuid=layout.logs_luks_uuid,
-            exchange_luks_uuid=layout.exchange_luks_uuid,
-            # Открытая часть ключа носителя: её получает сервер отзыва при
-            # публикации записи и по ней проверяет запросы носителя.
-            device_public_key_b64=getattr(self, "_device_public_key_b64", ""),
-            # Опись незашифрованной части и подпись к ней. Эталон живёт в
-            # контейнере: тот, кто подменит загрузчик, до него не дотянется.
-            boot_manifest=dict(self._boot_manifest),
-            boot_manifest_signature=integrity.sign(
-                self._boot_manifest, self.session.container.admin_secret
-            ),
+        media_record, recovery_records = self._save_records(
+            identity, device, config, media_name, media_owner
         )
-        recovery_records = [
-            RecoveryRecord(
-                media_id=media_id,
-                slot=slot,
-                # Код не сохраняется: он выводится из секрета администратора и
-                # вычисляется в момент выдачи. Хранить его значило бы держать
-                # в контейнере то, что и так можно получить, -- и выносить это
-                # наружу при каждом обращении.
-                code="",
-                salt_b64=base64.b64encode(salt).decode("ascii"),
-            )
-            for slot, code, salt in self._recovery_issued
-        ]
-        self.session.container.add_media_record(media_record)
-        for record in recovery_records:
-            self.session.container.add_recovery_record(record)
 
         return InstallResult(
             media_record=media_record,
@@ -728,16 +728,20 @@ class OSInstaller:
         )
 
     def _deploy(
-        self, device, config, backend, layout, media_id, user_passphrase, plan, state,
+        self, device, config, backend, identity, user_passphrase, plan, state,
         *, directory, metadata, dry_run, confirm_device,
-    ) -> tuple[str, bytes, bytes]:
+    ) -> None:
         run = lambda argv, **kw: self._run(argv, plan, dry_run, confirm_device, **kw)  # noqa: E731
+        layout = identity.layout
 
         archive = distribution.archive_path(directory, metadata)
         overlay_root = self._overlay_root(config, metadata)
 
-        recovery_code, recovery_salt, service_key, boot_key = self._prepare_medium(
-            device, config, layout, media_id, user_passphrase, plan, state, dry_run, confirm_device,
+        # Ключи и коды не возвращаются кортежем, а ложатся в удостоверение:
+        # читают их отсюда и запись контейнера, и тот, кто пишет файлы
+        # носителя, -- каждый из одного места.
+        self._prepare_medium(
+            device, config, identity, user_passphrase, plan, state, dry_run, confirm_device,
             overlay_root=overlay_root,
         )
 
@@ -762,7 +766,7 @@ class OSInstaller:
         self._progress.step("Копирование системы на носитель")
         if overlay_root:
             source = self._deploy_system_image(
-                archive, layout, media_id, state, plan, dry_run, confirm_device
+                archive, layout, state, plan, dry_run, confirm_device
             )
             self._progress.step("Подключение служебных разделов")
             self._mount_boot_partition(layout, state, plan, dry_run, confirm_device)
@@ -787,7 +791,7 @@ class OSInstaller:
             # в уже открытый том. Копия сохраняет владельцев, права, ACL и
             # xattr — без последних перестают работать программы с
             # capabilities, и понять почему по симптомам трудно.
-            source = f"/mnt/poa-dist-{media_id}"
+            source = f"/mnt/poa-dist-{identity.media_id}"
             run(["mkdir", "-p", source])
             run(distribution.mount_command(archive, source))
             state.mounts.append(source)
@@ -819,8 +823,8 @@ class OSInstaller:
 
         self._progress.step("Настройка носителя")
         self._write_medium_identity(
-            config, backend, layout, media_id, recovery_salt, boot_key, service_key,
-            plan, state, dry_run, confirm_device, overlay_root=overlay_root,
+            config, backend, identity, plan, state, dry_run, confirm_device,
+            overlay_root=overlay_root,
         )
 
         # Файлы, уникальные для носителя, появились после разметки эталона —
@@ -838,24 +842,23 @@ class OSInstaller:
 
         self._progress.step("Запись модуля восстановления")
         self._install_recovery_module(
-            layout, media_id, recovery_salt, plan, dry_run=dry_run, confirm_device=confirm_device
+            identity, plan, dry_run=dry_run, confirm_device=confirm_device
         )
 
         self._progress.step("Опись загрузчика и initramfs")
-        self._boot_manifest = self._collect_boot_manifest(layout, dry_run)
+        identity.boot_manifest = self._collect_boot_manifest(layout, dry_run)
         # Слой изменений передаётся только там, где корень собран из образа:
         # метки по overlay не ложатся, и ставить их надо прямо по нему.
         _, upper_dir, _ = overlay.container_paths(layout.container_root)
         self._install_self_check(
-            layout, backend, plan, dry_run, confirm_device,
+            identity, backend, plan, dry_run, confirm_device,
             overlay_upper=upper_dir if overlay_root else "",
         )
 
         self._progress.step("Завершение записи и отключение носителя")
         run(["sync"])
-        return recovery_code, recovery_salt, service_key
 
-    def _write_revocation_key(self, config, layout, plan, dry_run, confirm_device) -> None:
+    def _write_revocation_key(self, config, identity, plan, dry_run, confirm_device) -> None:
         """Открытый ключ ресурса отзыва -- на носитель, обоими путями.
 
         Ключ приходит от сервера: его туда не отправляют, а забирают при
@@ -875,6 +878,8 @@ class OSInstaller:
 
         if not revocation.is_enabled(config):
             return
+
+        layout = identity.layout
 
         key_pem = self.session.container.data.revocation_public_key_pem
         if not key_pem.strip():
@@ -903,7 +908,7 @@ class OSInstaller:
         # Закрытая часть -- только на зашифрованный корень, 0400: пользователь
         # киоска её не прочитает, а без неё запрос серверу получает 403.
         # Открытая часть уезжает в запись носителя в контейнере.
-        private_pem, self._device_public_key_b64 = revocation.new_device_key()
+        private_pem, identity.device_public_key_b64 = revocation.new_device_key()
         self._write_file(
             f"{layout.mount_root}/{revocation.DEVICE_KEY_PATH}",
             private_pem,
@@ -928,7 +933,7 @@ class OSInstaller:
         )
 
     def _write_medium_files(
-        self, config, backend, layout, boot_key, plan, state, dry_run, confirm_device,
+        self, config, backend, identity, plan, state, dry_run, confirm_device,
         *, overlay_root: bool = False, skip_image_files: bool = False,
     ) -> None:
         """Всё, что кладётся на носитель и зависит от него самого.
@@ -956,6 +961,7 @@ class OSInstaller:
         точки монтирования (13.09.2026, Debian + MATE).
         """
         run = lambda argv, **kw: self._run(argv, plan, dry_run, confirm_device, **kw)  # noqa: E731
+        layout = identity.layout
 
         self._probe_uuids(layout, dry_run)
         for relative, content in backend.config_files(config, layout, image=self._image).items():
@@ -982,11 +988,11 @@ class OSInstaller:
         # работающей системе его не читает никто, кроме systemd-cryptsetup.
         run(["mkdir", "-p", f"{layout.mount_root}/{SERVICE_KEY_DIR}"])
         self._write_file(
-            f"{layout.mount_root}/{SERVICE_KEY_PATH}", boot_key, plan, dry_run, confirm_device,
-            binary=True, mode=0o400,
+            f"{layout.mount_root}/{SERVICE_KEY_PATH}", identity.boot_key, plan, dry_run,
+            confirm_device, binary=True, mode=0o400,
         )
 
-        self._write_revocation_key(config, layout, plan, dry_run, confirm_device)
+        self._write_revocation_key(config, identity, plan, dry_run, confirm_device)
 
         # Том обмена монтируется здесь, а не только при загрузке, чтобы его
         # корневой каталог стал доступен на запись тому, кто будет носителем
@@ -1003,22 +1009,28 @@ class OSInstaller:
         )
 
     def _write_medium_identity(
-        self, config, backend, layout, media_id, recovery_salt, boot_key, service_key,
-        plan, state, dry_run, confirm_device, overlay_root: bool = False,
+        self, config, backend, identity, plan, state, dry_run, confirm_device,
+        overlay_root: bool = False,
     ) -> None:
-        """Everything that makes this medium this medium and not another one."""
+        """Everything that makes this medium this medium and not another one.
+
+        Принимает удостоверение целиком, а не восемь значений подряд. Прежний
+        список аргументов содержал и такое, что здесь не нужно вовсе
+        (`service_key`): при россыпи одиночных параметров лишнее не видно ни
+        глазом, ни проверкой.
+        """
         # Сами файлы носителя пишет общий помощник -- тот же, что и на пути
         # установки. Разница между путями ровно одна и выражена флагом:
         # развёртывание кладёт лишь то, чего нет в образе.
         self._write_medium_files(
-            config, backend, layout, boot_key, plan, state, dry_run, confirm_device,
+            config, backend, identity, plan, state, dry_run, confirm_device,
             overlay_root=overlay_root, skip_image_files=True,
         )
 
         # Before the initramfs is built, never after: these are what the
         # rebuild copies into the image.
         self._install_recovery_boot(
-            backend, layout, config, media_id, recovery_salt, plan,
+            backend, identity, config, plan,
             dry_run=dry_run, confirm_device=confirm_device,
         )
 
@@ -1339,8 +1351,7 @@ class OSInstaller:
         device: BlockDevice,
         config: InstallConfig,
         backend,
-        layout: MediaLayout,
-        media_id: str,
+        identity: MediaIdentity,
         user_passphrase: bytes,
         plan: CommandPlan,
         state: "_TeardownState",
@@ -1349,11 +1360,12 @@ class OSInstaller:
         release: str,
         dry_run: bool,
         confirm_device: str | None,
-    ) -> tuple[str, bytes, bytes]:
+    ) -> None:
         run = lambda argv, **kw: self._run(argv, plan, dry_run, confirm_device, **kw)  # noqa: E731
+        layout = identity.layout
 
-        recovery_code, recovery_salt, service_key, boot_key = self._prepare_medium(
-            device, config, layout, media_id, user_passphrase, plan, state, dry_run, confirm_device
+        self._prepare_medium(
+            device, config, identity, user_passphrase, plan, state, dry_run, confirm_device
         )
 
         # Разделы подключаются ДО установки системы, а не после. Правило то же,
@@ -1433,7 +1445,7 @@ class OSInstaller:
         # Тот же помощник, что и на пути развёртывания. Здесь корень собран
         # пакетами, а не развёрнут из образа, поэтому пишется весь набор.
         self._write_medium_files(
-            config, backend, layout, boot_key, plan, state, dry_run, confirm_device,
+            config, backend, identity, plan, state, dry_run, confirm_device,
         )
 
         refresh = backend.package_refresh_command(layout.mount_root)
@@ -1489,7 +1501,7 @@ class OSInstaller:
         # media_id здесь есть -- значит файлы носителя уже написаны, и службы,
         # которые на них опираются, можно включать. На пути сборки
         # дистрибутива его нет, и включение пропускается.
-        for argv in backend.chroot_setup_commands(layout.mount_root, config, media_id):
+        for argv in backend.chroot_setup_commands(layout.mount_root, config, identity.media_id):
             run(argv, timeout=BOOTSTRAP_TIMEOUT)
 
         # Метки мандатного контроля по всему дереву -- тем же вызовом и на том
@@ -1514,7 +1526,7 @@ class OSInstaller:
         # would leave a medium that boots without any recovery at all.
         self._progress.step("Подключение модуля восстановления к загрузке")
         self._install_recovery_boot(
-            backend, layout, config, media_id, recovery_salt, plan, dry_run=dry_run, confirm_device=confirm_device
+            backend, identity, config, plan, dry_run=dry_run, confirm_device=confirm_device
         )
 
         self._progress.step("Сборка initramfs с разблокировкой диска")
@@ -1528,7 +1540,7 @@ class OSInstaller:
 
         self._progress.step("Запись модуля восстановления")
         self._install_recovery_module(
-            layout, media_id, recovery_salt, plan, dry_run=dry_run, confirm_device=confirm_device
+            identity, plan, dry_run=dry_run, confirm_device=confirm_device
         )
 
         # The image is mounted here, on this machine, and will not exist once the
@@ -1545,8 +1557,8 @@ class OSInstaller:
             self._write_file(target, sources, plan, dry_run, confirm_device)
 
         self._progress.step("Опись загрузчика и initramfs")
-        self._boot_manifest = self._collect_boot_manifest(layout, dry_run)
-        self._install_self_check(layout, backend, plan, dry_run, confirm_device)
+        identity.boot_manifest = self._collect_boot_manifest(layout, dry_run)
+        self._install_self_check(identity, backend, plan, dry_run, confirm_device)
 
         self._progress.step("Завершение записи и отключение носителя")
         if temporary_paths:
@@ -1577,23 +1589,28 @@ class OSInstaller:
             confirm_device,
         )
         run(["sync"])
-        return recovery_code, recovery_salt, service_key
 
 
     def _prepare_medium(
-        self, device, config, layout, media_id, user_passphrase, plan, state, dry_run,
+        self, device, config, identity, user_passphrase, plan, state, dry_run,
         confirm_device, overlay_root: bool = False,
-    ) -> tuple[str, bytes, bytes, bytes]:
+    ) -> None:
         """Erases the medium and builds its encrypted, empty structure.
 
         Shared by the one-shot install and by deploying a distribution,
         because it is the part that must happen *per medium*: the LUKS
         master key is generated here, and generating it here is what makes
         two media from one distribution two systems rather than copies of
-        one. Returns the recovery code, its salt, the administrator's
-        service key and the contents of the boot key file.
+        one.
+
+        Всё, что здесь рождается -- коды восстановления с их солями, ключ
+        администратора и ключ-файл загрузки, -- ложится в удостоверение
+        носителя, а не возвращается кортежем из четырёх значений. Кортеж
+        приходилось разбирать у вызывающего и протаскивать дальше по одному,
+        и ровно так значения и отрывались от места, где родились.
         """
         run = lambda argv, **kw: self._run(argv, plan, dry_run, confirm_device, **kw)  # noqa: E731
+        layout = identity.layout
 
         self._progress.step("Отключение носителя от системы")
         self._unmount_medium(device, plan, dry_run, confirm_device)
@@ -1605,7 +1622,9 @@ class OSInstaller:
         # to and saying otherwise would be worse than saying nothing.
         self.medium_modified = not dry_run
         self.disk_manager.apply(
-            plan_partitions(device.path, config.disk),
+            # Та самая разметка, по которой посчитана раскладка носителя, а не
+            # второй такой же расчёт из тех же входных данных.
+            identity.partition_plan,
             dry_run=dry_run,
             confirm_device=confirm_device,
             command_plan=plan,
@@ -1648,7 +1667,7 @@ class OSInstaller:
         # хранится нигде: администратор вычислит его в момент звонка.
         admin_secret = self.session.container.admin_secret
         for slot in slots:
-            code = crypto.derive_recovery_code(admin_secret, media_id, slot)
+            code = crypto.derive_recovery_code(admin_secret, identity.media_id, slot)
             salt = crypto.new_salt()
             self.luks_manager.add_keyslot(
                 layout.system_partition,
@@ -1661,11 +1680,11 @@ class OSInstaller:
             )
             recovery_codes.append(code)
             recovery_salts.append(salt)
-        self._recovery_issued = list(zip(slots, recovery_codes, recovery_salts))
+        identity.issued_recovery = tuple(zip(slots, recovery_codes, recovery_salts))
         # Первый код -- тот, что уезжает в результат установки и в initramfs:
         # именно им пользуется модуль восстановления, пока не израсходован.
-        recovery_code = recovery_codes[0]
-        recovery_salt = recovery_salts[0]
+        identity.recovery_code = recovery_codes[0]
+        identity.recovery_salt = recovery_salts[0]
 
         self._progress.step("Открытие зашифрованного тома")
         self.luks_manager.open(
@@ -1696,8 +1715,8 @@ class OSInstaller:
         # the LUKS passphrase -- that was the chosen threat model, and claiming
         # more would be false.
         self._progress.step("Шифрование разделов журналов и обмена")
-        service_key = crypto.new_volume_key()
-        boot_key = crypto.new_volume_key()
+        service_key = identity.service_key = crypto.new_volume_key()
+        boot_key = identity.boot_key = crypto.new_volume_key()
         for partition, mapper in (
             (layout.logs_partition, layout.logs_mapper_name),
             (layout.exchange_partition, layout.exchange_mapper_name),
@@ -1763,10 +1782,8 @@ class OSInstaller:
         ])
         state.mounts.append(volume_mount)
 
-        return recovery_code, recovery_salt, service_key, boot_key
-
     def _deploy_system_image(
-        self, archive, layout, media_id, state, plan, dry_run, confirm_device
+        self, archive, layout, state, plan, dry_run, confirm_device
     ) -> str:
         """Кладёт образ в контейнер и собирает поверх него корень.
 
@@ -1838,7 +1855,7 @@ class OSInstaller:
             )
 
     def _install_recovery_boot(
-        self, backend, layout: MediaLayout, config: InstallConfig, media_id: str, recovery_salt: bytes,
+        self, backend, identity: MediaIdentity, config: InstallConfig,
         plan: CommandPlan, *, dry_run, confirm_device,
     ) -> None:
         """Puts the recovery flow where the boot environment can reach it.
@@ -1849,6 +1866,7 @@ class OSInstaller:
         before the root has been unlocked -- and it is why the medium keeps no
         second copy of the salt anywhere an attacker could read it.
         """
+        layout = identity.layout
         target_dir = f"{layout.mount_root}/{RECOVERY_DIR}"
         self._run(["mkdir", "-p", target_dir], plan, dry_run, confirm_device)
         self._run(["cp", RECOVERY_MODULE_SRC, f"{target_dir}/recovery_module.sh"], plan, dry_run, confirm_device)
@@ -1891,15 +1909,15 @@ class OSInstaller:
             plan, dry_run, confirm_device,
         )
         self._write_file(
-            f"{target_dir}/recovery_salt.bin", recovery_salt, plan, dry_run, confirm_device,
-            binary=True, mode=0o400,
+            f"{target_dir}/recovery_salt.bin", identity.recovery_salt, plan, dry_run,
+            confirm_device, binary=True, mode=0o400,
         )
         # Everything the module needs to know about this particular medium.
         # The device is named by UUID: the medium boots on machines where the
         # disk ordering is different, and /dev/sda2 would be someone else's.
         self._write_file(
             f"{target_dir}/env",
-            recovery_env(config, media_id, layout.luks_uuid),
+            recovery_env(config, identity.media_id, layout.luks_uuid),
             plan, dry_run, confirm_device, mode=0o400,
         )
         # Готовые строки запросов на все recovery-слоты. Загрузочная среда их
@@ -1908,7 +1926,7 @@ class OSInstaller:
         # загрузке у человека, оставшегося без системы.
         self._write_file(
             f"{target_dir}/requests",
-            RecoveryRequest.table(media_id, machine_binding.recovery_keyslots(config)),
+            RecoveryRequest.table(identity.media_id, machine_binding.recovery_keyslots(config)),
             plan, dry_run, confirm_device, mode=0o400,
         )
 
@@ -1962,7 +1980,7 @@ class OSInstaller:
         })
 
     def _install_self_check(
-        self, layout, backend, plan, dry_run, confirm_device, overlay_upper: str = ""
+        self, identity, backend, plan, dry_run, confirm_device, overlay_upper: str = ""
     ) -> None:
         """Копия описи на зашифрованном корне и служба, которая её сверяет.
 
@@ -1973,10 +1991,11 @@ class OSInstaller:
         значило бы получить службу, которая при каждой загрузке рапортует,
         что всё в порядке, ничего не проверив.
         """
-        if not self._boot_manifest:
+        if not identity.boot_manifest:
             return
         run = lambda argv, **kw: self._run(argv, plan, dry_run, confirm_device, **kw)  # noqa: E731
-        for relative, content in integrity.self_check_files(self._boot_manifest).items():
+        layout = identity.layout
+        for relative, content in integrity.self_check_files(identity.boot_manifest).items():
             target = f"{layout.mount_root}/{relative}"
             run(["mkdir", "-p", target.rsplit("/", 1)[0]])
             self._write_file(target, content, plan, dry_run, confirm_device)
@@ -2029,7 +2048,7 @@ class OSInstaller:
             run(relabel, timeout=BOOTSTRAP_TIMEOUT)
 
     def _install_recovery_module(
-        self, layout: MediaLayout, media_id: str, recovery_salt: bytes, plan: CommandPlan, *, dry_run, confirm_device
+        self, identity: MediaIdentity, plan: CommandPlan, *, dry_run, confirm_device
     ) -> None:
         """"Установка.Загрузка": deploys the reference recovery script and its
         metadata onto the unencrypted ESP, where the admin tool can find it
@@ -2038,15 +2057,21 @@ class OSInstaller:
         The script is still not wired into the bootloader/initramfs as an
         automatic recovery entry -- see README, раздел «Архитектура» "Known
         limitations"."""
-        target_dir = f"{layout.mount_root}/boot/efi/{ESP_METADATA_DIR}"
+        target_dir = f"{identity.layout.mount_root}/boot/efi/{ESP_METADATA_DIR}"
         self._run(["mkdir", "-p", target_dir], plan, dry_run, confirm_device)
 
         self._run(
             ["cp", RECOVERY_MODULE_SRC, f"{target_dir}/recovery_module.sh"], plan, dry_run, confirm_device
         )
-        self._write_file(f"{target_dir}/media_id.txt", media_id + "\n", plan, dry_run, confirm_device)
+        # Идентификатор кладётся целиком и таким, каким родился. Именно этот
+        # файл читает приложение, опознавая носитель позже, и именно здесь
+        # обрезанный ID стоил бы неузнанного носителя.
         self._write_file(
-            f"{target_dir}/recovery_salt.bin", recovery_salt, plan, dry_run, confirm_device, binary=True
+            f"{target_dir}/media_id.txt", identity.media_id + "\n", plan, dry_run, confirm_device
+        )
+        self._write_file(
+            f"{target_dir}/recovery_salt.bin", identity.recovery_salt, plan, dry_run,
+            confirm_device, binary=True,
         )
 
     # ------------------------------------------------------------------
