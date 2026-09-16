@@ -23,8 +23,7 @@ from __future__ import annotations
 import tkinter as tk
 from tkinter import ttk
 
-from ...admin import media_detect
-from ...admin.service_volumes import PlainVolume, partition_by_label
+from ...admin import MediaActions
 from ...errors import PortableOSAdminError
 from ...install import integrity
 from .. import theme
@@ -43,8 +42,9 @@ class IntegrityFrame(ttk.Frame):
         super().__init__(parent, style="Window.TFrame")
         self.app = app
         self.media_id = media_id
+        self._actions = MediaActions(app.session)
 
-        record = app.session.container.find_media(media_id) if media_id else None
+        record = self._actions.find(media_id)
         title = "Проверка носителя"
         if record is not None:
             title += f": {record.label or record.media_id}"
@@ -105,39 +105,14 @@ class IntegrityFrame(ttk.Frame):
         )
 
     def _compare(self) -> "dict[str, list[str]]":
-        expected = dict(self.record.boot_manifest or {})
-        if not expected:
-            raise PortableOSAdminError(
-                "У этого носителя нет описи: он записан версией программы, "
-                "которая её ещё не снимала. Сравнивать не с чем."
-            )
+        """Разбор подписи, опознание носителя и сверка сумм -- в службе.
 
-        # Подпись проверяется до сравнения, а не после. Опись лежит в
-        # зашифрованном контейнере, но проверить её всё равно стоит: файл
-        # мог быть склеен из двух, и тогда сравнение шло бы с чужим эталоном.
-        secret = self.app.session.container.admin_secret
-        if not integrity.verify(expected, self.record.boot_manifest_signature, secret):
-            raise PortableOSAdminError(
-                "Подпись описи не сходится: она составлена не этим контейнером."
-            )
-
-        # Устройство берётся по UUID томов, а не по пути: та же флешка на этой
-        # машине /dev/sdb, на соседней /dev/sdc, и ошибка здесь означала бы
-        # сверку описи одного носителя с загрузчиком другого.
-        found = media_detect.detect_map([self.record]).get(self.record.media_id)
-        if found is None:
-            raise PortableOSAdminError(
-                f"Носитель «{self.record.display_name}» не найден среди подключённых. "
-                "Вставьте его и повторите."
-            )
-
-        esp_partition = partition_by_label(found.device_path, "POA_ESP")
-        boot_partition = partition_by_label(found.device_path, "POA_BOOT")
-        # Оба тома живут ровно столько, сколько считаются суммы, и
-        # размонтируются в любом случае -- в том числе когда подсчёт не удался.
-        with PlainVolume(esp_partition) as esp, PlainVolume(boot_partition) as boot:
-            actual = integrity.collect({"boot": boot.mountpoint, "esp": esp.mountpoint})
-        return integrity.compare(expected, actual)
+        Здесь остаётся одна строка намеренно: тело проверки вынимало из
+        контейнера секрет администратора прямо в экран. Экран, который умеет
+        достать секрет, рано или поздно покажет его, запишет в журнал или
+        отдаст в отчёт -- не по злому умыслу, а потому что он рядом (зона И3).
+        """
+        return self._actions.check_integrity(self.record)
 
     def _show_result(self, difference: "dict[str, list[str]]") -> None:
         if not widget_alive(self):

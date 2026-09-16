@@ -4,7 +4,7 @@ from __future__ import annotations
 import tkinter as tk
 from tkinter import simpledialog, ttk
 
-from ...admin import media_detect
+from ...admin import MediaActions
 from .. import theme
 from ..widgets import Column, MessageBar, button_row, data_table, section_card, section_header
 
@@ -13,6 +13,11 @@ class DashboardFrame(ttk.Frame):
     def __init__(self, parent: tk.Widget, app):
         super().__init__(parent, style="Window.TFrame")
         self.app = app
+        #: Учёт носителей -- дело службы, а не экрана: список, опознание
+        #: подключённых и имя носителя лежат в контейнере, и ходить туда
+        #: четырьмя разными способами из четырёх экранов значит четырежды
+        #: повторить одну и ту же ошибку (зона И3).
+        self._actions = MediaActions(app.session)
 
         # Bottom-up, so the actions and the message line keep their space and
         # the table gives up its own when the window is short.
@@ -147,9 +152,9 @@ class DashboardFrame(ttk.Frame):
         selected = self.table.selection()
         for item in self.table.get_children():
             self.table.delete(item)
-        records = self.app.session.container.data.media_records
+        records = self._actions.records()
         self.placeholder.update(not records)
-        connected = media_detect.detect_map(records)
+        connected = self._actions.connected(records)
         for record in records:
             found = connected.get(record.media_id)
             self.table.insert(
@@ -201,10 +206,7 @@ class DashboardFrame(ttk.Frame):
         if not media_id:
             self.message_bar.error("Выберите носитель в списке.")
             return
-        record = next(
-            (r for r in self.app.session.container.data.media_records if r.media_id == media_id),
-            None,
-        )
+        record = self._actions.find(media_id)
         if record is None:
             self.message_bar.error("Запись о носителе не найдена.")
             return
@@ -217,8 +219,10 @@ class DashboardFrame(ttk.Frame):
         )
         if chosen is None:
             return
-        record.name = chosen.strip()
-        self.app.save_container()
+        # Сохранение -- часть переименования, а не отдельный шаг экрана: имя,
+        # не дошедшее до диска, выглядит здесь успешным и пропадает при
+        # закрытии программы.
+        record = self._actions.rename(media_id, chosen)
         self._refresh_table()
         self.message_bar.success(
             f"Носитель {media_id} теперь называется «{record.display_name}»."

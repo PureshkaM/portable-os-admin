@@ -18,7 +18,7 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import ttk
 
-from ...admin import ExchangeManager
+from ...admin import ExchangeManager, MediaActions
 from ...admin.service_volumes import ServiceVolumeError, open_exchange
 from ...errors import ExchangeError, InsufficientSpaceError
 from .. import theme
@@ -38,6 +38,7 @@ class ExchangeFrame(ttk.Frame):
         super().__init__(parent, style="Window.TFrame")
         self.app = app
         self.manager = ExchangeManager()
+        self._actions = MediaActions(app.session)
         self._volume = None
         self._records = []
 
@@ -160,7 +161,7 @@ class ExchangeFrame(ttk.Frame):
         # с умолчанием превращал промах в пустой список -- ошибка выглядела
         # как честный ответ, и заметить её можно было только зная, что
         # носители есть.
-        self._records = list(self.app.session.container.data.media_records)
+        self._records = list(self._actions.records())
         self.media_box["values"] = [f"{r.media_id} — {r.label} ({r.config_name})" for r in self._records]
         if self._records and not self.media_var.get():
             self.media_box.current(0)

@@ -16,8 +16,8 @@ from __future__ import annotations
 import tkinter as tk
 from tkinter import ttk
 
-from ...admin import LogViewer
-from ...admin.service_volumes import ServiceVolumeError, open_logs
+from ...admin import MediaActions
+from ...admin.service_volumes import ServiceVolumeError
 from ...errors import LogsCorruptedError, LogsUnavailableError
 from .. import theme
 from ..widgets import (
@@ -35,6 +35,7 @@ class LogsFrame(ttk.Frame):
     def __init__(self, parent: tk.Widget, app, media_id: str = ""):
         super().__init__(parent, style="Window.TFrame")
         self.app = app
+        self._actions = MediaActions(app.session)
         #: Носитель, выбранный до входа сюда -- со строки списка носителей.
         #: Спрашивать второй раз то, на что ответ уже дан, значит заставлять
         #: администратора искать в выпадающем списке строку, которую он только
@@ -126,7 +127,7 @@ class LogsFrame(ttk.Frame):
         # с умолчанием превращал промах в пустой список -- ошибка выглядела
         # как честный ответ, и заметить её можно было только зная, что
         # носители есть.
-        self._records = list(self.app.session.container.data.media_records)
+        self._records = list(self._actions.records())
         self.media_box["values"] = [f"{r.media_id} — {r.label} ({r.config_name})" for r in self._records]
         if self._records and not self.media_var.get():
             self.media_box.current(0)
@@ -161,15 +162,10 @@ class LogsFrame(ttk.Frame):
         # for as long as it takes.
         run_in_background(
             self,
-            lambda: self._read(record, filter_text),
+            lambda: self._actions.read_logs(record, filter_text),
             on_success=self._show,
             on_error=self._failed,
         )
-
-    @staticmethod
-    def _read(record, filter_text):
-        with open_logs(record) as volume:
-            return LogViewer().read_logs(volume.mountpoint, filter_substring=filter_text)
 
     def _show(self, lines) -> None:
         if not widget_alive(self):
