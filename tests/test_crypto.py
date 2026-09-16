@@ -88,6 +88,21 @@ def test_a_container_made_with_older_parameters_still_opens():
     assert crypto.decrypt(reopened, nonce, ciphertext) == payload
 
 
+def test_media_id_carries_the_administrator_prefix():
+    """Восьми знаков на общий сервер мало: у разных администраторов записи
+    лежат в одной таблице. Приставка разводит их по своим пространствам."""
+    first = crypto.new_media_id("a1b2c3d4")
+    second = crypto.new_media_id("a1b2c3d4")
+    assert first.startswith("a1b2c3d4-")
+    assert first != second
+    prefix, _, own = first.partition("-")
+    assert len(prefix) == 8 and len(own) == 8
+    # Приставка -- не источник случайности: своя часть у носителей разная.
+    assert own != second.partition("-")[2]
+    # Временные имена приставки не носят: это не ID носителя.
+    assert "-" not in crypto.new_short_id()
+
+
 def test_short_checksum_stable():
     assert crypto.short_checksum("abc", "1") == crypto.short_checksum("abc", "1")
     assert crypto.short_checksum("abc", "1") != crypto.short_checksum("abc", "2")

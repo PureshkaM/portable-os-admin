@@ -101,7 +101,18 @@ class AdminContainer:
         for record in self.data.media_records:
             if record.media_id == media_id:
                 return record
-        return None
+        # Код восстановления везёт только собственную часть ID -- приставка
+        # администратора в нём не нужна, она у контейнера одна. Поэтому запись
+        # ищется и по окончанию, но только если такая запись одна: два
+        # совпавших окончания -- это уже не опознание, и лучше «не найдено»,
+        # чем выданный код от чужого носителя.
+        tail = media_id.rpartition("-")[2] or media_id
+        found = [
+            record
+            for record in self.data.media_records
+            if record.media_id.rpartition("-")[2] == tail
+        ]
+        return found[0] if len(found) == 1 else None
 
     def revoke_media(self, media_id: str, reason: str, *, erased: bool = False) -> MediaRecord:
         """Пометить носитель отозванным -- и записать это в журнал.

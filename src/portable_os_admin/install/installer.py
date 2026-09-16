@@ -272,7 +272,9 @@ class OSInstaller:
         # дистрибутива, и она там есть -- см. deploy_distribution.
         self.check_possible(device, config, require_unmounted=False)
 
-        media_id = crypto.new_media_id()
+        media_id = crypto.new_media_id(
+            distribution.key_fingerprint(self.session.container.admin_secret)[:8]
+        )
         partition_plan = plan_partitions(device.path, config.disk)
         layout = build_media_layout(
             partition_plan,
@@ -411,7 +413,7 @@ class OSInstaller:
             # Сборке нужен упаковщик, а не распаковщик: носителя здесь нет.
             check_tools_available([*backend.required_tools(), "mksquashfs"])
 
-        build_id = crypto.new_media_id()
+        build_id = crypto.new_short_id()
         root = os.path.join(destination, f"rootfs-{build_id}")
         plan = CommandPlan(device=root)
         state = _TeardownState()
@@ -644,7 +646,9 @@ class OSInstaller:
 
         self.check_possible(device, config, require_unmounted=False)
 
-        media_id = crypto.new_media_id()
+        media_id = crypto.new_media_id(
+            distribution.key_fingerprint(self.session.container.admin_secret)[:8]
+        )
         layout = build_media_layout(
             plan_partitions(device.path, config.disk),
             mapper_name=f"poa-{media_id}",

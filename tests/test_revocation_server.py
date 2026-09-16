@@ -169,6 +169,29 @@ def test_a_revoked_medium_is_told_so(server, device):
     assert body.decode("ascii").splitlines()[0] == f"poa-state cafe0001 {nonce} revoked"
 
 
+def test_an_id_with_an_administrator_prefix_works_end_to_end(server, device):
+    """С 1.1.0 ID носителя -- «приставка администратора-носитель»: восьми знаков
+    на общий сервер мало. Носители, выпущенные до приставки, остаются в базе,
+    поэтому сервер понимает оба вида."""
+    prefixed = "a1b2c3d4-cafe0001"
+    assert server.publish(prefixed, 1, "ok", _raw_public(device)) == 201
+
+    status, body, _, nonce = server.ask(prefixed, device)
+    assert status == 200
+    assert body.decode("ascii").splitlines()[0] == f"poa-state {prefixed} {nonce} ok"
+
+    status, body, _ = server.query(prefixed)
+    assert status == 200
+    assert body.decode("ascii").split()[:3] == ["poa-record", prefixed, "ok"]
+
+    # Приставка не открывает дверь сама по себе: чужой носитель того же
+    # администратора неизвестен серверу и получает тот же отказ, что и все.
+    assert server.ask("a1b2c3d4-cafe0002", device)[0] == 403
+    # Вид ID проверяется: лишние части и не тот набор знаков -- отказ.
+    for bad in ("a1b2c3d4-cafe0001-cafe0002", "a1b2c3d4-CAFE0001", "a1b2c3d4-cafe001"):
+        assert server.ask(bad, device)[0] == 403
+
+
 def test_every_refusal_to_a_medium_looks_the_same(server, device):
     """Перебирающий не должен узнать, на каком шаге споткнулся."""
     server.publish("cafe0001", 1, "ok", _raw_public(device))

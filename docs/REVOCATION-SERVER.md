@@ -69,7 +69,7 @@ openssl rand -hex 16 | tee /var/lib/poa-revocation/enrollment-code
 
 ```
 GET /v2/state
-X-POA-Media: <идентификатор, 8 hex>
+X-POA-Media: <идентификатор: «приставка-носитель», 8+8 hex; до 1.1.0 — 8 hex>
 X-POA-Nonce: <32 hex>
 X-POA-Info: version=<версия>;machine=<8 hex отпечатка машины>
 X-POA-Signature: <base64 подписи ключом носителя>

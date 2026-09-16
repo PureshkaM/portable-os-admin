@@ -15,7 +15,7 @@ def session_with_media(tmp_path):
     cm = ContainerManager()
     container = cm.create(tmp_path / "admin.container", "CorrectHorse123")
     session = AdminSession(container)
-    media_id = crypto.new_media_id()
+    media_id = crypto.new_media_id("a1b2c3d4")
     container.add_media_record(
         MediaRecord(media_id=media_id, luks_uuid="u-1", label="stick", config_name="cfg", target_os="debian")
     )
@@ -162,7 +162,7 @@ def test_a_container_created_before_the_change_still_hands_out_its_codes(tmp_pat
     cm = ContainerManager()
     container = cm.create(tmp_path / "old.container", "CorrectHorse123")
     session = AdminSession(container)
-    media_id = crypto.new_media_id()
+    media_id = crypto.new_media_id("a1b2c3d4")
     container.add_media_record(
         MediaRecord(media_id=media_id, luks_uuid="u-1", label="s", config_name="c", target_os="redos")
     )
@@ -207,6 +207,32 @@ def test_issue_code_unknown_media(session_with_media):
     request = RecoveryRequest(media_id="deadbeef", slot=7).encode()
     with pytest.raises(MediaNotRegisteredError):
         RecoveryService(session).issue_code(request)
+
+
+def test_a_prefixed_id_keeps_the_request_short_and_the_code_right(session_with_media):
+    """ID носителя с 1.1.0 состоит из приставки администратора и собственной
+    части. В код запроса приставка не едет -- его диктуют по телефону, и лишние
+    восемь знаков там ни к чему: контейнер, который код читает, приставку знает.
+    А вот сам код восстановления выводится от полного ID: именно им записан
+    keyslot при выдаче носителя."""
+    session, media_id, _ = session_with_media
+    assert "-" in media_id
+    own = media_id.rpartition("-")[2]
+
+    # Запись без готового кода: у неё код выводится, а не достаётся хранимым, --
+    # именно вывод и проверяется.
+    record = session.container.data.recovery_records[-1]
+    record.code = ""
+    record.status = "available"
+
+    request = RecoveryRequest(media_id=media_id, slot=record.slot).encode()
+    assert request == RecoveryRequest(media_id=own, slot=record.slot).encode()
+    assert RecoveryRequest.parse(request).media_id == own
+
+    code = RecoveryService(session).issue_code(request)
+    assert code == crypto.derive_recovery_code(
+        session.container.admin_secret, media_id, record.slot
+    )
 
 
 def test_issue_code_unknown_slot(session_with_media):

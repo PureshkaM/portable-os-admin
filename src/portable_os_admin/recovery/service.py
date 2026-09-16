@@ -43,7 +43,11 @@ class RecoveryService:
                 f"сведения о переносной системе не найдены (media_id={request.media_id})"
             )
 
-        record = self.container.find_recovery(request.media_id, request.slot)
+        # Дальше -- полный ID из найденной записи, а не тот, что приехал в
+        # запросе: код восстановления выводится из «секрет ‖ media_id ‖ слот»,
+        # и при выдаче носителя это был полный ID вместе с приставкой. Возьми
+        # мы укороченный -- код не совпал бы с записанным в keyslot.
+        record = self.container.find_recovery(media.media_id, request.slot)
         if record is None or record.status != "available":
             raise RecoveryDeniedError("recovery-запись недоступна или уже использована")
 
@@ -62,7 +66,7 @@ class RecoveryService:
         if record.code:
             return record.code
         return crypto.derive_recovery_code(
-            self.container.admin_secret, request.media_id, request.slot
+            self.container.admin_secret, media.media_id, request.slot
         )
 
     def register_recovery_record(self, record: RecoveryRecord) -> None:
