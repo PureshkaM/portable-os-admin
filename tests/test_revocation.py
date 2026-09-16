@@ -368,6 +368,28 @@ def test_the_tail_after_the_data_wipe_runs_from_memory():
     assert "echo o > /proc/sysrq-trigger" in tail
 
 
+def test_the_staging_ground_is_executable_and_the_handover_is_guarded():
+    """Живой прогон Debian 16.09.2026: на `/run` там стоит `noexec`, копия
+    загрузчика не запускалась, а `exec`, который не смог запуститься, завершает
+    неинтерактивную оболочку. Уничтожение остановилось сразу после затирания
+    разметки: ключи томов уничтожены, данные целы, носитель не выключился и
+    запасной путь затирания не выполнился вовсе."""
+    script = _full_script()
+
+    # Площадка делается исполняемой до того, как в неё копируют.
+    mount_at = script.index("mount -t tmpfs -o exec")
+    assert mount_at < script.index("stage_binary /bin/sh sh")
+    assert "mount -o remount,exec" in script, "нужен запасной путь, если своя tmpfs не встала"
+
+    # Пробный запуск стоит дважды: при подготовке и прямо перед передачей.
+    assert script.count("\"$STAGE/bin/sh\" -c 'exit 0'") >= 2
+    exec_at = script.index('LC_ALL=C exec "$LOADER"')
+    assert script.rindex("-c 'exit 0'", 0, exec_at) < exec_at
+
+    # Запасной путь остаётся достижимым: затирание с диска идёт после блока.
+    assert script.index('wipe_data "$SYSTEM_DEV" "$SYSTEM_MB"') > exec_at
+
+
 def test_destruction_cannot_be_killed_from_outside():
     """Живая проверка РЕД ОС 15.09.2026: через ~15 секунд после начала
     затирания оболочка и dd получали сигнал 6 извне и носитель оставался

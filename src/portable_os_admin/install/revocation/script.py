@@ -466,6 +466,16 @@ echo 1 > /proc/sys/kernel/sysrq 2>/dev/null
 # Поэтому оболочка и dd копируются в tmpfs вместе с библиотеками и загрузчиком,
 # и затирание данных идёт оттуда.
 STAGE="$STATE_DIR/stage"
+# Площадка для копий обязана быть исполняемой, и это не формальность. На
+# Debian `/run` смонтирован с `noexec` -- проверено 16.09.2026: запуск
+# скопированного загрузчика оттуда даёт «Permission denied». Поэтому под копии
+# монтируется своя tmpfs с правом исполнения; если не вышло -- снимаем запрет с
+# самого каталога состояния, и только потом сдаёмся.
+mkdir -p "$STAGE" 2>/dev/null
+if ! mount -t tmpfs -o exec,mode=700,size=64m poa-stage "$STAGE" 2>/dev/null; then
+    mount -o remount,exec "$STATE_DIR" 2>/dev/null \\
+        || log "площадку для копий не удалось сделать исполняемой"
+fi
 stage_binary() {{
     _src=$(readlink -f "$1") || return 1
     mkdir -p "$STAGE/bin" "$STAGE/lib" || return 1
@@ -481,7 +491,16 @@ if command -v ldd >/dev/null 2>&1 && command -v readlink >/dev/null 2>&1 \\
     for _ld in "$STAGE"/lib/ld-linux*.so*; do
         [ -e "$_ld" ] && LOADER=$_ld && break
     done
-    [ -n "$LOADER" ] && STAGED=1
+    # Пробный запуск, а не надежда. `exec`, который не смог запуститься,
+    # завершает неинтерактивную оболочку -- и запасной путь ниже становится
+    # мёртвым кодом. Живой прогон Debian 16.09.2026 остановился ровно здесь:
+    # ключи всех томов уже уничтожены, данные целы, носитель не выключился.
+    if [ -n "$LOADER" ] && LC_ALL=C "$LOADER" --library-path "$STAGE/lib" \\
+            "$STAGE/bin/sh" -c 'exit 0' 2>/dev/null; then
+        STAGED=1
+    else
+        LOADER=""
+    fi
 fi
 [ -n "$STAGED" ] || log "хвост уничтожения не скопирован в память, затирание пойдёт с диска"
 
@@ -568,8 +587,14 @@ if [ -n "$SYSTEM_DEV" ] && [ -n "$STAGED" ]; then
 {WIPE_TAIL}POA_WIPE
     # Если хвост всё же погибнет, ядро напишет в консоль сигнал и адрес.
     echo 1 > /proc/sys/kernel/print-fatal-signals 2>/dev/null
-    LC_ALL=C exec "$LOADER" --library-path "$STAGE/lib" "$STAGE/bin/sh" "$STAGE/wipe.sh" \\
-        "$SYSTEM_DEV" "$SYSTEM_MB" "$LOADER" "$STAGE/lib" "$STAGE/bin/dd" "$LOG" "$FINAL"
+    # Управление передаётся только той копии, которая доказала, что
+    # запускается: неудачный `exec` завершил бы оболочку, и затирание с диска
+    # ниже не выполнилось бы вовсе.
+    if LC_ALL=C "$LOADER" --library-path "$STAGE/lib" "$STAGE/bin/sh" -c 'exit 0' 2>/dev/null; then
+        LC_ALL=C exec "$LOADER" --library-path "$STAGE/lib" "$STAGE/bin/sh" "$STAGE/wipe.sh" \\
+            "$SYSTEM_DEV" "$SYSTEM_MB" "$LOADER" "$STAGE/lib" "$STAGE/bin/dd" "$LOG" "$FINAL"
+    fi
+    log "копия оболочки не запускается, затирание пойдёт с диска"
 fi
 
 # Запасной путь: скопировать хвост в память не вышло -- затирание с диска, и
