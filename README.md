@@ -845,13 +845,16 @@ src/portable_os_admin/
   container/            # контейнер администратора (шифрованное хранилище)
   config/               # файл конфигурации установки + валидация + repo_browser.py
   install/              # разметка диска, LUKS, образы, бэкенды ОС, оркестратор
-    backends/           # debian (debootstrap), redos (dnf --installroot)
+    backends/           # debian (debootstrap), redos (dnf --installroot),
+                        # constants.py — общие пути и сроки,
+                        # text/ — тексты для носителя (plymouth, fstab, crypttab)
     kiosk/              # режим киоска: общее + environments/ (mate, kde, kde6)
     machine_binding.py  # привязка к машинам: keyslot'ы и скрипты для initramfs
     distribution.py     # сборка и распаковка дистрибутива, контрольная сумма
     autoupdate.py       # самообновление носителя при загрузке
     overlay.py          # squashfs + overlay: корень носителя из образа и слоя
-    revocation.py       # проверка отзыва на носителе: скрипт, служба, ключ
+    revocation/         # проверка отзыва на носителе: скрипт, хвост уничтожения,
+                        # юниты, шлюз сеанса, набор файлов; сам пакет — фасад
   recovery/             # запрос администратору, выдача кода, recovery_module.sh,
                         #   ui.sh — общий экран носителя до загрузки системы
   admin/                # журналы, раздел обмена, сопоставление носителя,
