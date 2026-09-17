@@ -1867,15 +1867,14 @@ def test_sections_use_the_shared_header_and_card():
     import re
 
     screens = pathlib.Path("src/portable_os_admin/gui/screens")
+    # Журналы, обмен, целостность и отзыв стали вкладками окна свойств
+    # (17.09.2026), и своих файлов-экранов у них больше нет. Заголовок и
+    # карточку набирают экраны, а вкладки берут отступы у окна свойств.
     sections = (
         "dashboard.py",
         "configs_list.py",
-        "logs.py",
-        "exchange.py",
         "recovery.py",
         "maintenance.py",
-        "integrity_check.py",
-        "revoke.py",
     )
     offenders = []
     for name in sections:
@@ -1914,7 +1913,9 @@ def test_every_table_explains_itself_when_empty():
     import re
 
     screens = pathlib.Path("src/portable_os_admin/gui/screens")
-    for name in ("dashboard.py", "configs_list.py", "exchange.py"):
+    # Таблица раздела обмена переехала в окно свойств носителя вместе со своим
+    # объяснением пустоты (17.09.2026).
+    for name in ("dashboard.py", "configs_list.py", "media_properties.py"):
         text = (screens / name).read_text(encoding="utf-8")
         said = re.findall(r'empty_text="(.+?)"', text, re.S)
         assert said, f"{name}: у таблицы нет объяснения пустоты"
@@ -2012,11 +2013,18 @@ def _issue_a_medium(app, media_id: str = "46aed677"):
 
 
 def _open_revoke(app, media_id: str = "46aed677"):
-    from portable_os_admin.gui.screens.revoke import RevokeFrame
+    """Отзыв -- вкладка окна свойств носителя, а не экран (17.09.2026).
 
-    app.show_frame(RevokeFrame, media_id=media_id)
+    Помощник возвращает само окно: вкладка живёт в нём, и проверять её надо
+    там, где она открывается у человека — двойным щелчком по строке списка.
+    """
+    from portable_os_admin.gui.screens.media_properties import open_media_properties
+
+    app.show_dashboard()
     app.update()
-    return app._current_frame
+    window = open_media_properties(app._current_frame, app, media_id)
+    app.update()
+    return window
 
 
 def test_the_revoke_screen_does_not_pretend_a_mark_locks_the_medium(gui_app, tmp_path):
@@ -2031,10 +2039,20 @@ def test_the_revoke_screen_does_not_pretend_a_mark_locks_the_medium(gui_app, tmp
     _open_container(app, tmp_path)
     _issue_a_medium(app)
 
-    shown = _visible_text(_open_revoke(app))
+    # Отзыв -- вкладка окна свойств, и по умолчанию открыты «Сведения»:
+    # чтобы прочитать сказанное на ней, её надо выбрать (17.09.2026).
+    window = _open_revoke(app)
+    window.notebook.select(window.notebook.tabs()[-1])
+    app.update()
+    shown = _visible_text(window)
 
-    assert "не запирает" in shown, "экран не говорит, что пометка ничего не запирает"
-    assert "не закрывает доступ" in shown
+    # Проверяется обещание, а не буквы формулировки.
+    #
+    # Раньше тест искал слова «не запирает», которых в коде уже нет ни в одной
+    # ветви: подпись зависит от того, подключён ли ресурс отзыва. В наборе
+    # контейнер создаётся чистым, сервера нет — и это как раз тот случай, где
+    # честность важнее всего: программа до носителя не дотянется.
+    assert "не закрывает доступ" in shown, "не сказано, что пометка не закрывает доступ"
     # И сказано, что носитель всё-таки защищает: иначе честность превращается
     # в «мы ничего не можем», что тоже неправда.
     assert "привязка к машинам" in shown
@@ -2042,31 +2060,41 @@ def test_the_revoke_screen_does_not_pretend_a_mark_locks_the_medium(gui_app, tmp
     assert "не открыть ничем" in shown
 
 
-def test_the_revoke_screen_scrolls_so_back_is_always_reachable(gui_app, tmp_path):
-    """Экран отзыва длиннее окна -- и «Назад» обязан быть досягаем.
+def test_the_revoke_tab_scrolls_so_erasing_is_always_reachable(gui_app, tmp_path):
+    """Вкладка отзыва длиннее окна -- и стирание обязано быть досягаемо.
 
-    Живой прогон 15.09.2026: в штатном окне 1040x700 кнопка «Назад» и
-    стирание уходили за нижний край, а прокрутки у экрана не было -- выйти с
-    него было нечем. Проверка «ни один элемент не сплющен» этого не ловила:
-    кнопка не сплющена, она просто за краем.
+    Живой прогон 15.09.2026: в штатном окне 1040x700 кнопка стирания уходила
+    за нижний край, а прокрутки не было. Проверка «ни один элемент не сплющен»
+    этого не ловит: кнопка не сплющена, она просто за краем.
+
+    После переселения отзыва во вкладку (17.09.2026) дефект вернулся — я снял
+    прокрутку, решив, что вкладка даёт достаточную высоту, — и был пойман
+    снимком. Теперь проверяется то же обещание на новом месте: досягаема
+    должна быть кнопка стирания, «Назад» во вкладке нет вовсе — окно
+    закрывается своей кнопкой в подвале и по Esc.
     """
     from portable_os_admin.gui.widgets import ScrollableArea
 
     app = gui_app
     _open_container(app, tmp_path)
     _issue_a_medium(app)
-    screen = _open_revoke(app)
+    window = _open_revoke(app)
+    window.notebook.select(window.notebook.tabs()[-1])
+    app.update()
 
     def descendants(widget):
         for child in widget.winfo_children():
             yield child
             yield from descendants(child)
 
-    scrollers = [w for w in descendants(screen) if isinstance(w, ScrollableArea)]
-    assert scrollers, "у экрана отзыва нет прокрутки"
+    scrollers = [w for w in descendants(window) if isinstance(w, ScrollableArea)]
+    assert scrollers, "у вкладки отзыва нет прокрутки"
     inside = set(descendants(scrollers[0].content))
-    back = [w for w in inside if w.winfo_class() == "TButton" and w.cget("text") == "Назад"]
-    assert back, "«Назад» лежит вне прокручиваемой области"
+    erase = [
+        w for w in inside
+        if w.winfo_class() == "TButton" and "Стереть" in str(w.cget("text"))
+    ]
+    assert erase, "кнопка стирания лежит вне прокручиваемой области"
 
 
 def test_a_mark_without_a_reason_is_refused(gui_app, tmp_path):
@@ -2141,7 +2169,7 @@ def test_the_integrity_check_says_when_the_medium_is_not_plugged_in(gui_app, tmp
 
     from portable_os_admin.admin import media_detect as media_detect_module
     from portable_os_admin.errors import PortableOSAdminError
-    from portable_os_admin.gui.screens.integrity_check import IntegrityFrame
+    from portable_os_admin.gui.screens.media_properties import open_media_properties
     from portable_os_admin.install import integrity
 
     app = gui_app
@@ -2153,9 +2181,11 @@ def test_the_integrity_check_says_when_the_medium_is_not_plugged_in(gui_app, tmp
         record.boot_manifest, app.session.container.admin_secret
     )
 
-    app.show_frame(IntegrityFrame, media_id=record.media_id)
+    # Целостность -- вкладка окна свойств, а не отдельный экран (17.09.2026).
+    app.show_dashboard()
     app.update()
-    screen = app._current_frame
+    screen = open_media_properties(app._current_frame, app, record.media_id)
+    app.update()
 
     monkeypatch.setattr(media_detect_module, "detect_map", lambda records: {})
 
@@ -2288,12 +2318,14 @@ def test_numbers_are_aligned_right(gui_app, tmp_path):
     dashboard = app._current_frame
     dashboard._refresh_table()
     dashboard.table.selection_set("46aed677")
-    # Действие принимает носитель, на котором вызвано меню: ряд кнопок под
-    # таблицей заменён меню строки (17.09.2026), и выбор больше не читается
-    # действием из таблицы — его передаёт тот, кто меню вызвал.
-    dashboard._open_exchange("46aed677")
+    # Раздел обмена стал вкладкой окна свойств носителя (17.09.2026): выбор
+    # передаётся тем, кто окно открыл, а само окно открывается двойным щелчком
+    # по строке — так, как до него доходит человек.
+    from portable_os_admin.gui.screens.media_properties import open_media_properties
+
+    window = open_media_properties(dashboard, app, "46aed677")
     app.update()
-    table = app._current_frame.files_table
+    table = window.files_table
 
     # str(): Tk возвращает выравнивание объектом-индексом, а не строкой.
     assert str(table.column("size", "anchor")) == "e", "размер выровнен не по правому краю"
@@ -2458,7 +2490,10 @@ def test_no_control_is_squashed_at_the_smallest_window(gui_app, tmp_path):
     # действием над носителем.
     from portable_os_admin.gui.shell import SECTIONS
 
-    for section in [key for key, _title, _hint in SECTIONS] + ["logs", "exchange"]:
+    # Журналы и обмен разделами быть перестали и экранами тоже: они стали
+    # вкладками окна свойств носителя (17.09.2026). Здесь проверяются разделы,
+    # а вкладки окна -- своими тестами.
+    for section in [key for key, _title, _hint in SECTIONS]:
         app.show_section(section)
         _pump(app, lambda: app._current_frame.winfo_width() > 1, timeout=5.0)
         app.update_idletasks()

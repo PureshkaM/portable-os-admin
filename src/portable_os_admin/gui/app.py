@@ -112,11 +112,11 @@ class PortableOSAdminGUI(tk.Tk):
         """
         from .shell import NavigationShell
 
+        # Журналы и обмен здесь больше не значатся: они стали вкладками окна
+        # свойств носителя (17.09.2026), а не экранами во весь размер окна.
         screens = {
             "media": ("dashboard", "DashboardFrame"),
             "configs": ("configs_list", "ConfigsListFrame"),
-            "logs": ("logs", "LogsFrame"),
-            "exchange": ("exchange", "ExchangeFrame"),
             "recovery": ("recovery", "RecoveryFrame"),
             "maintenance": ("maintenance", "MaintenanceFrame"),
         }
