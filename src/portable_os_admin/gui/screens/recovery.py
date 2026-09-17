@@ -36,11 +36,13 @@ class RecoveryFrame(ttk.Frame):
             width=30,
         )
 
+        # «Назад» здесь больше нет: это раздел боковой навигации, и возвращаться
+        # из него некуда -- переход к любому другому разделу делается слева.
+        # Кнопка была наследием времён, когда экран открывался из панели.
         actions = ttk.Frame(card)
         actions.pack(fill="x", pady=theme.SPACE_SM)
-        ttk.Button(actions, text="Выдать код", command=self._issue).pack(side="left")
-        ttk.Button(actions, text="Назад", command=self.app.show_dashboard).pack(
-            side="left", padx=(theme.SPACE_SM, 0)
+        ttk.Button(actions, text="Выдать код", style="Accent.TButton", command=self._issue).pack(
+            side="left"
         )
 
         self.message_bar = MessageBar(card, on_card=True)

@@ -6,7 +6,7 @@ from tkinter import simpledialog, ttk
 
 from ...admin import MediaActions
 from .. import theme
-from ..widgets import Column, MessageBar, button_row, data_table, section_card, section_header
+from ..widgets import Column, MessageBar, data_table, section_card, section_header, table_menu
 
 
 class DashboardFrame(ttk.Frame):
@@ -49,13 +49,14 @@ class DashboardFrame(ttk.Frame):
         # списком разделов слева, и повторять его здесь значит занимать
         # строку тем, что читатель только что прочитал.
         #
-        # Двойной щелчок сам себя не объясняет, и это тот случай, когда
-        # подпись несёт новое, а не пересказывает очевидное.
+        # Подписи про двойной щелчок больше нет. Она объясняла словами то, что
+        # раньше было неочевидно: щелчок открывал проверку загрузчика -- одно
+        # действие из пяти, выбранное неизвестно почему. Теперь он открывает
+        # свойства носителя, и объяснять это не нужно.
         section_header(
             self,
             "Носители",
-            "Носители, зарегистрированные в этом контейнере администратора. "
-            "Двойной щелчок — проверка загрузчика и initramfs.",
+            "Носители, зарегистрированные в этом контейнере администратора.",
         )
 
         card = section_card(self)
@@ -81,7 +82,11 @@ class DashboardFrame(ttk.Frame):
         self.table, self.placeholder = data_table(
             card,
             (
-                Column("name", "Носитель", 120, 120, stretch=True),
+                # Минимумы измерены шрифтом заголовка, а не подобраны на глаз:
+                # тест ширин мерит ровно так (`measure(title) + 16`), и дважды
+                # поймал попытку ужать колонку ниже её же заголовка. Запас над
+                # измеренным — на значение, а не на подпись.
+                Column("name", "Носитель", 160, 90, stretch=True),
                 # Владелец -- второй вопрос после «что это за носитель», и
                 # первый, который задают, когда сотрудник уволился или звонит
                 # за кодом восстановления. Столбец добавлен 11.09.2026; сумма
@@ -89,13 +94,28 @@ class DashboardFrame(ttk.Frame):
                 # размера, и это не дефект, а тот случай, ради которого у
                 # таблицы есть горизонтальная прокрутка: колонки не сжимаются
                 # ниже минимума, а уезжают под прокрутку целиком.
-                Column("owner", "Владелец", 150, 130),
-                Column("status", "Состояние", 130, 110),
-                Column("connected", "Подключён", 110, 105),
-                Column("media_id", "Идентификатор", 145, 140),
-                Column("os", "ОС", 60, 55),
-                Column("config", "Конфигурация", 130, 130),
-                Column("created", "Создан", 125, 120),
+                Column("owner", "Владелец", 150, 90),
+                # «отозван 2026-09-16» -- семнадцать знаков: ширина под
+                # значение, минимум под заголовок (93).
+                Column("status", "Состояние", 150, 95),
+                Column("connected", "Подключён", 110, 100),
+                Column("media_id", "Идентификатор", 150, 135),
+                Column("os", "ОС", 70, 40),
+                # Колонки «Конфигурация» здесь больше нет.
+                #
+                # Сумма минимумов восьми колонок была шире области, и таблица
+                # всё время держала горизонтальную полосу: последняя колонка
+                # уезжала за край. Подгонять ширины бесполезно -- заголовки
+                # сами просят своё («Конфигурация» 124 точки, «Подключён»
+                # 100), и тест ширин дважды поймал попытку ужать их ниже
+                # заголовка. Лишней была колонка, а не пиксели: из чего
+                # носитель собран, в списке смотрят реже всего, и это есть в
+                # свойствах, которые открываются двойным щелчком.
+                #
+                # Дата -- без часового пояса и секунд: в списке её читают,
+                # чтобы отличить «эту неделю» от «прошлого года», полное
+                # время тоже лежит в свойствах.
+                Column("created", "Создан", 100, 70),
             ),
             height=10,
             empty_text="Носителей пока нет.\nНачните с «Установка ОС».",
@@ -105,35 +125,29 @@ class DashboardFrame(ttk.Frame):
         # уже отозвана. Приглушённый цвет отличает её с одного взгляда, не
         # заставляя читать колонку.
         self.table.tag_configure("revoked", foreground=theme.TEXT_MUTED)
-        # Проверка целостности относится к одному носителю, а не к контейнеру
-        # вообще, поэтому она открывается со строки, а не кнопкой: седьмая
-        # кнопка в ряд уже не помещается, и это ловит тест ширины.
-        self.table.bind("<Double-1>", self._open_selected_integrity)
-        # Действия над конкретным носителем стоят под таблицей, а не в общем
-        # ряду: они относятся к выбранной строке, и место рядом с ней говорит
-        # об этом лучше любой подписи.
+        # Действия над носителем -- в меню строки, а не рядом кнопок внизу.
         #
-        # Ряд переносимый, а не сколоченный из `pack(side="left")`: четвёртая
-        # кнопка в окне 900x600 уже не помещается, а Tk её не сжимает -- он
-        # просто перестаёт её рисовать, и «Отзыв…» получал 77 пикселей от
-        # нужных 126. Этот дефект проект ловил трижды, каждый раз одинаково,
-        # и ровно ради него заведён `button_row`.
-        row_host = ttk.Frame(self, style="Window.TFrame")
-        row_host.pack(side="top", fill="x", padx=theme.SPACE_LG)
-        button_row(
-            row_host,
+        # Ряд из пяти кнопок стоял под таблицей и заставлял переводить взгляд и
+        # руку от выделенной строки вниз, чтобы там вспомнить, к чему эти
+        # кнопки относятся. Он же рос вместе с числом действий: четвёртая
+        # кнопка в окне 900x600 уже не помещалась, «Отзыв…» переносился на
+        # вторую строку, и этот дефект проект ловил трижды. Действие над
+        # объектом принадлежит объекту -- правая кнопка на строке.
+        #
+        # Двойной щелчок открывает свойства: это то, чего человек ждёт от
+        # списка, и объяснять подписью больше ничего не нужно.
+        table_menu(
+            self.table,
             (
-                ("Проверить целостность", self._open_selected_integrity),
-                ("Журналы носителя", self._open_selected_logs),
-                # «Обмен» перестал быть разделом слева: файлы кладут не «вообще»,
-                # а на конкретный носитель, и разделом экран первым делом
-                # спрашивал, на какой -- при том что строка уже выделена.
-                ("Обмен носителя", self._open_selected_exchange),
-                ("Переименовать", self._rename_selected),
-                ("Отзыв…", self._open_selected_revoke),
+                ("Свойства", self._open_properties),
+                ("-", None),
+                ("Журналы носителя", self._open_logs),
+                ("Раздел обмена", self._open_exchange),
+                ("-", None),
+                ("Переименовать…", self._rename),
+                ("Отзыв…", self._open_revoke),
             ),
-            style="Window.TFrame",
-            pady=(theme.SPACE_SM, 0),
+            on_open=self._open_properties,
         )
 
         self._poll_job = None
@@ -172,8 +186,11 @@ class DashboardFrame(ttk.Frame):
                     found.device_path if found else "",
                     record.media_id,
                     record.target_os,
-                    record.config_name,
-                    record.created_at,
+                    # Только день: в списке дату читают, чтобы отличить «эту
+                    # неделю» от «прошлого года». Полное время с поясом лежит
+                    # в свойствах носителя, где его и смотрят, когда оно
+                    # действительно нужно.
+                    record.created_at[:10],
                 ),
                 tags=("revoked",) if record.is_revoked else (),
             )
@@ -196,17 +213,25 @@ class DashboardFrame(ttk.Frame):
         finally:
             self._poll_job = self.after(5000, self._poll_connected)
 
-    def _rename_selected(self) -> None:
+    def _open_properties(self, media_id: str) -> None:
+        """Свойства носителя -- окном, а не экраном.
+
+        Список остаётся на месте: свойства объекта это взгляд на одну вещь, и
+        уводить ради него с экрана значит терять место, где человек находился.
+        """
+        from .media_properties import open_media_properties
+
+        open_media_properties(self, self.app, media_id)
+        # Окно могло переименовать носитель: строка должна об этом узнать.
+        self._refresh_table()
+
+    def _rename(self, media_id: str) -> None:
         """Имя носителя живёт в контейнере, а не на флешке.
 
         Поэтому переименование ничего не пишет на носитель: его можно дать
         уже выданному, потерянному и даже сломанному -- лишь бы запись о нём
         была здесь.
         """
-        media_id = self._selected_media_id()
-        if not media_id:
-            self.message_bar.error("Выберите носитель в списке.")
-            return
         record = self._actions.find(media_id)
         if record is None:
             self.message_bar.error("Запись о носителе не найдена.")
@@ -223,7 +248,7 @@ class DashboardFrame(ttk.Frame):
         # Сохранение -- часть переименования, а не отдельный шаг экрана: имя,
         # не дошедшее до диска, выглядит здесь успешным и пропадает при
         # закрытии программы.
-        record = self._actions.rename(media_id, chosen)
+        record = self._actions.rename(media_id, chosen)  # noqa: F841 -- имя ниже
         self._refresh_table()
         self.message_bar.success(
             f"Носитель {media_id} теперь называется «{record.display_name}»."
@@ -250,15 +275,7 @@ class DashboardFrame(ttk.Frame):
         selection = self.table.selection()
         return selection[0] if selection else ""
 
-    def _open_selected_integrity(self, _event=None) -> None:
-        from .integrity_check import IntegrityFrame
-
-        media_id = self._selected_media_id()
-        if not media_id:
-            return
-        self.app.show_frame(IntegrityFrame, media_id=media_id)
-
-    def _open_selected_revoke(self) -> None:
+    def _open_revoke(self, media_id: str) -> None:
         """Отзыв носителя -- отдельный экран, а не вопрос в диалоге.
 
         Потому что ответов два, разной силы: пометить запись отозванной, если
@@ -267,26 +284,14 @@ class DashboardFrame(ttk.Frame):
         """
         from .revoke import RevokeFrame
 
-        media_id = self._selected_media_id()
-        if not media_id:
-            self.message_bar.error("Выберите носитель в списке.")
-            return
         self.app.show_frame(RevokeFrame, media_id=media_id)
 
-    def _open_selected_logs(self) -> None:
-        """Журналы того носителя, который выбран в таблице.
+    def _open_logs(self, media_id: str) -> None:
+        """Журналы того носителя, на котором вызвано меню."""
+        self.app.show_section("logs", media_id=media_id)
 
-        Раздел «Журналы» спрашивает носитель сам; отсюда ответ уже есть, и
-        спрашивать второй раз незачем.
-        """
-        self.app.show_section("logs", media_id=self._selected_media_id())
-
-    def _open_selected_exchange(self) -> None:
-        """Раздел обмена того носителя, который выбран в таблице."""
-        media_id = self._selected_media_id()
-        if not media_id:
-            self.message_bar.error("Выберите носитель в списке.")
-            return
+    def _open_exchange(self, media_id: str) -> None:
+        """Раздел обмена того носителя, на котором вызвано меню."""
         self.app.show_section("exchange", media_id=media_id)
 
     def _open_release(self) -> None:

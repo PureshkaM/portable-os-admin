@@ -167,6 +167,27 @@ def apply(root: tk.Misc) -> ttk.Style:
         "SidebarDanger.TLabel", background=SIDEBAR, foreground=DANGER, font=FONT_BODY
     )
 
+    # -- вкладки -------------------------------------------------------
+    #
+    # Заведены вместе с окном свойств (17.09.2026). Без своего стиля «clam»
+    # рисует вкладки в собственных серо-клетчатых тонах поверх нашей темы --
+    # окно выглядело бы вставленным из другой программы.
+    style.configure("TNotebook", background=BACKGROUND, borderwidth=0, tabmargins=(0, 0, 0, 0))
+    style.configure(
+        "TNotebook.Tab",
+        background=BACKGROUND,
+        foreground=TEXT_MUTED,
+        padding=(SPACE_MD, SPACE_SM),
+        font=FONT_BODY,
+        borderwidth=0,
+    )
+    style.map(
+        "TNotebook.Tab",
+        background=[("selected", SURFACE)],
+        foreground=[("selected", TEXT)],
+        expand=[("selected", (0, 0, 0, 0))],
+    )
+
     # -- surfaces ------------------------------------------------------
     for suffix, colour in (("Card", SURFACE), ("Sunken", SURFACE_SUNKEN)):
         style.configure(f"{suffix}.TFrame", background=colour)

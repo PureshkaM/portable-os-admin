@@ -12,14 +12,15 @@ from tkinter import ttk
 
 from ...config.validator import ConfigValidationUnavailableError
 from .. import theme
+from .config_properties import VALIDATION_TEXT
 from ..widgets import (
     Column,
     MessageBar,
-    button_row,
     data_table,
     error_guard,
     section_card,
     section_header,
+    table_menu,
 )
 
 
@@ -39,56 +40,62 @@ class ConfigsListFrame(ttk.Frame):
 
         # Имя файла тянется за счёт свободного места: оно длиннее остальных
         # колонок и единственное, чего в узком окне жаль.
+        # Заголовки с большой буквы -- как в списке носителей. До 17.09.2026
+        # здесь было «файл, цель, релиз, статус проверки», а там «Носитель,
+        # Владелец, Состояние»: два списка в одной программе выглядели
+        # сделанными разными руками.
         self.table, self.placeholder = data_table(
             card,
             (
-                Column("file", "файл", 220, 140, stretch=True),
-                Column("target_os", "цель", 120, 90),
-                Column("release", "релиз", 120, 90),
-                Column("status", "статус проверки", 180, 140),
+                Column("file", "Конфигурация", 220, 140, stretch=True),
+                Column("target_os", "Система", 120, 90),
+                Column("release", "Выпуск", 120, 90),
+                Column("status", "Проверка", 180, 140),
             ),
             height=12,
             empty_text="Конфигураций пока нет.\nНажмите «Создать новую конфигурацию».",
         )
-        self.table.bind("<Double-1>", lambda _event: self._edit_selected())
+        # Действия -- в меню строки, свойства -- по двойному щелчку. Ряда из
+        # шести кнопок под таблицей больше нет: пять из них были действиями
+        # над выбранной строкой, и среди них «Удалить» стояла рядом с
+        # «Редактировать» -- как равная ей по последствиям.
+        table_menu(
+            self.table,
+            (
+                ("Свойства", self._open_properties),
+                ("-", None),
+                ("Редактировать…", self._edit),
+                ("Проверить", self._validate),
+                ("Выпустить носитель…", self._release),
+                ("-", None),
+                ("Поделиться…", self._share),
+                ("Удалить", self._delete),
+            ),
+            on_open=self._open_properties,
+        )
 
         create_row = ttk.Frame(card)
         create_row.pack(fill="x", pady=(theme.SPACE_SM, theme.SPACE_XS))
         ttk.Button(create_row, text="Создать новую конфигурацию", command=self._create_new).pack(side="left")
-
-        # Кнопок стало шесть вместо девяти.
-        #
-        # Четыре из них были про обмен с другим администратором: «Мой код
-        # обмена…», «Отправить…», «Отправить все…», «Принять…». Они не
-        # действия над выбранной строкой, а работа с чужим контейнером, и
-        # стояли рядом с «Удалить» -- то есть предлагались как равные по
-        # последствиям. Обмен к тому же делают редко: конфигурацию пишут один
-        # раз и потом ей пользуются, а занимала эта работа треть экрана.
-        # Теперь она за одной кнопкой, на своём экране, где рядом сказано, что
-        # код публичный и почему его можно диктовать вслух.
-        #
-        # Ряд переносит не поместившееся на следующую строку: при окне 900x600
-        # «Назад» оставалось 37 пикселей от нужных 126, то есть её не было
-        # видно вовсе.
-        button_row(
-            card,
-            (
-                ("Редактировать", self._edit_selected),
-                ("Проверить", self._validate_selected),
-                ("Установить…", self._install_selected),
-                ("Поделиться…", self._open_share),
-                ("Удалить", self._delete_selected),
-                ("Назад", self.app.show_dashboard),
-            ),
-            pady=(0, theme.SPACE_SM),
-        )
 
         self.message_bar = MessageBar(card, on_card=True)
         self.message_bar.pack(fill="x")
 
         self._refresh_table()
 
-    def _open_share(self) -> None:
+    def _open_properties(self, name: str) -> None:
+        """Свойства конфигурации -- окном, а не экраном.
+
+        Список остаётся на месте: это взгляд на одну вещь, а не переход в
+        другой раздел программы.
+        """
+        from .config_properties import open_config_properties
+
+        open_config_properties(self, self.app, name)
+        # Окно могло запустить проверку: состояние в списке должно догнать.
+        self._refresh_table()
+
+    def _share(self, name: str = "") -> None:
         """Обмен с другим администратором -- на своём экране.
 
         Выбранная строка уезжает туда вместе с переходом: выбор -- уже ответ,
@@ -97,8 +104,6 @@ class ConfigsListFrame(ttk.Frame):
         """
         from .configs_share import ConfigsShareFrame
 
-        selection = self.table.selection()
-        name = self._names[self.table.index(selection[0])] if selection else ""
         self.app.show_frame(ConfigsShareFrame, config_name=name)
 
     def _refresh_table(self) -> None:
@@ -110,9 +115,22 @@ class ConfigsListFrame(ttk.Frame):
         self.placeholder.update(not self._names)
         for name in self._names:
             config = self.app.config_manager.open(self.app.container, name)
+            # `iid=name` -- имя строки и есть имя конфигурации.
+            #
+            # Без этого Tk выдаёт свои «I001», и меню строки передавало бы
+            # действиям идентификатор виджета вместо имени: «Удалить» удаляло
+            # бы не то. В списке носителей именем строки давно служит
+            # `media_id`, и здесь сделано так же.
             self.table.insert(
-                "", "end",
-                values=(name, config.target_os, config.release, config.validation_status),
+                "", "end", iid=name,
+                values=(
+                    name,
+                    config.target_os,
+                    config.release,
+                    # По-русски, как и в свойствах: `valid` в одном месте и
+                    # «проверена» в соседнем -- это два словаря на одну вещь.
+                    VALIDATION_TEXT.get(config.validation_status, config.validation_status),
+                ),
             )
 
     def _selected_name(self) -> "str | None":
@@ -127,18 +145,12 @@ class ConfigsListFrame(ttk.Frame):
 
         self.app.show_frame(ConfigWizardFrame)
 
-    def _edit_selected(self) -> None:
-        name = self._selected_name()
-        if name is None:
-            return
+    def _edit(self, name: str) -> None:
         from .config_wizard import ConfigWizardFrame
 
         self.app.show_frame(ConfigWizardFrame, config_name=name)
 
-    def _validate_selected(self) -> None:
-        name = self._selected_name()
-        if name is None:
-            return
+    def _validate(self, name: str) -> None:
         config = self.app.config_manager.open(self.app.container, name)
         try:
             self.app.config_manager.validate(config)
@@ -153,10 +165,7 @@ class ConfigsListFrame(ttk.Frame):
             self.message_bar.error(f"«{name}»: " + "; ".join(config.validation_errors))
         self._refresh_table()
 
-    def _install_selected(self) -> None:
-        name = self._selected_name()
-        if name is None:
-            return
+    def _release(self, name: str) -> None:
         config = self.app.config_manager.open(self.app.container, name)
         if config.validation_status != "valid":
             self.message_bar.error(
@@ -168,10 +177,7 @@ class ConfigsListFrame(ttk.Frame):
 
         self.app.show_frame(ReleaseWizardFrame, config_name=name)
 
-    def _delete_selected(self) -> None:
-        name = self._selected_name()
-        if name is None:
-            return
+    def _delete(self, name: str) -> None:
         # Подтверждение, потому что возвращать неоткуда.
         #
         # Конфигурация -- это семишаговый мастер, а с 09.09.2026 она живёт

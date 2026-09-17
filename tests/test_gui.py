@@ -943,7 +943,7 @@ def test_configs_list_delete(gui_app, tmp_path, monkeypatch):
     # диалог под Xvfb ждал бы ответа, которого никто не даст: прогон вставал
     # молча на середине, без единой строки о причине -- так это и выглядело.
     monkeypatch.setattr("tkinter.messagebox.askyesno", lambda *a, **k: True)
-    configs._delete_selected()
+    configs._delete(name)
     app.update()
 
     assert app.config_manager.list_configs(app.container) == []
@@ -966,7 +966,7 @@ def test_a_configuration_survives_a_refused_confirmation(gui_app, tmp_path, monk
     configs = app._current_frame
     configs.table.selection_set(configs.table.get_children()[0])
     monkeypatch.setattr("tkinter.messagebox.askyesno", lambda *a, **k: False)
-    configs._delete_selected()
+    configs._delete(name)
     app.update()
 
     assert app.config_manager.list_configs(app.container) == [name], "удалено вопреки отказу"
@@ -2288,7 +2288,10 @@ def test_numbers_are_aligned_right(gui_app, tmp_path):
     dashboard = app._current_frame
     dashboard._refresh_table()
     dashboard.table.selection_set("46aed677")
-    dashboard._open_selected_exchange()
+    # Действие принимает носитель, на котором вызвано меню: ряд кнопок под
+    # таблицей заменён меню строки (17.09.2026), и выбор больше не читается
+    # действием из таблицы — его передаёт тот, кто меню вызвал.
+    dashboard._open_exchange("46aed677")
     app.update()
     table = app._current_frame.files_table
 
@@ -2428,6 +2431,16 @@ def test_no_control_is_squashed_at_the_smallest_window(gui_app, tmp_path):
 
     def squashed(widget, found):
         for child in widget.winfo_children():
+            # Неразмещённое не меряется.
+            #
+            # Tk не размещает содержимое неоткрытых вкладок `Notebook`: у него
+            # размер 1x1, пока вкладку не открыли. Без этой проверки экран с
+            # вкладками объявлялся обрезанным весь целиком («Проверить
+            # состояние» 1x1 вместо 189x42), и настоящие обрезания -- ради
+            # которых проверка и написана -- утонули бы в этом шуме.
+            if not child.winfo_ismapped():
+                squashed(child, found)
+                continue
             if child.winfo_class() in ("TButton", "TEntry", "TCombobox"):
                 if (child.winfo_height() < child.winfo_reqheight()
                         or child.winfo_width() < child.winfo_reqwidth()):
@@ -2592,7 +2605,7 @@ def test_configurations_travel_between_administrators_through_the_screen(gui_app
     app.show_frame(ConfigsListFrame)
     configs = app._current_frame
     configs.table.selection_set(configs.table.get_children()[0])
-    configs._open_share()
+    configs._share("stick1")
     app.update()
     screen = app._current_frame
     assert screen.config_name == "stick1", "выбор не доехал до экрана обмена"

@@ -1133,3 +1133,178 @@ class WizardFrame(ttk.Frame):
 
     def _cancel(self) -> None:
         self.on_cancel()
+
+
+# ----------------------------------------------------------------------
+# Действия над объектом: меню по правой кнопке и окно свойств
+# ----------------------------------------------------------------------
+def table_menu(
+    table: ttk.Treeview,
+    items: "tuple[tuple[str, Callable[[str], None]], ...]",
+    *,
+    on_open: "Callable[[str], None] | None" = None,
+) -> tk.Menu:
+    """Меню действий над строкой -- по правой кнопке, и открытие -- по двойной.
+
+    Заведено 17.09.2026 и заменяет ряды кнопок под таблицами. Действие над
+    объектом принадлежит объекту: ряд кнопок внизу заставлял сначала выделить
+    строку, потом перевести взгляд и руку вниз и там вспомнить, к чему эти
+    кнопки относятся. Кроме того, ряд рос вместе с числом действий и трижды
+    переставал помещаться в окно -- дефект, который в этом проекте ловили
+    снова и снова.
+
+    Правая кнопка сама выделяет строку под курсором: меню, вызванное на одной
+    строке и действующее на другой, -- это стирание не того носителя.
+
+    `on_open` -- двойной щелчок. Первый пункт меню и двойной щелчок ведут в
+    одно место намеренно: это то, чего человек ждёт от списка.
+    """
+    menu = tk.Menu(table, tearoff=0)
+    for title, command in items:
+        if title == "-":
+            menu.add_separator()
+            continue
+        menu.add_command(
+            label=title,
+            command=lambda handler=command: _for_selected(table, handler),
+        )
+
+    def _popup(event: "tk.Event") -> None:
+        row = table.identify_row(event.y)
+        if not row:
+            return
+        # Выделение переносится на строку под курсором до показа меню.
+        table.selection_set(row)
+        table.focus(row)
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+
+    # Кнопка 3 везде, кроме macOS, где правая кнопка приходит как вторая.
+    table.bind("<Button-3>", _popup, add="+")
+    table.bind("<Button-2>", _popup, add="+")
+    if on_open is not None:
+        table.bind("<Double-1>", lambda _event: _for_selected(table, on_open), add="+")
+        # Enter на выделенной строке -- то же самое: список, по которому ходят
+        # стрелками, должен открываться без мыши.
+        table.bind("<Return>", lambda _event: _for_selected(table, on_open), add="+")
+    return menu
+
+
+def _for_selected(table: ttk.Treeview, handler: "Callable[[str], None]") -> None:
+    selection = table.selection()
+    if selection:
+        handler(selection[0])
+
+
+class PropertiesWindow(tk.Toplevel):
+    """Окно свойств объекта: сведения и действия над ним, по вкладкам.
+
+    Открывается двойным щелчком по строке. Так устроены списки везде, где их
+    делают всерьёз, и причина не в привычке: свойства объекта -- это не
+    «ещё один раздел программы», а взгляд на одну вещь, и уводить ради него с
+    экрана со списком значит терять место, где человек находился.
+
+    Окно модальное. Оно показывает состояние одного объекта, и пока оно
+    открыто, список за ним меняться не должен -- иначе действие уедет на
+    строку, которую человек не выбирал.
+    """
+
+    def __init__(self, parent: tk.Widget, title: str, *, width: int = 760, height: int = 560):
+        super().__init__(parent)
+        self.title(title)
+        self.configure(background=theme.BACKGROUND)
+        self.minsize(640, 480)
+        owner = parent.winfo_toplevel()
+        self.transient(owner)
+        # По центру родителя, а не в углу экрана.
+        #
+        # Tk открывает Toplevel там, где придётся -- обычно в левом верхнем
+        # углу, поверх бокового меню. Окно свойств относится к строке, на
+        # которой его позвали, и появляться оно должно там, куда человек
+        # смотрит. Считается от окна программы, а не от экрана: на двух
+        # мониторах центр экрана бывает на соседнем.
+        owner.update_idletasks()
+        # Размер -- от окна программы, а не числом.
+        #
+        # Заданная жёстко высота упиралась в край экрана, и подвал с кнопкой
+        # «Закрыть» оказывался за ним: окно свойств выше своего родителя
+        # физически некуда поместить (снимок 17.09.2026). Поэтому запрошенное
+        # берётся как пожелание, а потолок ставит окно программы.
+        width = min(width, max(560, owner.winfo_width() - 2 * theme.SPACE_LG))
+        height = min(height, max(420, owner.winfo_height() - 2 * theme.SPACE_LG))
+        left = owner.winfo_rootx() + max(0, (owner.winfo_width() - width) // 2)
+        top = owner.winfo_rooty() + max(0, (owner.winfo_height() - height) // 2)
+        self.geometry(f"{width}x{height}+{max(0, left)}+{max(0, top)}")
+
+        outer = ttk.Frame(self, style="Window.TFrame", padding=theme.SPACE_MD)
+        outer.pack(fill="both", expand=True)
+
+        self.notebook = ttk.Notebook(outer)
+        self.notebook.pack(fill="both", expand=True)
+
+        self.message_bar = MessageBar(outer)
+        self.message_bar.pack(fill="x", pady=(theme.SPACE_SM, 0))
+
+        footer = ttk.Frame(outer, style="Window.TFrame")
+        footer.pack(fill="x", pady=(theme.SPACE_SM, 0))
+        self.close_btn = ttk.Button(footer, text="Закрыть", command=self.destroy)
+        self.close_btn.pack(side="right")
+
+        # Esc закрывает -- окно свойств ничего не разрушает само по себе, и
+        # выход из него должен быть таким же дешёвым, как вход.
+        self.bind("<Escape>", lambda _event: self.destroy())
+        self.protocol("WM_DELETE_WINDOW", self.destroy)
+
+    def tab(self, title: str) -> ttk.Frame:
+        """Вкладка с готовыми отступами: содержимое не набирает их само."""
+        page = ttk.Frame(self.notebook, style="Card.TFrame", padding=theme.SPACE_MD)
+        self.notebook.add(page, text=title)
+        return page
+
+    def take_focus(self) -> None:
+        """Забрать фокус и не отдавать, пока окно открыто.
+
+        Отдельным шагом, а не в конструкторе: захват до того, как окно
+        отрисовано, в Tk молча не срабатывает, и окно остаётся немодальным.
+        """
+        self.update_idletasks()
+        self.lift()
+        self.focus_force()
+        try:
+            self.grab_set()
+        except tk.TclError:
+            # Захват невозможен на экране без оконного менеджера (Xvfb в
+            # наборе): окно всё равно работает, просто без модальности.
+            pass
+
+
+#: Ширина столбца подписей в сведениях об объекте, в знаках.
+#:
+#: Задана одним числом на все окна свойств. Без неё столбец подбирается по
+#: самой длинной подписи своего окна: у носителя выходило 145 точек, у
+#: конфигурации 275, и два окна одной программы выглядели сделанными разными
+#: руками (снимки 17.09.2026).
+FACT_LABEL_WIDTH = 22
+
+
+def facts_table(parent: tk.Widget, rows: "tuple[tuple[str, str], ...]") -> ttk.Frame:
+    """Сведения об объекте: подпись слева, значение справа, одной сеткой.
+
+    Отдельный помощник, потому что таких мест в окне свойств несколько, а
+    разъезжаются они мгновенно: у одного столбец подписей 16 знаков, у
+    другого 20, и глаз цепляется за ступеньку между соседними блоками.
+    """
+    grid = ttk.Frame(parent, style="Card.TFrame")
+    grid.pack(fill="x", anchor="w")
+    grid.columnconfigure(1, weight=1)
+    for row, (label, value) in enumerate(rows):
+        ttk.Label(grid, text=label, style="Muted.TLabel", width=FACT_LABEL_WIDTH).grid(
+            row=row, column=0, sticky="nw", padx=(0, theme.SPACE_MD), pady=theme.SPACE_XS
+        )
+        ttk.Label(
+            grid, text=value or "—", style="Card.TLabel",
+            wraplength=420, justify="left",
+        ).grid(row=row, column=1, sticky="w", pady=theme.SPACE_XS)
+    return grid

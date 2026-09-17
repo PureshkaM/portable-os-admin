@@ -17,7 +17,6 @@ from ...install import leftovers
 from .. import theme
 from ..widgets import (
     MessageBar,
-    ScrollableArea,
     add_field,
     run_in_background,
     section_card,
@@ -39,31 +38,35 @@ class MaintenanceFrame(ttk.Frame):
             "Действия над самим контейнером и следами прерванных установок.",
         )
 
-        # Прокрутка, а не «авось поместится»: разделов стало три, и в окне
-        # 900x600 кнопка последнего съезжала за нижний край -- это поймала
-        # проверка «ни один элемент не сплющен», написанная после того, как
-        # однажды не поместился ряд кнопок главного экрана. Приём тот же, что и
-        # у шагов мастера: содержимое кладётся в `.content`.
+        # Вкладки, а не прокрутка.
+        #
+        # Здесь три разнородные вещи -- пароль контейнера, следы прерванных
+        # установок и ресурс отзыва, -- и общего у них только одно: пока всё
+        # идёт как надо, сюда не заходят. Сложенные в столбик, они не
+        # помещались в окно, и прокрутка была заплаткой: третий блок всё равно
+        # оказывался обрезан (снимок 17.09.2026). Каждая вкладка помещается
+        # целиком, и читать на ней надо одну вещь, а не искать её среди трёх.
         outer = section_card(self, grow=True)
-        scroller = ScrollableArea(outer)
-        scroller.pack(fill="both", expand=True)
-        card = scroller.content
+        notebook = ttk.Notebook(outer)
+        notebook.pack(fill="both", expand=True)
 
-        ttk.Label(card, text="Пароль контейнера", font=theme.FONT_SECTION).pack(anchor="w")
+        password_page = ttk.Frame(notebook, style="Card.TFrame", padding=theme.SPACE_MD)
+        notebook.add(password_page, text="Пароль контейнера")
         ttk.Label(
-            card,
+            password_page,
             text="Контейнер хранит ключи всех выданных носителей: сменить пароль стоит "
             "тогда же, когда меняют любой другой ключ от хранилища.",
             style="Hint.TLabel",
             wraplength=theme.TEXT_WRAP,
-        ).pack(anchor="w", pady=(theme.SPACE_XS, theme.SPACE_SM))
-        ttk.Button(card, text="Сменить пароль…", command=self._open_password).pack(anchor="w")
+        ).pack(anchor="w", pady=(0, theme.SPACE_SM))
+        ttk.Button(password_page, text="Сменить пароль…", command=self._open_password).pack(
+            anchor="w"
+        )
 
-        ttk.Separator(card).pack(fill="x", pady=theme.SPACE_MD)
-
-        ttk.Label(card, text="Следы прерванных установок", font=theme.FONT_SECTION).pack(anchor="w")
+        leftovers_page = ttk.Frame(notebook, style="Card.TFrame", padding=theme.SPACE_MD)
+        notebook.add(leftovers_page, text="Следы установок")
         ttk.Label(
-            card,
+            leftovers_page,
             # Подпись объясняет не кнопку, а то, чего без неё не увидеть:
             # прерванная установка оставляет систему в состоянии, которое
             # снаружи ничем себя не выдаёт.
@@ -72,22 +75,25 @@ class MaintenanceFrame(ttk.Frame):
             "потом не узнает, поэтому смотреть сюда.",
             style="Hint.TLabel",
             wraplength=theme.TEXT_WRAP,
-        ).pack(anchor="w", pady=(theme.SPACE_XS, theme.SPACE_SM))
-        ttk.Button(card, text="Проверить состояние", command=self._check_leftovers).pack(anchor="w")
+        ).pack(anchor="w", pady=(0, theme.SPACE_SM))
+        ttk.Button(
+            leftovers_page, text="Проверить состояние", command=self._check_leftovers
+        ).pack(anchor="w")
 
-        ttk.Separator(card).pack(fill="x", pady=theme.SPACE_MD)
+        revocation_page = ttk.Frame(notebook, style="Card.TFrame", padding=theme.SPACE_MD)
+        notebook.add(revocation_page, text="Ресурс отзыва")
+        self.revocation_state = ttk.Label(
+            revocation_page, text="", style="Card.TLabel", wraplength=theme.TEXT_WRAP
+        )
+        self.revocation_state.pack(anchor="w", pady=(0, theme.SPACE_SM))
 
-        ttk.Label(card, text="Ресурс отзыва носителей", font=theme.FONT_SECTION).pack(anchor="w")
-        self.revocation_state = ttk.Label(card, text="", wraplength=theme.TEXT_WRAP)
-        self.revocation_state.pack(anchor="w", pady=(theme.SPACE_XS, theme.SPACE_SM))
-
-        form = ttk.Frame(card)
-        form.pack(anchor="w")
+        form = ttk.Frame(revocation_page, style="Card.TFrame")
+        form.pack(anchor="w", fill="x")
         self.revocation_url = tk.StringVar(
             value=self.app.session.container.data.revocation_server_url
         )
         self.revocation_code = tk.StringVar()
-        _, row = add_field(form, 0, "Адрес", self.revocation_url, label_style="TLabel")
+        _, row = add_field(form, 0, "Адрес", self.revocation_url)
         add_field(
             form,
             row,
@@ -95,11 +101,10 @@ class MaintenanceFrame(ttk.Frame):
             self.revocation_code,
             hint="Печатается при установке сервера и годится один раз. "
             "Уже знакомому ресурсу код не нужен — поле остаётся пустым.",
-            label_style="TLabel",
         )
-        ttk.Button(card, text="Подключиться", command=self._connect_revocation).pack(
-            anchor="w", pady=(theme.SPACE_SM, 0)
-        )
+        ttk.Button(
+            revocation_page, text="Подключиться", command=self._connect_revocation
+        ).pack(anchor="w", pady=(theme.SPACE_SM, 0))
         self._show_revocation_state()
 
     def _open_password(self) -> None:
