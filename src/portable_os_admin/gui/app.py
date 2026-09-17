@@ -11,6 +11,8 @@ alongside the TUI rather than replacing it.
 from __future__ import annotations
 
 import gc
+import os
+import signal
 import tkinter as tk
 from pathlib import Path
 from tkinter import ttk
@@ -59,6 +61,22 @@ class PortableOSAdminGUI(tk.Tk):
         self._status: tk.StringVar | None = None
 
         self.protocol("WM_DELETE_WINDOW", self._on_close_window)
+        # Крестик -- не единственное нештатное закрытие. Выход из системы и
+        # `kill` присылают SIGTERM, и без обработчика процесс умирает мгновенно:
+        # секреты остаются незатёртыми, а служебные тома -- открытыми
+        # устройствами /dev/mapper, то есть доступом к журналам и разделу
+        # обмена носителя без всякого пароля.
+        #
+        # Молча мирится с невозможностью: обработчик ставится только из
+        # главного потока, и в чужом окружении (встроенный интерпретатор,
+        # тестовый запуск в потоке) это законный отказ, а не повод не
+        # открыться. Во время записи носителя свои обработчики ставит
+        # `TerminationGuardMixin` и возвращает эти на место, когда закончит.
+        for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+            try:
+                signal.signal(sig, self._on_termination)
+            except (ValueError, OSError, AttributeError):
+                pass
         self.show_startup()
 
     @property
@@ -153,32 +171,113 @@ class PortableOSAdminGUI(tk.Tk):
         if self.session is not None:
             self.container_manager.save(self.session.container)
 
-    def close_session(self) -> None:
+    def end_session(self) -> None:
+        """Закрыть сеанс: сохранить, освободить тома, затереть секреты.
+
+        Отделено от выхода намеренно, и это не лазейка мимо `close_session`:
+        закрытие сеанса -- настоящая часть работы, а выход добавляется сверху.
+
+        Порядок здесь имеет значение. Сначала сохраняется контейнер -- после
+        затирания сохранить уже нельзя, и это правильно. Потом уничтожается
+        экран: именно он держит открытые тома обмена и журналов и закрывает их
+        в своём `<Destroy>`. И только затем затираются секреты.
+        """
         if self.session is not None:
             self.save_container()
+        # Экран -- до затирания: он закрывает служебные тома, которые держит.
+        self._teardown_current()
+        if self._shell is not None:
+            self._shell.destroy()
+            self._shell = None
+        if self.session is not None:
             self.session.close()
         self.session = None
         self.container_path = None
-        self.show_startup()  # он же уберёт оболочку с навигацией
+        self.show_startup()
 
-    def _on_close_window(self) -> None:
-        # Closing mid-install is how the medium ends up mounted, its volume
-        # open and a bootstrap process orphaned and still writing. Asked rather
-        # than prevented: it is the administrator's machine, and there are good
-        # reasons to stop.
-        if self.install_in_progress():
-            if not messagebox.askyesno(
-                "Идёт установка",
-                "Сейчас идёт установка на носитель. Если закрыть программу, установка "
+    def close_session(self) -> None:
+        """Закрыть сеанс и завершить программу.
+
+        Программа завершается, а не возвращается на начальный экран, и это
+        решение о безопасности, а не об удобстве.
+
+        Ключ контейнера затирается на месте, но секрет администратора -- тот,
+        из которого выводятся коды восстановления **всех** выданных
+        носителей, -- живёт в памяти строкой. Строку в Python затереть нельзя:
+        она неизменяема, сборщик мусора копирует объекты между поколениями, а
+        каждое обращение к секрету создаёт новые байты. Пока процесс жив, всё
+        это лежит в его куче -- читается через `/proc/PID/mem`, попадает в
+        дамп при падении, может уйти в своп. Единственная надёжная гарантия --
+        смерть процесса: страницы возвращаются ядру и обнуляются перед выдачей
+        другому.
+
+        Цена известна и принята: сменить контейнер можно только перезапуском
+        программы. Смена контейнера -- редкость (администратор работает со
+        своим), а гарантия иначе недостижима.
+        """
+        if not self._may_stop_now():
+            return
+        self.end_session()
+        self._quit()
+
+    def _may_stop_now(self) -> bool:
+        """Спрашивает, если прерывание испортит носитель.
+
+        Вопрос задаётся на обоих путях выхода. До 17.09.2026 его задавал
+        только крестик, а «Закрыть сеанс» посреди записи убивало программу
+        молча -- носитель оставался непригодным, и человек узнавал об этом от
+        флешки, а не от программы.
+        """
+        if not self.install_in_progress():
+            return True
+        return bool(
+            messagebox.askyesno(
+                "Идёт запись на носитель",
+                "Сейчас идёт запись на носитель. Если закрыть программу, работа "
                 "будет прервана, а носитель останется в непригодном состоянии — его "
                 "придётся размечать заново.\n\nВсё равно закрыть?",
                 icon="warning",
                 default="no",
                 parent=self,
-            ):
-                return
-        self.save_container()
-        self.destroy()
+            )
+        )
+
+    def _on_close_window(self) -> None:
+        """Крестик -- такой же конец работы, как кнопка, и ведёт туда же.
+
+        Раньше он сохранял контейнер и уничтожал окно, оставляя секреты в
+        памяти умирающего процесса на волю случая. Теперь оба пути сходятся в
+        одном месте: закрыть сеанс, затереть, выйти.
+        """
+        if not self._may_stop_now():
+            return
+        self.end_session()
+        self._quit()
+
+    def _on_termination(self, _signum, _frame):
+        """Выход из системы и `kill` -- то же нештатное закрытие, что крестик.
+
+        Без обработчика процесс умирает мгновенно, не затерев ничего и не
+        закрыв служебные тома: они остались бы открытыми устройствами
+        `/dev/mapper`, то есть доступом к журналам и разделу обмена носителя
+        без всякого пароля.
+        """
+        self.end_session()
+        self._quit()
+
+    def _quit(self) -> None:
+        """Завершить процесс, а не только закрыть окно.
+
+        `os._exit`, а не `sys.exit`: выход из обработчика Tk до конца
+        `mainloop` не доходит, а финализаторы на пути к нормальному выходу
+        создали бы новые копии того, что только что затёрто. Контейнер к этому
+        моменту сохранён, файлы закрыты и отданы ядру -- терять нечего.
+        """
+        try:
+            self.destroy()
+        except tk.TclError:
+            pass
+        os._exit(0)
 
     def install_in_progress(self) -> bool:
         frame = self._current_frame

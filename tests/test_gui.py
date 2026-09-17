@@ -293,10 +293,96 @@ def test_a_mistyped_new_password_is_refused_before_the_container_is_made(gui_app
     assert target.exists()
 
 
+def test_closing_the_session_ends_the_program(gui_app, tmp_path, monkeypatch):
+    """«Закрыть сеанс» завершает программу, а не возвращает на начальный экран.
+
+    Иначе затирание неполно: ключ контейнера лежит в bytearray и затирается, а
+    секрет администратора -- строкой, которую в Python не затереть. Пока
+    процесс жив, она читается через /proc/PID/mem и может уйти в своп.
+    """
+    app = gui_app
+    _open_container(app, tmp_path)
+    quits = []
+    monkeypatch.setattr(app, "_quit", lambda: quits.append(True))
+
+    app.close_session()
+    app.update()
+
+    assert quits, "программа осталась работать после конца сеанса"
+    assert app.session is None
+
+
+def test_the_window_cross_ends_the_program_the_same_way(gui_app, tmp_path, monkeypatch):
+    """Крестик -- такой же конец работы, и путь у него тот же.
+
+    Раньше он сохранял контейнер и уничтожал окно, оставляя секреты в памяти
+    умирающего процесса на волю случая.
+    """
+    app = gui_app
+    _open_container(app, tmp_path)
+    quits = []
+    monkeypatch.setattr(app, "_quit", lambda: quits.append(True))
+
+    app._on_close_window()
+    app.update()
+
+    assert quits, "крестик не завершил программу"
+    assert app.session is None
+
+
+def test_both_ways_out_ask_while_a_medium_is_being_written(gui_app, tmp_path, monkeypatch):
+    """Прерывание записи стоит носителя, поэтому спрашивают оба пути.
+
+    До 17.09.2026 вопрос задавал только крестик, а «Закрыть сеанс» посреди
+    записи убивало программу молча — и человек узнавал о непригодном носителе
+    от флешки, а не от программы.
+    """
+    app = gui_app
+    _open_container(app, tmp_path)
+    quits: list = []
+    asked: list = []
+    monkeypatch.setattr(app, "_quit", lambda: quits.append(True))
+    monkeypatch.setattr(app, "install_in_progress", lambda: True)
+    monkeypatch.setattr(
+        "tkinter.messagebox.askyesno", lambda *a, **k: asked.append(True) or False
+    )
+
+    app.close_session()
+    assert asked, "кнопка не спросила посреди записи"
+    assert not quits, "программа закрылась вопреки отказу"
+    assert app.session is not None, "сеанс закрыт вопреки отказу"
+
+    asked.clear()
+    app._on_close_window()
+    assert asked, "крестик не спросил посреди записи"
+    assert not quits
+
+
+def test_a_kill_signal_is_handled_like_the_window_cross(gui_app):
+    """Выход из системы и `kill` — тоже нештатное закрытие.
+
+    Без обработчика процесс умирает мгновенно: секреты остаются незатёртыми, а
+    служебные тома — открытыми устройствами /dev/mapper, то есть доступом к
+    журналам и разделу обмена носителя без всякого пароля.
+
+    Проверяется, что обработчик поставлен, а не что он делает: вызвать его
+    по-настоящему значило бы завершить процесс вместе с набором.
+    """
+    import signal
+
+    app = gui_app
+    for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        handler = signal.getsignal(sig)
+        assert getattr(handler, "__self__", None) is app, (
+            f"сигнал {sig.name} не ведёт в корректное завершение"
+        )
+        assert handler.__func__ is type(app)._on_termination
+
+
 def test_startup_wrong_password_shows_error(gui_app, tmp_path):
     app = gui_app
     _open_container(app, tmp_path)
-    app.close_session()
+    app.end_session()
     app.update()
 
     startup = app._current_frame
@@ -2456,7 +2542,7 @@ def test_a_configuration_survives_closing_and_reopening_the_container(gui_app, t
     config.packages = ["mate-calc"]
     app.config_manager.save(app.container, config)
     app.save_container()
-    app.close_session()
+    app.end_session()
 
     startup = app._current_frame
     startup.path_var.set(str(tmp_path / "admin.container"))
@@ -2523,7 +2609,7 @@ def test_configurations_travel_between_administrators_through_the_screen(gui_app
     assert b"mate-calc" not in parcel.read_bytes()
 
     # Приём — со стороны коллеги: тот же экран, другой контейнер.
-    app.close_session()
+    app.end_session()
     startup = app._current_frame
     startup.path_var.set(str(tmp_path / "colleague.container"))
     startup.password_var.set("CorrectHorse456")

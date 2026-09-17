@@ -158,6 +158,14 @@ def apply(root: tk.Misc) -> ttk.Style:
     style.configure(
         "SidebarQuiet.TLabel", background=SIDEBAR, foreground=TEXT_MUTED, font=FONT_BODY
     )
+    # Конец работы отмечен цветом опасности, потому что он необратим: с
+    # 17.09.2026 закрытие сеанса завершает программу -- только смерть процесса
+    # убирает из памяти секрет, из которого выводятся коды восстановления всех
+    # носителей. Цвет предупреждает, а подпись при наведении объясняет: одного
+    # цвета мало, чтобы понять, что будет.
+    style.configure(
+        "SidebarDanger.TLabel", background=SIDEBAR, foreground=DANGER, font=FONT_BODY
+    )
 
     # -- surfaces ------------------------------------------------------
     for suffix, colour in (("Card", SURFACE), ("Sunken", SURFACE_SUNKEN)):

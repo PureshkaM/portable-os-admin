@@ -88,13 +88,29 @@ class NavigationShell(ttk.Frame):
                 item.bind("<Leave>", lambda _event: self.app.set_status(""), add="+")
 
         # Выход из сеанса -- внизу и отдельно: это не раздел, а конец работы.
-        ttk.Label(
+        #
+        # Цветом опасности и с пояснением при наведении, потому что действие
+        # необратимо: программа завершается целиком. Иначе и нельзя -- ключ
+        # контейнера затирается на месте, а секрет администратора живёт
+        # строкой, которую в Python не затереть, и убирает его из памяти
+        # только смерть процесса. Человек должен узнать это до нажатия.
+        quit_item = ttk.Label(
             sidebar,
             text="Закрыть сеанс",
-            style="SidebarQuiet.TLabel",
+            style="SidebarDanger.TLabel",
             padding=(theme.SPACE_MD, theme.SPACE_SM),
-        ).pack(side="bottom", fill="x")
-        sidebar.winfo_children()[-1].bind("<Button-1>", lambda _event: self.app.close_session())
+        )
+        quit_item.pack(side="bottom", fill="x")
+        quit_item.bind("<Button-1>", lambda _event: self.app.close_session())
+        quit_item.bind("<Enter>", lambda _event: quit_item.configure(cursor="hand2"))
+        quit_item.bind(
+            "<Enter>",
+            lambda _event: self.app.set_status(
+                "Программа закроется целиком: иначе ключи не убрать из памяти"
+            ),
+            add="+",
+        )
+        quit_item.bind("<Leave>", lambda _event: self.app.set_status(""), add="+")
 
         self.content = ttk.Frame(self, style="Window.TFrame")
         self.content.pack(side="left", fill="both", expand=True)
