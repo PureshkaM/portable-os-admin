@@ -408,13 +408,31 @@ class ReleaseWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
         self.image_path = path
         self.directory = ""
         self.metadata = None
-        if self.image_info is None:
-            # Набран руками или ещё читается. Не отказ: установщик проверяет
-            # образ сам, прежде чем тронуть носитель.
-            self.message_bar.info(
-                "Образ ещё не прочитан — он будет проверен перед началом работы."
-            )
-        elif not self.image_info.complete:
+        if self.image_info is None or self.image_info.path != path:
+            # Читается здесь, а не только по кнопке «Выбрать образ…».
+            #
+            # Найдено живым прогоном 17.09.2026: путь, набранный в поле или
+            # подставленный из запомненного, оставлял мастер слепым --
+            # `image_info` пустой, -- и на шаге конфигураций все строки
+            # получали «образ не прочитан», то есть отбор по пригодности молча
+            # выключался. Debian-конфигурация предлагалась наравне с РЕД ОС для
+            # образа РЕД ОС, а отказ приходил внутри установки, когда носитель
+            # уже стёрт.
+            #
+            # Синхронно, а не в фоне: от прочитанного зависит решение идти
+            # дальше, и «проверим потом» -- это и есть та добровольность правды
+            # об образе, которую зона И1 убирала из мастера конфигураций.
+            try:
+                self.image_info = image_source.probe(path)
+            except Exception as exc:  # noqa: BLE001 -- причина показывается человеку
+                self.image_info = None
+                self.message_bar.info(
+                    f"Образ не удалось прочитать ({exc}). Он будет проверен перед "
+                    "началом работы, а конфигурации показаны без отбора по семейству."
+                )
+                self._apply_step_plan()
+                return True
+        if not self.image_info.complete:
             self.message_bar.error(self.image_info.incomplete_reason)
             return False
         self._apply_step_plan()
