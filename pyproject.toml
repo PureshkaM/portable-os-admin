@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "portable-os-admin"
-version = "1.1.0"
+version = "1.2.0"
 description = "Secure administrative application for creating and administering a portable operating system on external media (LUKS-encrypted, with recovery and admin container)"
 readme = "README.md"
 requires-python = ">=3.9"

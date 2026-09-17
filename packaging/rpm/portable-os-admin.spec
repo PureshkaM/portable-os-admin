@@ -1,5 +1,5 @@
 Name:           portable-os-admin
-Version:        1.1.0
+Version:        1.2.0
 Release:        1%{?dist}
 Summary:        Admin tool for portable LUKS-encrypted OS media
 
@@ -181,6 +181,26 @@ install -m 755 packaging/polkit/launch-root %{buildroot}/usr/lib/portable-os-adm
 /usr/lib/portable-os-admin/launch-root
 
 %changelog
+* Thu Sep 17 2026 PureshkaM <xripmax@gmail.com> - 1.2.0-1
+- One release wizard instead of three: the first step asks for the source (an
+  installation image or a ready distribution) and the release path follows from
+  it. The dashboard offers one button, "Выпустить носитель", instead of three.
+- Four sections in the sidebar instead of six: logs and the exchange partition
+  became actions on the selected medium and arrive with the answer already
+  given.
+- Six buttons on the configurations screen instead of nine: exchanging
+  configurations with another administrator moved to its own screen.
+- Configuration values come from the installation image rather than from lists
+  written into the program; the image is read even when its path was typed.
+- Closing the session ends the program. The container key is wiped in place,
+  but the administrator secret lives in a string, and only leaving the process
+  takes it out of memory. The window cross and termination signals go the same
+  way.
+- Both ways out ask before interrupting a medium being written, not just the
+  window cross.
+- Internal: releasing a medium and acting on one moved into services; the
+  administrator secret no longer reaches the screens.
+
 * Tue Sep 15 2026 PureshkaM <xripmax@gmail.com> - 1.1.0-1
 - Revocation v2: the medium signs its request with its own key and asks the
   server every five minutes and whenever the network comes up; anyone else
