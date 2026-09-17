@@ -102,9 +102,9 @@ class ConfigsListFrame(ttk.Frame):
         и спрашивать его второй раз значит искать в списке то, что только что
         выделили. Ничего не выбрано -- тоже законно: отправить можно все.
         """
-        from .configs_share import ConfigsShareFrame
+        from .configs_share import open_configs_share
 
-        self.app.show_frame(ConfigsShareFrame, config_name=name)
+        open_configs_share(self, self.app, name)
 
     def _refresh_table(self) -> None:
         for item in self.table.get_children():

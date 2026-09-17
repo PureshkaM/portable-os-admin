@@ -782,9 +782,11 @@ class ConfigWizardFrame(WizardFrame):
         self.catalog_table, _catalog_empty = data_table(
             left,
             (
-                Column("name", "пакет", 130, 90),
-                Column("version", "версия", 90, 70),
-                Column("summary", "описание", 170, 120, stretch=True),
+                # С большой буквы -- как в остальных таблицах программы и как
+                # в сводке этого же мастера («Параметр», «Было», «Стало»).
+                Column("name", "Пакет", 130, 90),
+                Column("version", "Версия", 90, 70),
+                Column("summary", "Описание", 170, 120, stretch=True),
             ),
             height=10,
             selectmode="extended",
@@ -1788,11 +1790,9 @@ class ConfigWizardFrame(WizardFrame):
             with_error = True
         if with_error:
             return
-        from .configs_list import ConfigsListFrame
 
-        self.app.show_frame(ConfigsListFrame)
+        self.app.show_section("configs")
 
     def on_cancel(self) -> None:
-        from .configs_list import ConfigsListFrame
 
-        self.app.show_frame(ConfigsListFrame)
+        self.app.show_section("configs")

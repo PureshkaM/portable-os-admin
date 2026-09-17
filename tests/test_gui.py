@@ -2633,17 +2633,19 @@ def test_configurations_travel_between_administrators_through_the_screen(gui_app
     colleague_manager.save(colleague)
     parcel = tmp_path / ("parcel" + exchange.EXCHANGE_SUFFIX)
 
-    # Обмен переехал на свой экран (зона И4): на списке конфигураций он
-    # занимал четыре кнопки из девяти и стоял рядом с «Удалить», то есть
-    # предлагался как равный ей по последствиям. Выбранная строка уезжает
-    # туда вместе с переходом, поэтому выбирать заново не приходится.
-    app.show_frame(ConfigsListFrame)
+    # Обмен переехал в окно поверх списка (17.09.2026): на списке конфигураций
+    # он занимал четыре кнопки из девяти и стоял рядом с «Удалить», то есть
+    # предлагался как равный ей по последствиям. Выбранная строка уезжает в
+    # окно вместе с открытием, поэтому выбирать заново не приходится.
+    from portable_os_admin.gui.screens.configs_share import open_configs_share
+
+    app.show_section("configs")
+    app.update()
     configs = app._current_frame
     configs.table.selection_set(configs.table.get_children()[0])
-    configs._share("stick1")
+    screen = open_configs_share(configs, app, "stick1")
     app.update()
-    screen = app._current_frame
-    assert screen.config_name == "stick1", "выбор не доехал до экрана обмена"
+    assert screen.config_name == "stick1", "выбор не доехал до окна обмена"
     monkeypatch.setattr(
         "tkinter.simpledialog.askstring",
         lambda *a, **k: colleague_code,
@@ -2663,10 +2665,11 @@ def test_configurations_travel_between_administrators_through_the_screen(gui_app
     startup.password_var.set("CorrectHorse456")
     startup._open()
     app.update()
-    from portable_os_admin.gui.screens.configs_share import ConfigsShareFrame
+    from portable_os_admin.gui.screens.configs_share import open_configs_share
 
-    app.show_frame(ConfigsShareFrame)
-    receiver = app._current_frame
+    app.show_section("configs")
+    app.update()
+    receiver = open_configs_share(app._current_frame, app)
     monkeypatch.setattr("tkinter.filedialog.askopenfilename", lambda *a, **k: str(parcel))
     monkeypatch.setattr("tkinter.messagebox.askyesno", lambda *a, **k: True)
     receiver._receive()

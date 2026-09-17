@@ -602,9 +602,8 @@ class ReleaseWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
         return True, "да"
 
     def _go_to_configs(self) -> None:
-        from .configs_list import ConfigsListFrame
 
-        self.app.show_frame(ConfigsListFrame)
+        self.app.show_section("configs")
 
     def _validate_step_config(self) -> bool:
         if not self._valid_names:

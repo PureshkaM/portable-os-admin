@@ -1,4 +1,4 @@
-"""Обмен конфигурациями с другим администратором -- отдельным экраном.
+"""Обмен конфигурациями с другим администратором -- отдельным окном.
 
 Зачем отдельным. На экране конфигураций стояло девять кнопок в трёх рядах, и
 четыре из них были про обмен: «Мой код обмена…», «Отправить…», «Отправить
@@ -23,27 +23,34 @@ from tkinter import ttk
 
 from ...config import exchange
 from .. import theme
-from ..widgets import MessageBar, button_row, error_guard, section_card, section_header
+from ..widgets import PropertiesWindow, button_row, error_guard
 
 
-class ConfigsShareFrame(ttk.Frame):
-    """Код администратора, отправка конфигураций и приём присланных."""
+class ConfigsShareWindow(PropertiesWindow):
+    """Код администратора, отправка конфигураций и приём присланных.
+
+    Окно, а не экран (17.09.2026). Обмен с другим администратором -- действие,
+    а не место в программе: `show_frame` уносил боковую навигацию, и экран
+    открывался прижатым к углу окна, без отступов и без списка разделов слева.
+    Своя кнопка закрытия и Esc делают «Назад» ненужной.
+    """
 
     def __init__(self, parent: tk.Widget, app, config_name: str = ""):
-        super().__init__(parent, style="Window.TFrame")
         self.app = app
         #: Конфигурация, выбранная на списке до входа сюда. Выбор -- уже
         #: ответ, и спрашивать его второй раз значит искать в списке строку,
         #: которую администратор только что выделил.
         self.config_name = config_name
 
-        section_header(
-            self,
-            "Обмен конфигурациями",
-            "Посылка шифруется кодом получателя: открыть её сможет только он.",
-        )
-
-        card = section_card(self)
+        super().__init__(parent, "Обмен конфигурациями", width=700, height=560)
+        card = self.tab("Обмен")
+        ttk.Label(
+            card,
+            text="Посылка шифруется кодом получателя: открыть её сможет только он.",
+            style="Hint.TLabel",
+            wraplength=theme.TEXT_WRAP,
+            justify="left",
+        ).pack(anchor="w", pady=(0, theme.SPACE_SM))
 
         ttk.Label(card, text="Мой код", font=theme.FONT_SECTION).pack(anchor="w")
         ttk.Label(
@@ -65,9 +72,12 @@ class ConfigsShareFrame(ttk.Frame):
         self.selected_label.pack(anchor="w", pady=(theme.SPACE_XS, theme.SPACE_SM))
         self._say_what_is_selected()
 
+        # Имя конфигурации -- в строке выше, а не в подписи кнопки: имена
+        # бывают длинными, и подпись вместе с ними разъезжается (снимок
+        # 17.09.2026). Кнопка говорит, что делает, строка -- над чем.
         send_buttons: "list[tuple[str, object]]" = []
         if self.config_name:
-            send_buttons.append((f"Отправить «{self.config_name}»…", self._send_selected))
+            send_buttons.append(("Отправить выбранную…", self._send_selected))
         send_buttons.append(("Отправить все…", self._send_all))
         button_row(card, tuple(send_buttons), pady=(0, theme.SPACE_SM))
 
@@ -81,17 +91,7 @@ class ConfigsShareFrame(ttk.Frame):
             style="Hint.TLabel",
             wraplength=theme.TEXT_WRAP,
         ).pack(anchor="w", pady=(theme.SPACE_XS, theme.SPACE_SM))
-        button_row(
-            card,
-            (
-                ("Принять посылку…", self._receive),
-                ("Назад", self._back),
-            ),
-            pady=(0, theme.SPACE_SM),
-        )
-
-        self.message_bar = MessageBar(card, on_card=True)
-        self.message_bar.pack(fill="x")
+        button_row(card, (("Принять посылку…", self._receive),), pady=(0, theme.SPACE_SM))
 
     def _say_what_is_selected(self) -> None:
         if self.config_name:
@@ -103,11 +103,6 @@ class ConfigsShareFrame(ttk.Frame):
                 text="В списке ничего не было выбрано — отправить можно все сразу, "
                 "либо вернуться и выделить нужную."
             )
-
-    def _back(self) -> None:
-        from .configs_list import ConfigsListFrame
-
-        self.app.show_frame(ConfigsListFrame)
 
     # -- обмен с другим администратором -------------------------------------
     def _show_my_code(self) -> None:
@@ -208,3 +203,9 @@ class ConfigsShareFrame(ttk.Frame):
             self.message_bar.success(
                 f"Принято конфигураций: {len(configs)} (от {sender.fingerprint})."
             )
+
+
+def open_configs_share(parent: tk.Widget, app, config_name: str = "") -> ConfigsShareWindow:
+    window = ConfigsShareWindow(parent, app, config_name)
+    window.take_focus()
+    return window
