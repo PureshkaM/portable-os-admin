@@ -217,13 +217,48 @@ class DebianInstallBackend(InstallBackend):
         """
         parts = " ".join(components) if components else "main"
         if source_url.startswith("file:"):
-            return "etc/apt/sources.list", (
-                "# temporary, for the duration of the installation\n"
-                f"deb [trusted=yes] {source_url} {release} {parts}\n"
+            text = ("# temporary, for the duration of the installation\n"
+                    f"deb [trusted=yes] {source_url} {release} {parts}\n")
+        else:
+            text = ("# temporary, for the duration of the installation\n"
+                    f"deb {source_url} {release} {parts}\n")
+        # Сетевые репозитории сборки (Э22) -- подписаны, ключ лежит в целевой
+        # системе с debootstrap (`debian-archive-keyring`), поэтому без
+        # [trusted=yes] и по http: подлинность даёт подпись, а не канал.
+        for base, suite in self.network_repos:
+            text += f"deb {base} {suite} {parts}\n"
+        return "etc/apt/sources.list", text
+
+    #: Официальный репозиторий Debian -- тот, что стоит в sources.list любой
+    #: установки с этого образа. Имя выпуска (`trixie`) берётся из образа.
+    OFFICIAL_MIRROR = "http://deb.debian.org/debian"
+    OFFICIAL_SECURITY = "http://security.debian.org/debian-security"
+
+    def bind_network(self, config: InstallConfig, image_mountpoint: str, mount_root: str = "") -> None:
+        if not config.network_packages:
+            self.network_repos = ()
+            return
+        release = self.install_release
+        base = self.company_mirror(config)
+        if base:
+            # Репозиторий компании заменяет официальный целиком: основной
+            # выпуск и обновления. Ветку безопасности компания зеркалит или
+            # нет -- требовать её нельзя, иначе apt update упадёт на её отсутствии.
+            self.network_repos = ((base, release), (base, f"{release}-updates"))
+        else:
+            self.network_repos = (
+                (self.OFFICIAL_MIRROR, release),
+                (self.OFFICIAL_MIRROR, f"{release}-updates"),
+                (self.OFFICIAL_SECURITY, f"{release}-security"),
             )
-        return "etc/apt/sources.list", (
-            "# temporary, for the duration of the installation\n"
-            f"deb {source_url} {release} {parts}\n"
+
+    def system_upgrade_command(self, mount_root: str) -> list[str] | None:
+        if not self.network_repos:
+            return None
+        return self.chroot(
+            mount_root, "env", "DEBIAN_FRONTEND=noninteractive", "apt-get", "-y",
+            "-o", "Dpkg::Options::=--force-confdef", "-o", "Dpkg::Options::=--force-confold",
+            "dist-upgrade",
         )
 
     def optional_packages(self, config: InstallConfig) -> list[str]:

@@ -215,6 +215,36 @@ class InstallBackend(ABC):
         self.image_core_packages = core_packages
         self.install_arch = arch
 
+    #: Сетевые репозитории сборки (этап Э22): подключаются **после** того, как
+    #: базовая система поставлена с образа, -- образ быстрее и не требует сети
+    #: для начала, а всё дальнейшее, включая обновление до свежих версий, идёт
+    #: уже с ними. Пусто -- сборка только с образа.
+    network_repos: tuple = ()
+
+    def bind_network(self, config: InstallConfig, image_mountpoint: str, mount_root: str = "") -> None:
+        """Подключает сетевые репозитории сборки: `mirror` или официальные из образа."""
+        self.network_repos = ()
+
+    def system_upgrade_command(self, mount_root: str) -> list[str] | None:
+        """Обновление всего уже поставленного до свежих версий из сети."""
+        return None
+
+    def company_mirror(self, config: InstallConfig) -> str:
+        """`mirror`, если это репозиторий компании; пусто, если официальный.
+
+        Поле `mirror` заполняется официальным адресом семейства по умолчанию
+        (`default_mirror`), поэтому «репозиторий компании» -- только адрес,
+        отличный от него. Официальный при сборке берётся из самого образа: он
+        точнее (у РЕД ОС 8 образ -- выпуск 8.0c, а адрес по умолчанию -- 8.0).
+        """
+        def norm(url: str) -> str:
+            return url.strip().rstrip("/").split("://", 1)[-1]
+
+        if not config.mirror:
+            return ""
+        default = self.default_mirror(config.release, config.arch)
+        return "" if norm(config.mirror) == norm(default) else config.mirror.strip().rstrip("/")
+
     #: Where this family keeps the package sources this program writes.
     #: Debian has one file; the RHEL family has a directory of them, so a
     #: distinct name is used there rather than overwriting what the

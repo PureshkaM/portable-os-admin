@@ -32,6 +32,7 @@ FIELD_LABELS = {
     "target_os": "Целевая ОС",
     "release": "Релиз",
     "mirror": "Зеркало репозитория",
+    "network_packages": "Пакеты и обновления из сети при сборке",
     "arch": "Архитектура носителя",
     "profile": "Режим системы",
     "packages": "Предустановленные пакеты",
@@ -519,10 +520,11 @@ class LuksConfig:
     #: два: стоимость одной попытки (argon2id с 256 МиБ, ~8,4 секунды) и длина
     #: фразы. Первый уже выбран, второй до этой правки не требовался никак.
     #:
-    #: Двенадцать, а не восемь: восемь -- это порог для пароля учётной записи
-    #: внутри системы, где перебор идёт через живой вход и упирается в задержки
-    #: PAM. Здесь перебор офлайновый, и запас нужен другой.
-    min_passphrase_length: int = 12
+    #: Десять -- минимум для фразы, придуманной самим администратором (решение
+    #: Максима 01.10.2026). По умолчанию мастер генерирует 12 случайных знаков
+    #: (≈70 бит, `crypto.generate_passphrase`); оценка в битах верна только для
+    #: сгенерированной фразы, поэтому своя допускается с предупреждением.
+    min_passphrase_length: int = 10
 
 
 @dataclass
@@ -648,6 +650,14 @@ class InstallConfig:
     # particular machine, and a configuration copied to another admin station
     # would carry a path that does not exist there.
     mirror: str = ""
+    #: Брать ли при сборке пакеты и обновления из сетевого репозитория: из
+    #: `mirror`, если он задан (репозиторий компании), иначе из официального,
+    #: записанного в самом образе. Решение 01.10.2026 (LIVE-2.0, этап Э22):
+    #: LiveCD собирается из максимально свежих пакетов, а DVD-1 Debian к тому
+    #: же неполон -- на нём нет OpenVPN и клиента FreeRDP. Базовая система при
+    #: этом всё равно ставится с образа: он быстрее и даёт сведения о выпуске.
+    #: False -- сборка только с образа, без сети (изолированный контур).
+    network_packages: bool = True
     # CPU architecture of the *target* system. Empty means "same as the machine
     # running the installer", which is the only combination that works without
     # extra tooling: debootstrap/dnf populate a foreign-architecture root only

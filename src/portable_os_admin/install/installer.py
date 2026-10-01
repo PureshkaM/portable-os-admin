@@ -520,6 +520,7 @@ class OSInstaller:
 
         self._mount_pseudo_filesystems(root, state, plan, dry_run, confirm)
         self._bind_image_into(root, image_url, state, plan, dry_run, confirm)
+        self._bind_network(backend, config, image_url, root)
         self._write_install_time_sources(root, backend, release, image_url, plan, dry_run, confirm)
 
         temporary_paths = []
@@ -1088,6 +1089,14 @@ class OSInstaller:
         if refresh is not None:
             run(refresh, timeout=BOOTSTRAP_TIMEOUT)
 
+        upgrade = backend.system_upgrade_command(root)
+        if upgrade is not None:
+            # Этап Э22: база поставлена с образа, теперь всё -- до свежих
+            # версий из сети. LiveCD обновляется только выпуском, поэтому
+            # свежесть пакетов определяется моментом сборки.
+            self._progress.step("Обновление системы из репозитория")
+            run(upgrade, timeout=BOOTSTRAP_TIMEOUT)
+
         self._progress.step("Установка ядра и загрузчика")
         boot_pkg_cmd = backend.package_install_command(root, backend.boot_packages(config))
         if boot_pkg_cmd is not None:
@@ -1228,6 +1237,16 @@ class OSInstaller:
         run(["mkdir", "-p", target])
         run(["mount", "--bind", inside, target])
         state.mounts.append(target)
+
+    def _bind_network(self, backend, config: InstallConfig, image_url: str, root: str) -> None:
+        """Сетевые репозитории сборки -- только поверх образа (Э22).
+
+        Без образа источник и так сеть (`mirror`), и повторять его нечего.
+        """
+        if image_url.startswith("file://"):
+            backend.bind_network(config, image_url[len("file://"):], root)
+        else:
+            backend.network_repos = ()
 
     def _write_install_time_sources(
         self, root, backend, release, image_url, plan, dry_run, confirm_device

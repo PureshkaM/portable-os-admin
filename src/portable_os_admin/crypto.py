@@ -225,6 +225,35 @@ def validate_password_strength(password: str, min_length: int = 12) -> list[str]
     return problems
 
 
+#: Алфавит фразы LUKS: латиница и цифры без похожих знаков (0/O/o, 1/l/I).
+#: Латиница -- потому что фраза вводится на экране загрузки, где раскладка
+#: английская. 56 знаков -- около 5,8 бита на знак.
+PASSPHRASE_ALPHABET = (
+    "abcdefghijkmnpqrstuvwxyz"   # без l и o
+    "ABCDEFGHJKLMNPQRSTUVWXYZ"   # без I и O
+    "23456789"
+)
+#: Длина фразы по умолчанию: 12 знаков ≈ 70 бит (решение 01.10.2026).
+PASSPHRASE_LENGTH = 12
+
+
+def generate_passphrase(length: int = PASSPHRASE_LENGTH) -> str:
+    """Случайная фраза LUKS для пользователя.
+
+    Сгенерированная, а не придуманная: оценка стойкости в битах верна только
+    для случайного выбора. Придуманная человеком фраза той же длины даёт
+    20--35 бит вместо 70 -- поэтому своя фраза допускается, но с предупреждением.
+    """
+    return "".join(secrets.choice(PASSPHRASE_ALPHABET) for _ in range(length))
+
+
+def passphrase_bits(length: int = PASSPHRASE_LENGTH) -> float:
+    """Стойкость сгенерированной фразы, бит."""
+    import math
+
+    return length * math.log2(len(PASSPHRASE_ALPHABET))
+
+
 _RECOVERY_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"  # Crockford-ish, no 0/O/1/I/L
 
 

@@ -125,6 +125,7 @@ class ReleaseWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
         self.device_path = ""
         self.device_size_gb = "16"
         self.passphrase = ""
+        self.generated_passphrase: str | None = None
         self.media_name = ""
         self.media_owner = ""
         self.exchange_files: list[str] = []
@@ -785,12 +786,29 @@ class ReleaseWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
 
     # -- шаг: пароль (и владелец, когда шага «Кому и что» нет) -------------
     def _build_step_passphrase(self, body: ttk.Frame) -> None:
+        from ...crypto import generate_passphrase
+
+        # По умолчанию фраза сгенерирована (Э11): оценка стойкости верна только
+        # для случайной. Показывается открыто -- администратор передаёт её
+        # пользователю, а скрытое поле заставило бы её переписывать вслепую.
+        if not self.passphrase:
+            self.passphrase = generate_passphrase()
+            self.generated_passphrase = self.passphrase
         form = ttk.Frame(body)
         form.pack(anchor="w")
         self.passphrase_var = tk.StringVar(value=self.passphrase)
-        add_field(form, 0, "Пароль пользователя (LUKS):", self.passphrase_var, show="*", width=30)
+        add_field(form, 0, "Пароль пользователя (LUKS):", self.passphrase_var, width=30)
         self.passphrase_confirm_var = tk.StringVar(value=self.passphrase)
-        add_field(form, 2, "Повторите пароль:", self.passphrase_confirm_var, show="*", width=30)
+        add_field(form, 2, "Повторите пароль:", self.passphrase_confirm_var, width=30)
+
+        def regenerate() -> None:
+            value = generate_passphrase()
+            self.generated_passphrase = value
+            self.passphrase_var.set(value)
+            self.passphrase_confirm_var.set(value)
+
+        ttk.Button(form, text="Сгенерировать", command=regenerate).grid(
+            row=0, column=2, padx=(theme.SPACE_SM, 0), sticky="w")
 
         # Имя и владелец -- здесь только тогда, когда отдельного шага «Кому и
         # что» в этой ветви нет. Заводится запись о носителе в обеих, и носитель
@@ -838,6 +856,13 @@ class ReleaseWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
         if self.passphrase_var.get() != self.passphrase_confirm_var.get():
             self.message_bar.error("Пароли не совпадают.")
             return False
+        if self.passphrase_var.get() != getattr(self, "generated_passphrase", None):
+            # Не запрет -- решение Максима 01.10.2026: своя фраза от минимума
+            # допустима. Но стойкость придуманной человеком фразы не оценить.
+            self.message_bar.info(
+                "Фраза задана вручную: её стойкость не оценить. Сгенерированная "
+                "из 12 знаков даёт около 70 бит, придуманная той же длины — 20–35."
+            )
         if not self._asks_handover() and not self.media_owner_var.get().strip():
             self.message_bar.error(
                 "Укажите владельца — ФИО сотрудника, которому выдаётся носитель. "

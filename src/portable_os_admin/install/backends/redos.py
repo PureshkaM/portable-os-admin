@@ -549,7 +549,55 @@ class RedOSInstallBackend(InstallBackend):
             arguments.append("--nogpgcheck")
         if self.install_release:
             arguments += ["--releasever", self.install_release]
+        # Сетевые репозитории сборки (Э22). dnf запускается снаружи, поэтому
+        # ключ указывается путём в целевом корне: файл ключа туда положил
+        # пакет выпуска при развёртывании базовой системы. `--repo=` каждого --
+        # потому что `--repo=poa-image` выше отключает всё, что не названо.
+        for repo_id, url, gpgkey in self.network_repos:
+            arguments += [f"--repofrompath={repo_id},{url}", f"--repo={repo_id}"]
+            if gpgkey:
+                arguments += [f"--setopt={repo_id}.gpgcheck=1", f"--setopt={repo_id}.gpgkey={gpgkey}"]
         return arguments
+
+    def bind_network(self, config: InstallConfig, image_mountpoint: str, mount_root: str = "") -> None:
+        """Официальные репозитории из `redos-release` образа или `mirror` компании.
+
+        Вызывается после развёртывания базовой системы: ключ подписи к этому
+        моменту лежит в целевом корне, и пути к нему переписываются под корень.
+        """
+        if not config.network_packages:
+            self.network_repos = ()
+            return
+        arch = self.install_arch or self.normalize_arch(config.arch)
+        root = mount_root
+        from ..repo_metadata import discover_repos
+
+        def rooted(key: str) -> str:
+            if key.startswith("file://") and root:
+                return "file://" + root.rstrip("/") + key[len("file://"):]
+            return key
+
+        official = discover_repos(image_mountpoint, arch) if image_mountpoint else ()
+        mirror = self.company_mirror(config)
+        if mirror:
+            # Зеркало компании держит те же пакеты, подписанные тем же ключом
+            # дистрибутива, -- поэтому ключ берётся у официальных репозиториев.
+            # В `mirror` у РЕД ОС -- полный адрес до `<выпуск>/<арх>/os`
+            # (`default_mirror`); обновления лежат рядом, в `updates`.
+            key = rooted(official[0].gpgkey) if official else ""
+            repos = [("poa-mirror", mirror, key)]
+            if mirror.endswith("/os"):
+                repos.append(("poa-mirror-updates", mirror[:-len("/os")] + "/updates", key))
+            self.network_repos = tuple(repos)
+            return
+        self.network_repos = tuple(
+            (f"poa-net-{repo.repo_id}", repo.baseurl, rooted(repo.gpgkey)) for repo in official
+        )
+
+    def system_upgrade_command(self, mount_root: str) -> list[str] | None:
+        if not self.network_repos:
+            return None
+        return ["dnf", "--installroot", mount_root, "-y", *self._repo_arguments(), "upgrade"]
 
     def package_install_command(self, mount_root: str, packages: list[str]) -> list[str] | None:
         if not packages:
