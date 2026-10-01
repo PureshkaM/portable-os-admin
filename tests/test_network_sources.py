@@ -76,6 +76,11 @@ def test_redos_takes_enabled_repositories_from_the_release_package(monkeypatch):
     assert "--setopt=poa-net-base.gpgkey=file:///target/etc/pki/rpm-gpg/RPM-GPG-KEY-RED-SOFT" in joined
     assert "--setopt=poa-net-base.gpgcheck=1" in joined
     assert argv[-1] == "upgrade"
+    # Ключ RED SOFT подписан SHA-1: строгая политика rpm-sequoia хоста его не
+    # примет, поэтому dnf сборки получает свою политику (только этот процесс).
+    assert argv[0] == "env" and argv[1].startswith("RPM_SEQUOIA_CRYPTO_POLICY=")
+    policy = open(argv[1].split("=", 1)[1]).read()
+    assert "sha1.collision_resistance" in policy
 
 
 def test_redos_mirror_reuses_the_distribution_key(monkeypatch):

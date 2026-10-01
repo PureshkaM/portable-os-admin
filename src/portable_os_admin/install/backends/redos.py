@@ -562,6 +562,28 @@ class RedOSInstallBackend(InstallBackend):
     #: Пакеты доступа (Э8), имена сверены по образам (Э0).
     ACCESS_PACKAGES = ("openvpn", "freerdp", "python3-gobject", "gtk3", "vte291", "gtk-vnc2", "gvnc", "python3-cryptography", "openssh-clients")
 
+    #: Политика Sequoia для dnf сборки, если подключены сетевые репозитории.
+    #:
+    #: rpm 4.20 на машине администратора (Debian 13) проверяет подписи библиотекой
+    #: Sequoia со строгой политикой и **отвергает ключ RED SOFT**: его самоподпись
+    #: сделана SHA-1 («No binding signature»), импорт падает с code 2, и сборка
+    #: из сети стоит (найдено живой сборкой 01.10.2026). Сама РЕД ОС этот ключ
+    #: принимает. Политика ниже принимает SHA-1 только для процесса dnf сборки --
+    #: системная политика хоста не меняется. Проверено: подлинный пакет проходит,
+    #: подменённый отвергается. Доверие к ключу -- ровно как у самой РЕД ОС.
+    SEQUOIA_POLICY = (
+        "[hash_algorithms]\n"
+        'sha1.second_preimage_resistance = "always"\n'
+        'sha1.collision_resistance = "always"\n'
+    )
+    _sequoia_policy_path: str = ""
+
+    def _dnf(self, mount_root: str, *command: str) -> list[str]:
+        argv = ["dnf", "--installroot", mount_root, "-y", *self._repo_arguments(), *command]
+        if self.network_repos and self._sequoia_policy_path:
+            argv = ["env", f"RPM_SEQUOIA_CRYPTO_POLICY={self._sequoia_policy_path}", *argv]
+        return argv
+
     def bind_network(self, config: InstallConfig, image_mountpoint: str, mount_root: str = "") -> None:
         """Официальные репозитории из `redos-release` образа или `mirror` компании.
 
@@ -581,6 +603,11 @@ class RedOSInstallBackend(InstallBackend):
             return key
 
         official = discover_repos(image_mountpoint, arch) if image_mountpoint else ()
+        if not self._sequoia_policy_path:
+            import tempfile
+            fd, self._sequoia_policy_path = tempfile.mkstemp(prefix="poa-sequoia-", suffix=".config")
+            with open(fd, "w", encoding="ascii") as handle:
+                handle.write(self.SEQUOIA_POLICY)
         mirror = self.company_mirror(config)
         if mirror:
             # Зеркало компании держит те же пакеты, подписанные тем же ключом
@@ -600,12 +627,12 @@ class RedOSInstallBackend(InstallBackend):
     def system_upgrade_command(self, mount_root: str) -> list[str] | None:
         if not self.network_repos:
             return None
-        return ["dnf", "--installroot", mount_root, "-y", *self._repo_arguments(), "upgrade"]
+        return self._dnf(mount_root, "upgrade")
 
     def package_install_command(self, mount_root: str, packages: list[str]) -> list[str] | None:
         if not packages:
             return None
-        return ["dnf", "--installroot", mount_root, "-y", *self._repo_arguments(), "install", *packages]
+        return self._dnf(mount_root, "install", *packages)
 
     def local_package_install_command(self, mount_root: str,
                                       filenames: list[str]) -> list[str] | None:
@@ -620,8 +647,7 @@ class RedOSInstallBackend(InstallBackend):
         if not filenames:
             return None
         paths = [f"{mount_root}/{self.EXTRA_PACKAGE_DIR}/{name}" for name in filenames]
-        return ["dnf", "--installroot", mount_root, "-y", *self._repo_arguments(),
-                "install", *paths]
+        return self._dnf(mount_root, "install", *paths)
 
     #: Пакеты, которые убираются из состава, даже если их назвал сам образ.
     #:
