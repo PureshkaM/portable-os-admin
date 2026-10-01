@@ -27,6 +27,9 @@ DOMAIN=""
 KEY=""
 REPO_ROOT=""
 EMAIL=""
+ORG=""
+KIT_NAME=""
+KIT_DIR=""
 
 usage() {
     cat >&2 <<'USAGE'
@@ -42,6 +45,12 @@ usage() {
                             в себе открытую часть старого ключа)
   --repo-root <каталог>     раздавать этот каталог как /repo (репозиторий пакетов)
   --email <адрес>           адрес для Let's Encrypt (по умолчанию без адреса)
+  --org <название>          название организации в сертификате CA для VPN
+                            (по умолчанию -- имя домена)
+  --gateway-kit <имя> <каталог>
+                            только выпустить комплект для OpenVPN-шлюза с этим
+                            именем (сертификат шлюза, CA, ключ tls-crypt-v2) и
+                            выйти; сервер должен быть уже установлен
 USAGE
     exit 2
 }
@@ -52,12 +61,27 @@ while [ $# -gt 0 ]; do
         --revocation-key) KEY=$2; shift 2 ;;
         --repo-root) REPO_ROOT=$2; shift 2 ;;
         --email) EMAIL=$2; shift 2 ;;
+        --org) ORG=$2; shift 2 ;;
+        --gateway-kit) KIT_NAME=$2; KIT_DIR=$3; shift 3 ;;
         -h|--help) usage ;;
         *) echo "неизвестный параметр: $1" >&2; usage ;;
     esac
 done
 
+LIB=/usr/local/lib/poa-access
+KEYS=/etc/poa-revocation
+
+if [ -n "$KIT_NAME" ]; then
+    [ "$(id -u)" = "0" ] || { echo "нужны права root" >&2; exit 1; }
+    [ -d "$LIB/poa_access" ] || { echo "сервер не установлен" >&2; exit 1; }
+    [ ! -e "$KIT_DIR" ] || { echo "каталог $KIT_DIR уже существует" >&2; exit 1; }
+    cd "$LIB" && python3 -m poa_access.tool gateway-kit "$KEYS" "$KIT_NAME" "$KIT_DIR"
+    echo "Перенесите каталог на шлюз, запустите там gateway-install.sh и удалите его."
+    exit 0
+fi
+
 [ -n "$DOMAIN" ] || usage
+[ -n "$ORG" ] || ORG=$DOMAIN
 [ -z "$KEY" ] || [ -f "$KEY" ] || { echo "нет файла ключа: $KEY" >&2; exit 1; }
 [ "$(id -u)" = "0" ] || { echo "нужны права root" >&2; exit 1; }
 
@@ -67,15 +91,21 @@ echo "== зависимости"
 if command -v apt-get >/dev/null 2>&1; then
     apt-get update -qq
     apt-get install -y -q --no-install-recommends \
-        python3 python3-cryptography openssl nginx certbot python3-certbot-nginx >/dev/null
+        python3 python3-cryptography openssl openvpn nginx certbot python3-certbot-nginx >/dev/null
+    # openvpn нужен только как генератор ключей tls-crypt-v2, сама служба не включается.
+    systemctl disable --now openvpn.service >/dev/null 2>&1 || true
 elif command -v dnf >/dev/null 2>&1; then
-    dnf install -y -q python3 python3-cryptography openssl nginx certbot python3-certbot-nginx
+    dnf install -y -q python3 python3-cryptography openssl openvpn nginx certbot python3-certbot-nginx
 else
     echo "не знаю менеджера пакетов этой системы; поставьте python3-cryptography, nginx и certbot сами" >&2
 fi
 
 echo "== служба"
-install -m 755 "$HERE/poa-revocation-server.py" /usr/local/sbin/poa-revocation-server.py
+# Скрипт и пакет v3 -- вместе в одном каталоге: скрипт ищет пакет рядом с собой.
+mkdir -p "$LIB/poa_access"
+install -m 755 "$HERE/poa-revocation-server.py" "$LIB/poa-revocation-server.py"
+install -m 644 "$HERE"/poa_access/*.py "$LIB/poa_access/"
+ln -sf "$LIB/poa-revocation-server.py" /usr/local/sbin/poa-revocation-server.py
 install -m 644 "$HERE/poa-revocation.service" /etc/systemd/system/poa-revocation.service
 
 echo "== ключ отзыва"
@@ -94,6 +124,11 @@ else
     echo "создан новый ключ"
 fi
 
+echo "== ключи сервера доступа v3"
+# Только недостающие: новый CA лишил бы шлюз доверия, новый ключ данных сделал
+# бы нечитаемыми семена TOTP в базе.
+(cd "$LIB" && umask 077 && python3 -m poa_access.tool init-keys "$KEYS" "$ORG")
+
 echo "== приём и TLS"
 SITE=/etc/nginx/sites-available/poa-revocation
 {
@@ -107,6 +142,14 @@ SITE=/etc/nginx/sites-available/poa-revocation
     echo "    location /pubkey { proxy_pass http://127.0.0.1:8081; }"
     echo "    location /admin/enroll { proxy_pass http://127.0.0.1:8081; }"
     echo "    location /admin/media/ { proxy_pass http://127.0.0.1:8081; }"
+    echo "    # Протокол v3: носители, шлюз (CRL), выпуски образа, команды администратора."
+    echo "    location /v3/ { proxy_pass http://127.0.0.1:8081; }"
+    echo "    location /admin/v3/ { proxy_pass http://127.0.0.1:8081; }"
+    echo "    location /admin/v3/upload/ {"
+    echo "        client_max_body_size 8g;"
+    echo "        proxy_request_buffering off;"
+    echo "        proxy_pass http://127.0.0.1:8081;"
+    echo "    }"
     if [ -n "$REPO_ROOT" ]; then
         echo "    # Репозиторий пакетов на той же машине: просто статика."
         echo "    location /repo/ { alias $REPO_ROOT/; autoindex on; }"
@@ -129,6 +172,9 @@ if [ -n "$EMAIL" ]; then
 else
     set -- --agree-tos --register-unsafely-without-email
 fi
+# Ключ TLS сохраняется при продлении: носители закрепляют его отпечаток (SPKI)
+# в описателе сервера, и новый ключ каждые 90 дней оборвал бы им связь.
+set -- "$@" --reuse-key
 if [ -d "/etc/letsencrypt/live/$DOMAIN" ]; then
     # Сертификат есть: только вписать его в конфигурацию, не выпуская заново
     # (у Let's Encrypt на выпуск есть ограничения по частоте).

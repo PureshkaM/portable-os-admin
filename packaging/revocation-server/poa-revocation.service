@@ -13,6 +13,8 @@ Wants=network-online.target
 Type=simple
 ExecStart=/usr/local/sbin/poa-revocation-server.py \
     --key %d/revocation-key \
+    --credentials %d \
+    --state /var/lib/poa-revocation \
     --db /var/lib/poa-revocation/media.sqlite \
     --admins /var/lib/poa-revocation/admins \
     --host 127.0.0.1 --port 8081
@@ -31,6 +33,11 @@ StateDirectory=poa-revocation
 # попадёт на машину. Здесь файл читает systemd от root при старте и кладёт
 # копию в каталог, видимый только этой службе; на диске он остаётся 600.
 LoadCredential=revocation-key:/etc/poa-revocation/revocation-key.pem
+# Ключи v3. Пока здесь, до запечатанной связки (этап Э21).
+LoadCredential=ca-key:/etc/poa-revocation/ca-key
+LoadCredential=ca-cert:/etc/poa-revocation/ca-cert
+LoadCredential=data-key:/etc/poa-revocation/data-key
+LoadCredential=tls-crypt-v2:/etc/poa-revocation/tls-crypt-v2
 Restart=on-failure
 RestartSec=5
 

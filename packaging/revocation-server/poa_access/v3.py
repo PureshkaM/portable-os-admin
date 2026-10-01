@@ -432,7 +432,7 @@ def crl(h) -> None:
     if not h.secrets.v3_ready:
         h._send(503, b"not configured\n")
         return
-    if time.time() - _crl_cache["at"] > 30:
+    if time.time() - _crl_cache["at"] > 10:
         _crl_cache["pem"] = ca.crl(h.secrets.ca_key, h.secrets.ca_cert_pem, h.store.revoked_certs())
         _crl_cache["at"] = time.time()
     h._send(200, _crl_cache["pem"], content_type="application/x-pem-file", no_store=True)

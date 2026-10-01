@@ -102,3 +102,36 @@ def crl(ca_key, ca_cert_pem: bytes, revoked: list[tuple[int, int]]) -> bytes:
             .build()
         )
     return builder.sign(ca_key, hashes.SHA256()).public_bytes(serialization.Encoding.PEM)
+
+
+def issue_server(ca_key, ca_cert_pem: bytes, name: str) -> tuple[bytes, bytes]:
+    """Ключ и сертификат VPN-шлюза: (ключ PEM, сертификат PEM).
+
+    Клиент сверяет имя (`verify-x509-name`) и назначение (`remote-cert-tls
+    server`), поэтому имя -- в CN и в SAN, назначение -- serverAuth. Срок --
+    два года: шлюз меняется вручную, а не каждый день.
+    """
+    key = ec.generate_private_key(ec.SECP256R1())
+    ca_cert = x509.load_pem_x509_certificate(ca_cert_pem)
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, name)]))
+        .issuer_name(ca_cert.subject)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now() - BACKDATE)
+        .not_valid_after(now() + datetime.timedelta(days=730))
+        .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
+        .add_extension(x509.KeyUsage(
+            digital_signature=True, content_commitment=False, key_encipherment=False,
+            data_encipherment=False, key_agreement=True, key_cert_sign=False, crl_sign=False,
+            encipher_only=False, decipher_only=False), critical=True)
+        .add_extension(x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]), critical=False)
+        .add_extension(x509.SubjectAlternativeName([x509.DNSName(name)]), critical=False)
+        .sign(ca_key, hashes.SHA256())
+    )
+    return (
+        key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                          serialization.NoEncryption()),
+        cert.public_bytes(serialization.Encoding.PEM),
+    )
