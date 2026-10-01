@@ -559,6 +559,9 @@ class RedOSInstallBackend(InstallBackend):
                 arguments += [f"--setopt={repo_id}.gpgcheck=1", f"--setopt={repo_id}.gpgkey={gpgkey}"]
         return arguments
 
+    #: Пакеты доступа (Э8), имена сверены по образам (Э0).
+    ACCESS_PACKAGES = ("openvpn", "freerdp", "python3-gobject", "gtk3", "vte291", "gtk-vnc2", "gvnc", "python3-cryptography", "openssh-clients")
+
     def bind_network(self, config: InstallConfig, image_mountpoint: str, mount_root: str = "") -> None:
         """Официальные репозитории из `redos-release` образа или `mirror` компании.
 

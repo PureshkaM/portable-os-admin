@@ -55,6 +55,35 @@ def _canonical(obj) -> bytes:
                       separators=(",", ":")).encode("utf-8")
 
 
+def fetch_tls_spki(url: str, timeout: int = TIMEOUT_SECONDS) -> str:
+    """SHA-256 SPKI TLS-сертификата сервера -- для закрепления на носителе.
+
+    Снимается на машине администратора с **обычной** проверкой цепочки УЦ
+    (сертификат сервера -- Let's Encrypt): это и есть момент доверия. Носитель
+    дальше УЦ не спрашивает -- только этот отпечаток (`docs/ACCESS-PROTOCOL.md`, 2).
+    """
+    import socket
+    import ssl
+    import urllib.parse
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import serialization
+
+    parts = urllib.parse.urlsplit(url)
+    if parts.scheme != "https":
+        raise AccessServerError("отпечаток TLS снимается только с https-адреса сервера")
+    context = ssl.create_default_context()
+    try:
+        with socket.create_connection((parts.hostname, parts.port or 443), timeout=timeout) as raw:
+            with context.wrap_socket(raw, server_hostname=parts.hostname) as tls:
+                der = tls.getpeercert(binary_form=True)
+    except (OSError, ssl.SSLError) as error:
+        raise AccessServerError(f"не удалось проверить TLS сервера доступа: {error}") from error
+    spki = x509.load_der_x509_certificate(der).public_key().public_bytes(
+        serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
+    return hashlib.sha256(spki).hexdigest()
+
+
 def new_activation_code() -> tuple[str, str]:
     """(код для человека «XXXXX-XXXXX», SHA-256 для сервера)."""
     raw = "".join(secrets.choice(ACTIVATION_ALPHABET) for _ in range(ACTIVATION_LENGTH))
@@ -165,8 +194,9 @@ class AccessClient:
         files = {os.path.basename(p): self.upload(dist, serial, p) for p in paths}
         self.command("release", distribution=dist, serial=serial, files=files)
 
-    def set_vpn_remotes(self, remotes: list[dict]) -> None:
-        self.command("vpn", remotes=remotes)
+    def set_vpn_remotes(self, remotes: list[dict], gateway_name: str = "") -> None:
+        """Адреса шлюза и имя в его сертификате (носитель сверяет его)."""
+        self.command("vpn", remotes=remotes, gateway_name=gateway_name)
 
     def log(self, since: int = 0, events_since: int = 0) -> dict:
         return self.command("log", since=since, events_since=events_since)

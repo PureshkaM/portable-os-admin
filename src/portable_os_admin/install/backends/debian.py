@@ -234,6 +234,9 @@ class DebianInstallBackend(InstallBackend):
     OFFICIAL_MIRROR = "http://deb.debian.org/debian"
     OFFICIAL_SECURITY = "http://security.debian.org/debian-security"
 
+    #: Пакеты доступа (Э8), имена сверены по образам (Э0).
+    ACCESS_PACKAGES = ("openvpn", "freerdp3-x11", "python3-gi", "gir1.2-gtk-3.0", "gir1.2-vte-2.91", "gir1.2-gtk-vnc-2.0", "python3-cryptography", "openssh-client")
+
     def bind_network(self, config: InstallConfig, image_mountpoint: str, mount_root: str = "") -> None:
         if not config.network_packages:
             self.network_repos = ()

@@ -930,6 +930,34 @@ class OSInstaller:
             ["ln", "-sf", f"/{revocation.TIMER_PATH}", f"{wants}/{revocation.TIMER_NAME}"],
             plan, dry_run, confirm_device,
         )
+        self._write_access_config(config, identity, key_pem, plan, dry_run, confirm_device)
+
+    def _write_access_config(self, config, identity, key_pem, plan, dry_run, confirm_device) -> None:
+        """Настройки доступа этого носителя (Э8) и автозапуск службы.
+
+        Код клиента и юниты уже в образе; здесь -- только то, что своё у
+        носителя. Отпечаток TLS сервера снимается сейчас, с машины
+        администратора, по обычной проверке УЦ; http-адрес (стенд) остаётся
+        без отпечатка -- клиент носителя такой адрес не примет, кроме петли.
+        """
+        from .access import files as access_files
+
+        if not access_files.is_enabled(config):
+            return
+        layout = identity.layout
+        pins: tuple[str, ...] = ()
+        if config.revocation.url.startswith("https://") and not dry_run:
+            from ..admin.access_client import fetch_tls_spki
+            pins = (fetch_tls_spki(config.revocation.url),)
+        self._write_file(
+            f"{layout.mount_root}/{access_files.CONFIG_PATH}",
+            access_files.medium_config(config, identity.media_id, key_pem, pins),
+            plan, dry_run, confirm_device, mode=0o600,
+        )
+        wants = f"{layout.mount_root}/etc/systemd/system/multi-user.target.wants"
+        self._run(["mkdir", "-p", wants], plan, dry_run, confirm_device)
+        self._run(["ln", "-sf", f"/{access_files.SERVICE_PATH}",
+                   f"{wants}/{access_files.SERVICE_NAME}"], plan, dry_run, confirm_device)
 
     def _write_medium_files(
         self, config, backend, identity, plan, state, dry_run, confirm_device,

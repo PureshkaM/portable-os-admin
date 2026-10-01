@@ -142,6 +142,10 @@ def run_step(h, step) -> None:
                 code, body = step(db)
             except Refused as refusal:
                 code, body = refusal.code, refusal.body
+        if body.get("error") == "clone":
+            # После фиксации отзыва, а не внутри транзакции: иначе CRL,
+            # запрошенный в этот промежуток, закэшировался бы без отозванных.
+            invalidate_crl(h.store)
         send_json(h, code, body)
     except Refused as refusal:
         send_json(h, refusal.code, refusal.body)
@@ -362,7 +366,9 @@ def confirm(h) -> None:
                        (str(serial), media, not_after))
             vpn = {"provider": "openvpn", "cert": cert.decode("ascii"),
                    "ca": h.secrets.ca_cert_pem.decode("ascii"),
-                   "remotes": settings.get("remotes", [])}
+                   "remotes": settings.get("remotes", []),
+                   # Имя в сертификате шлюза: клиент сверяет его (verify-x509-name).
+                   "gateway_name": settings.get("gateway_name", "")}
             if h.secrets.tls_crypt_v2_server and tlscrypt.available():
                 vpn["tls_crypt_v2"] = tlscrypt.client_key(h.secrets.tls_crypt_v2_server).decode("ascii")
         else:
@@ -425,17 +431,25 @@ def events(h) -> None:
 # ---------------------------------------------------------------------------
 # для шлюза и для всех
 # ---------------------------------------------------------------------------
-_crl_cache: dict = {"at": 0.0, "pem": b""}
+#: CRL по хранилищу: (время, PEM). Сбрасывается при каждом отзыве сертификатов,
+#: чтобы клон попадал в список сразу, а не после истечения кэша.
+_crl_cache: dict = {}
+
+
+def invalidate_crl(store) -> None:
+    _crl_cache.pop(str(store.path), None)
 
 
 def crl(h) -> None:
     if not h.secrets.v3_ready:
         h._send(503, b"not configured\n")
         return
-    if time.time() - _crl_cache["at"] > 10:
-        _crl_cache["pem"] = ca.crl(h.secrets.ca_key, h.secrets.ca_cert_pem, h.store.revoked_certs())
-        _crl_cache["at"] = time.time()
-    h._send(200, _crl_cache["pem"], content_type="application/x-pem-file", no_store=True)
+    key = str(h.store.path)
+    cached = _crl_cache.get(key)
+    if cached is None or time.time() - cached[0] > 10:
+        cached = (time.time(), ca.crl(h.secrets.ca_key, h.secrets.ca_cert_pem, h.store.revoked_certs()))
+        _crl_cache[key] = cached
+    h._send(200, cached[1], content_type="application/x-pem-file", no_store=True)
 
 
 def descriptor(h) -> None:
@@ -644,8 +658,12 @@ def _cmd_vpn(h, db, obj):
                 or not isinstance(r.get("port"), int) or r.get("proto") not in ("udp", "tcp"):
             raise Refused(400, {"error": "bad_vpn"})
         clean.append({"host": r["host"], "port": r["port"], "proto": r["proto"]})
+    name = obj.get("gateway_name", "")
+    if not isinstance(name, str) or len(name) > 253:
+        raise Refused(400, {"error": "bad_vpn"})
     tmp = h.state_dir / "vpn.json.tmp"
-    tmp.write_text(json.dumps({"remotes": clean}, ensure_ascii=False), encoding="utf-8")
+    tmp.write_text(json.dumps({"remotes": clean, "gateway_name": name}, ensure_ascii=False),
+                   encoding="utf-8")
     os.replace(tmp, h.state_dir / "vpn.json")
     return {}
 

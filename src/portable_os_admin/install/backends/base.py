@@ -414,7 +414,14 @@ class InstallBackend(ABC):
             extras=self.DESKTOP_EXTRA_PACKAGES,
             blank_screen=config.kiosk.screen_blank_minutes > 0,
         )
+        from ..access import files as access_files
+        if access_files.is_enabled(config):
+            packages += list(self.ACCESS_PACKAGES)
         return packages
+
+    #: Пакеты доступа (Э8): OpenVPN, FreeRDP, GTK-привязки для окон, VTE (SSH),
+    #: GtkVnc (VNC), криптография клиента. Имена у семейств свои -- Э0.
+    ACCESS_PACKAGES: tuple[str, ...] = ()
 
     # ------------------------------------------------------------------
     # Как этот дистрибутив называется и где лежит
@@ -1157,6 +1164,10 @@ echo "poa-boot: меню загрузки написано для ядра $vers
         files: dict[str, tuple[str, int | None]] = {}
         files.update(self.generic_initramfs_files())
         files.update(kiosk_mode.config_files(config, image))
+        # Доступ (Э8) -- в образ: код клиента и юниты одинаковы у всех носителей
+        # и должны обновляться вместе с образом.
+        from ..access import files as access_files
+        files.update(access_files.image_files(config))
         # Отзыв -- только при записи носителя: скрипт называет идентификатор
         # этого носителя и его раздел. В эталонном корне дистрибутива ни того,
         # ни другого ещё нет, и общий на всех скрипт спрашивал бы ресурс об
