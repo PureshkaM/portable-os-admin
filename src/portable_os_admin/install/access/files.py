@@ -25,7 +25,10 @@ SERVICE_PATH = f"etc/systemd/system/{SERVICE_NAME}"
 VPN_UNIT_PATH = "etc/systemd/system/poa-vpn@.service"
 AUTOSTART_PATH = "etc/xdg/autostart/poa-connect.desktop"
 RUNTIME_FILES = ("poa_client.py", "poa_accessd.py", "poa_launch.py", "poa_connect.py",
-                 "poa_qr.py", "poa_ssh.py", "poa_vnc.py")
+                 "poa_qr.py", "poa_ssh.py", "poa_vnc.py", "poa_events.py")
+EVENTS_SERVICE_NAME = "poa-events.service"
+EVENTS_SERVICE_PATH = f"etc/systemd/system/{EVENTS_SERVICE_NAME}"
+EVENT_CLI_PATH = "usr/local/sbin/poa-event"
 
 
 def is_enabled(config: InstallConfig) -> bool:
@@ -80,6 +83,25 @@ X-GNOME-Autostart-enabled=true
 """
 
 
+def events_unit() -> str:
+    """Вход (E01) и выход (E02) -- после разблокировки, когда том журналов
+    уже смонтирован; до разблокировки в журнал не пишется ничего (правило Э20)."""
+    return """[Unit]
+Description=Журнал событий носителя: вход и выход
+RequiresMountsFor=/var/log
+After=local-fs.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c '/usr/local/sbin/poa-event E01 machine=$(sha256sum /sys/class/dmi/id/product_uuid 2>/dev/null | cut -c1-16) virt=$(systemd-detect-virt --vm 2>/dev/null || echo none)'
+ExecStop=/usr/local/sbin/poa-event E02
+
+[Install]
+WantedBy=multi-user.target
+"""
+
+
 def image_files(config: InstallConfig) -> dict[str, tuple[str, int | None]]:
     if not is_enabled(config):
         return {}
@@ -90,6 +112,8 @@ def image_files(config: InstallConfig) -> dict[str, tuple[str, int | None]]:
     files[SERVICE_PATH] = (service_unit(), 0o644)
     files[VPN_UNIT_PATH] = (vpn_unit(), 0o644)
     files[AUTOSTART_PATH] = (autostart_entry(), 0o644)
+    files[EVENTS_SERVICE_PATH] = (events_unit(), 0o644)
+    files[EVENT_CLI_PATH] = ("#!/bin/sh\nexec /usr/bin/python3 /usr/lib/poa-access/poa_events.py \"$@\"\n", 0o755)
     return files
 
 

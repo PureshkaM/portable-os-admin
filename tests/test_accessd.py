@@ -61,7 +61,8 @@ def world(tmp_path, monkeypatch):
                                                     serialization.PublicFormat.Raw)
     config = {"endpoint": f"http://127.0.0.1:{server.port}", "media": device.media,
               "device_key": str(key), "server_sign_keys": [base64.b64encode(raw).decode()],
-              "state": str(tmp_path / "access.json"), "gateway_name": "gw.test"}
+              "state": str(tmp_path / "access.json"), "gateway_name": "gw.test",
+              "events_dir": str(tmp_path / "events")}
     runner = FakeRun()
     service = accessd.Service(config, runner=runner, clock=lambda: clock.now)
     sock = str(tmp_path / "access.sock")
@@ -99,6 +100,21 @@ def test_activation_then_login_brings_the_vpn_up(world):
     assert ask(sock, {"cmd": "check"})["reachability"] == {"ws1": "up"}
     ask(sock, {"cmd": "disconnect"})
     assert not list((tmp / "vpn").glob("*/client.conf")), "ключ VPN должен исчезнуть с отключением"
+
+
+def test_login_ships_the_event_queue_and_prunes_what_was_acknowledged(world):
+    server, service, sock, runner, tmp = world
+    import poa_events
+    queue = poa_events.Queue(service.config["events_dir"])
+    queue.append("D02", {"vid": "0781"})
+    otp = ask(sock, {"cmd": "activate", "code": server.issue_code(service.config["media"])})["otpauth"]
+    secret = otp.split("secret=")[1].split("&")[0]
+    server.clock.now += 30
+    ask(sock, {"cmd": "login", "totp": harness.totp.code_at(secret, int(server.clock.now // 30))})
+    assert queue.pending() == []
+    with server.handler.store.tx() as db:
+        codes = [r["code"] for r in db.execute("SELECT code FROM device_events")]
+    assert codes == ["D02"]
 
 
 def test_server_refusal_reaches_the_window_as_a_reason(world):
