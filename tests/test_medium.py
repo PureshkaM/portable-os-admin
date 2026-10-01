@@ -52,3 +52,32 @@ def test_description_reads_as_a_sentence_about_the_real_thing():
     line = medium.FLASH.describe()
     assert "парольной фразы" in line
     assert "не запрещается" in line
+
+
+def test_the_flash_proves_itself_with_a_file_key_and_is_guarded_by_the_ratchet():
+    """Ключ флешки копируется вместе с хранилищем -- поэтому копию ловит звено
+    последовательности на сервере, а TOTP нужен всегда (LIVE-2.0)."""
+    assert medium.FLASH.device_key is medium.DeviceKey.FILE
+    assert medium.FLASH.signature_alg == "ed25519"
+    assert medium.FLASH.clone_protection is medium.CloneProtection.RATCHET
+    assert medium.FLASH.totp_by_default is True
+
+
+def test_the_token_draft_differs_exactly_where_the_chip_changes_things():
+    """Проект токена описан, чтобы код с первого дня спрашивал профиль. Он
+    отличается ровно в шести решениях модуля и не выбирает алгоритм заранее."""
+    token = medium.TOKEN_DRAFT
+    assert token.key_leaves_the_medium is False
+    assert token.boot_tampering_is_prevented is True
+    assert token.identification is medium.Identification.DEVICE_IDENTITY
+    assert token.service_key_path == ""
+    assert token.device_key is medium.DeviceKey.PKCS11
+    assert token.signature_alg == ""
+    assert token.clone_protection is medium.CloneProtection.DEVICE_KEY
+    assert token.totp_by_default is False
+
+
+def test_the_token_draft_cannot_be_chosen():
+    """Проект есть, выбрать его нельзя: имя «token» ведёт к флешке."""
+    assert medium.profile("token") is medium.FLASH
+    assert medium.TOKEN_DRAFT not in medium.PROFILES.values()
