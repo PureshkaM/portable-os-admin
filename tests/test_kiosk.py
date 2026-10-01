@@ -520,7 +520,7 @@ def test_the_two_families_describe_the_desktop_by_the_same_roles():
     """Найденное на одной системе обязано попадать в обе.
 
     До 02.09.2026 наборы лежали в бэкендах целиком и совпадали на десять
-    пакетов из двенадцати у MATE и на четыре из семи у KDE, а объяснения были
+    пакетов из двенадцати у MATE, а объяснения были
     скопированы слово в слово. Именно в такой форме и потерялся пакет схем
     GSettings: правку внесли бы в один файл и не заметили второй, а обошлось
     бы это в сборку, запись и семь минут ожидания загрузки.
@@ -529,7 +529,7 @@ def test_the_two_families_describe_the_desktop_by_the_same_roles():
     """
     from portable_os_admin.install import desktop_roles
 
-    for desktop in ("mate", "kde"):
+    for desktop in ("mate",):
         roles = desktop_roles.ROLES[desktop]
         assert roles, f"{desktop}: роли не описаны"
         # Каждая роль объясняет, зачем она в наборе: набор собран вручную
@@ -544,7 +544,7 @@ def test_the_two_families_describe_the_desktop_by_the_same_roles():
     for target_os in ("debian", "redos"):
         overrides = get_backend(target_os).DESKTOP_PACKAGE_OVERRIDES
         named = sum(len(v) for v in overrides.values())
-        assert named <= 4, f"{target_os}: исключений {named} -- описание разошлось"
+        assert named <= 2, f"{target_os}: исключений {named} -- описание разошлось"
 
 
 def test_every_role_of_the_session_is_actually_installed():
@@ -557,7 +557,7 @@ def test_every_role_of_the_session_is_actually_installed():
 
     for target_os in ("debian", "redos"):
         backend = get_backend(target_os)
-        for desktop in ("mate", "kde"):
+        for desktop in ("mate",):
             config = make_kiosk_config(target_os, allowed_apps=["mate-calc"])
             config.kiosk.desktop_environment = desktop
             config.kiosk.screen_blank_minutes = 15
@@ -671,13 +671,8 @@ def test_a_complete_kiosk_configuration_validates():
 
 
 # ----------------------------------------------------------------------
-# KDE: the Kiosk framework
+# Рабочая среда и её пакеты
 # ----------------------------------------------------------------------
-def make_kde_config(target_os: str = "debian", **kiosk_kwargs) -> InstallConfig:
-    kiosk_kwargs.setdefault("desktop_environment", "kde")
-    return make_kiosk_config(target_os, **kiosk_kwargs)
-
-
 def test_exchange_path_is_the_same_in_both_modules():
     """kiosk.py repeats it rather than importing, to avoid an import cycle.
 
@@ -696,123 +691,6 @@ def test_mate_stays_the_default():
     assert kiosk.desktop_of(make_kiosk_config()) == "mate"
 
 
-def test_every_restriction_group_is_marked_immutable():
-    """[$i] is the whole mechanism.
-
-    Without it these are defaults, and anything ~/.config says later wins --
-    which is to say the kiosk would restrict nothing at all.
-    """
-    text = kiosk.kdeglobals(make_kde_config())
-
-    groups = [line for line in text.splitlines() if line.startswith("[")]
-    assert groups, "не записана ни одна группа ограничений"
-    for group in groups:
-        assert group.endswith("[$i]"), f"группа {group} не помечена неизменяемой"
-
-
-def test_shell_access_and_command_running_are_refused():
-    """The two that close the general-purpose escape routes."""
-    text = kiosk.kdeglobals(make_kde_config())
-
-    assert "shell_access=false" in text
-    assert "run_command=false" in text
-    # Третий, run_desktop_files, ставится не всегда -- см.
-    # test_desktop_files_may_be_executed_when_removable_media_are_refused.
-
-
-def test_file_dialogs_are_confined_to_home_and_the_exchange_volume():
-    """Deny first, then allow: the rules are evaluated in order."""
-    text = kiosk.kdeglobals(make_kde_config())
-
-    assert "rule_count=6" in text
-    assert "rule_1=list,,,,file,,,false" in text
-    assert "rule_2=list,,,,file,,$HOME,true" in text
-    assert f"rule_3=list,,,,file,,{kiosk.EXCHANGE_DIR},true" in text
-    assert "rule_4=open,,,,file,,,false" in text
-
-
-def test_lock_screen_is_refused_under_kde_too():
-    """Same constraint as MATE: the account password is locked."""
-    text = kiosk.kdeglobals(make_kde_config(screen_blank_minutes=10))
-
-    assert "lock_screen=false" in text
-
-
-def test_the_automatic_lock_is_switched_off_where_the_daemon_reads_it():
-    """Regression, найдено живым прогоном: носитель запирался сам собой.
-
-    `lock_screen=false` в kdeglobals — проверка KAuthorized, она останавливает
-    только запрос блокировки от пользователя. Блокировку по простою делает
-    демон, который ничего не спрашивает и читает kscreenlockerrc; без этого
-    файла он остаётся при своём умолчании (запереть через пять минут). Пароль
-    учётной записи заблокирован, поэтому запертый экран не открыть ничем,
-    кроме перезагрузки.
-    """
-    text = kiosk.kscreenlockerrc(make_kde_config(screen_blank_minutes=10))
-
-    assert "[Daemon][$i]" in text, "без [$i] это лишь умолчание, которое сессия перезапишет"
-    assert "Autolock=false" in text
-    assert "LockOnResume=false" in text
-
-
-def test_blanking_is_set_where_plasma_actually_does_it():
-    """Гашение экрана в Plasma делает powerdevil, а не блокировщик."""
-    ten = kiosk.powermanagement_profiles(make_kde_config(screen_blank_minutes=10))
-
-    assert "[AC][DPMSControl][$i]" in ten
-    assert "idleTime=600" in ten
-    # powerdevil умеет запереть экран перед гашением -- ровно то, чего здесь
-    # быть не должно.
-    assert "lockBeforeTurnOff=0" in ten
-
-    off = kiosk.powermanagement_profiles(make_kde_config(screen_blank_minutes=0))
-    assert "DPMSControl" not in off
-
-
-def test_the_kde4_screensaver_file_is_not_written_any_more():
-    """Plasma его не читает, поэтому всё написанное в него было мертво."""
-    files = kiosk.config_files(make_kde_config(screen_blank_minutes=10))
-
-    assert not any("kscreensaver" in path for path in files)
-    assert kiosk.KSCREENLOCKER_PATH in files
-    assert kiosk.POWERMANAGEMENT_PATH in files
-
-
-def test_logout_follows_the_shutdown_setting():
-    assert "logout=true" in kiosk.kdeglobals(make_kde_config(allow_shutdown=True))
-    assert "logout=false" in kiosk.kdeglobals(make_kde_config(allow_shutdown=False))
-
-
-def test_autostart_resource_is_only_closed_when_nothing_needs_it():
-    """Closing it while this project relies on autostart could disable both.
-
-    The opening it covers -- a .desktop dropped into ~/.config/autostart -- is
-    what run_desktop_files closes where that restriction applies at all.
-    """
-    without = kiosk.kdeglobals(make_kde_config())
-    assert "autostart=false" in without
-
-    with_app = kiosk.kdeglobals(make_kde_config(autostart_app="mate-calc"))
-    assert "[KDE Resource Restrictions][$i]" not in with_app
-    assert "run_desktop_files=false" in kiosk.kdeglobals(
-        make_kde_config(autostart_app="mate-calc", allow_removable_media=True)
-    )
-
-
-@pytest.mark.parametrize("target_os", ["debian", "redos"])
-def test_kde_writes_kde_files_and_no_dconf(target_os, layout):
-    backend = get_backend(target_os)
-    config = make_kde_config(target_os)
-    files = dict(backend.config_files(config, layout))
-    files.update(backend.scripted_files(config, layout))
-
-    assert kiosk.KDEGLOBALS_PATH in files
-    assert kiosk.PLASMARC_PATH in files
-    # dconf belongs to the MATE half; writing both would be two half-applied
-    # configurations rather than one.
-    assert kiosk.DCONF_KEYFILE_PATH not in files
-
-
 @pytest.mark.parametrize("target_os", ["debian", "redos"])
 def test_mate_writes_dconf_and_no_kde_files(target_os, layout):
     backend = get_backend(target_os)
@@ -821,57 +699,14 @@ def test_mate_writes_dconf_and_no_kde_files(target_os, layout):
     files.update(backend.scripted_files(config, layout))
 
     assert kiosk.DCONF_KEYFILE_PATH in files
-    assert kiosk.KDEGLOBALS_PATH not in files
+    # Файлов упразднённой среды KDE на носителе нет.
+    assert "etc/xdg/kdeglobals" not in files
+    if target_os == "debian":
+        assert not any("sddm" in path for path in files), "на Debian вход -- lightdm"
 
 
 @pytest.mark.parametrize("target_os", ["debian", "redos"])
-def test_kde_session_uses_sddm_and_our_own_session_entry(target_os, layout):
-    """SDDM, and the session this program defines rather than a distribution's.
-
-    It used to ask for "plasma" by name, which was wrong in a way no test would
-    have caught: that name means the X11 session on Plasma 5 and the Wayland
-    one on Plasma 6, so the same configuration would have produced a different
-    protocol -- and a different set of restrictions -- on RED OS than on Debian.
-    """
-    backend = get_backend(target_os)
-    config = make_kde_config(target_os)
-
-    assert backend.display_manager_for(config) == "sddm"
-    files = backend.config_files(config, layout)
-    dm_file = next(path for path in files if "sddm" in path)
-    assert f"Session={kiosk.SESSION_NAME}" in files[dm_file]
-    assert config.account.username in files[dm_file]
-
-
-@pytest.mark.parametrize("target_os", ["debian", "redos"])
-def test_kde_kiosk_installs_no_terminal_and_no_settings_centre(target_os):
-    packages = get_backend(target_os).desktop_packages(make_kde_config(target_os))
-
-    for name in (
-        "konsole",
-        "konsole5",  # what RED OS calls it
-        "systemsettings",
-        "plasma-systemsettings",
-        "plasma-discover",
-        "dolphin",  # Plasma draws its desktop with plasmashell, not a file manager
-        "kde-standard",
-        "kwrited",
-    ):
-        assert name not in packages, f"{name} не должен ставиться в режиме киоска"
-
-
-@pytest.mark.parametrize("target_os", ["debian", "redos"])
-def test_kde_session_has_what_it_needs_to_start(target_os):
-    packages = get_backend(target_os).desktop_packages(make_kde_config(target_os))
-
-    assert "plasma-desktop" in packages
-    assert "plasma-workspace" in packages
-    assert any(p.startswith("kwin") for p in packages)
-    assert "sddm" in packages
-
-
-@pytest.mark.parametrize("target_os", ["debian", "redos"])
-def test_both_desktops_get_the_full_driver_set(target_os):
+def test_the_desktop_gets_the_full_driver_set(target_os):
     """A medium is carried to hardware nobody has seen yet.
 
     Shipping only the driver for the administrator's own card gives a stick
@@ -879,7 +714,7 @@ def test_both_desktops_get_the_full_driver_set(target_os):
     portable system may not have.
     """
     backend = get_backend(target_os)
-    for desktop in ("mate", "kde"):
+    for desktop in ("mate",):
         config = make_kiosk_config(target_os, desktop_environment=desktop)
         packages = backend.desktop_packages(config)
         if target_os == "debian":
@@ -916,7 +751,7 @@ def test_debian_installs_the_firmware_the_image_hides_from_its_index():
 def test_redos_needs_no_firmware_step():
     """It packages the firmware in its own repository, so it installs by name."""
     assert get_backend("redos").firmware_install_command("/mnt/t", "/mnt/img") is None
-    assert "linux-firmware" in get_backend("redos").desktop_packages(make_kde_config("redos"))
+    assert "linux-firmware" in get_backend("redos").desktop_packages(make_kiosk_config("redos"))
 
 
 def test_unknown_desktop_is_refused():
@@ -925,63 +760,28 @@ def test_unknown_desktop_is_refused():
 
 
 # ----------------------------------------------------------------------
-# X11 and Wayland
+# Сеанс X11
 # ----------------------------------------------------------------------
-def test_x11_is_the_default_session():
-    assert InstallConfig(name="a").kiosk.session_type == "x11"
-    assert kiosk.wants_wayland(make_kiosk_config()) is False
-
-
 def test_the_session_entry_is_this_program_s_own():
-    """Naming the distribution's session would pick a different protocol.
+    """Имя сеанса -- своё, постоянное на всех дистрибутивах; сеанс -- X11."""
+    path, content = kiosk.session_entry(make_kiosk_config())
 
-    "plasma" is the X11 session under Plasma 5 (RED OS 8) and the *Wayland*
-    one under Plasma 6 (Debian 13). Asking for it by name would therefore give
-    X11 on one distribution and Wayland on the other -- silently, and with
-    different security properties, since the X11 lockdown file is not read
-    under Wayland.
-    """
-    path, content = kiosk.session_entry(make_kde_config())
-
-    assert path.endswith(f"{kiosk.SESSION_NAME}.desktop")
-    assert "plasma.desktop" not in path
-    assert "startplasma-x11" in content
-
-
-def test_wayland_selects_the_wayland_session_directory_and_binary():
-    config = make_kde_config(session_type="wayland")
-    path, content = kiosk.session_entry(config)
-
-    assert kiosk.wants_wayland(config) is True
-    assert path.startswith("usr/share/wayland-sessions/")
-    assert "startplasma-wayland" in content
-
-
-def test_mate_is_always_x11_whatever_was_asked_for():
-    """It has no Wayland session; validation refuses the pairing separately."""
-    config = make_kiosk_config(session_type="wayland")
-
-    assert kiosk.wants_wayland(config) is False
-    path, content = kiosk.session_entry(config)
-    assert path.startswith("usr/share/xsessions/")
-    assert "mate-session" in content
+    assert path == f"usr/share/xsessions/{kiosk.SESSION_NAME}.desktop"
+    assert "Exec=/usr/bin/mate-session" in content
+    assert "Type=XSession" in content
 
 
 def test_console_switching_is_refused_by_polkit_not_only_by_xorg():
-    """The restriction has to survive Plasma's move to Wayland.
-
-    Under Wayland xorg.conf is never read, so DontVTSwitch does nothing; the
-    compositor asks logind to switch, and that request is what gets refused.
-    """
-    rules = kiosk.polkit_rules(make_kde_config(session_type="wayland"))
+    """Второй рубеж за DontVTSwitch: запрос к logind на переключение отклонён."""
+    rules = kiosk.polkit_rules(make_kiosk_config())
 
     assert "org.freedesktop.login1.chvt" in rules
     # And the spare consoles are not allocated at all.
     assert "NAutoVTs=0" in kiosk.logind_conf()
 
 
-def test_the_xorg_lockdown_is_still_written_but_is_not_the_load_bearing_part():
-    config = make_kde_config(session_type="wayland")
+def test_the_xorg_lockdown_is_written():
+    config = make_kiosk_config()
     files = kiosk.config_files(config)
 
     assert kiosk.XORG_CONF_PATH in files
@@ -989,33 +789,10 @@ def test_the_xorg_lockdown_is_still_written_but_is_not_the_load_bearing_part():
     assert kiosk.LOGIND_CONF_PATH in files
 
 
-def test_wayland_packages_are_added_only_when_asked_for():
-    backend = get_backend("debian")
-    x11 = backend.desktop_packages(make_kde_config(session_type="x11"))
-    wayland = backend.desktop_packages(make_kde_config(session_type="wayland"))
-
-    assert "kwin-wayland" not in x11
-    assert "kwin-wayland" in wayland
-    # X-only applications are most of what a kiosk allows.
-    assert "xwayland" in wayland
-
-
-def test_wayland_is_refused_where_it_cannot_work():
-    """Both refusals are facts about the images, not preferences."""
-    mate = make_kiosk_config(session_type="wayland")
-    assert any("MATE" in e for e in _errors(mate))
-
-    redos = make_kde_config("redos", session_type="wayland")
-    assert any("РЕД ОС" in e for e in _errors(redos))
-
-    assert _errors(make_kde_config("redos", session_type="x11")) == []
-    assert _errors(make_kde_config("debian", session_type="wayland")) == []
-
-
 def test_display_manager_asks_for_our_session_by_name(layout):
     for target_os in ("debian", "redos"):
         backend = get_backend(target_os)
-        config = make_kde_config(target_os)
+        config = make_kiosk_config(target_os)
         files = backend.config_files(config, layout)
         dm_file = next(path for path in files if "sddm" in path or "lightdm" in path)
         assert kiosk.SESSION_NAME in files[dm_file]
@@ -1186,145 +963,6 @@ def test_allowed_applications_get_desktop_icons():
     assert "chown" in script, "ярлыки останутся принадлежать root"
 
 
-def test_desktop_files_may_be_executed_when_removable_media_are_refused():
-    """Regression, найдено живым прогоном: киоск KDE не запускал ничего.
-
-    Замер на носителе: с `run_desktop_files=false` KIO отказывает **любой**
-    записи, включая `/usr/share/applications/mate-calc.desktop`. Проверено
-    четырьмя способами -- прямой запуск бинарника и `gio launch` работают,
-    `kioclient5 exec` возвращает 1 и по ярлыку, и по системной записи. То есть
-    ограничение убирает рабочий стол и файловый менеджер целиком, а не только
-    посторонние записи.
-
-    Поэтому оно ставится ровно тогда, когда есть чему противостоять: если
-    пользователю разрешены съёмные носители, чужой ярлык принести можно, и
-    запрет нужен. Если нет -- принести неоткуда, и запрет только вредит.
-    """
-    strict = kiosk.kdeglobals(make_kde_config(allow_removable_media=True))
-    assert "run_desktop_files=false" in strict
-
-    usable = kiosk.kdeglobals(make_kde_config(allow_removable_media=False))
-    assert "run_desktop_files=false" not in usable
-
-
-def test_the_bug_report_action_is_not_restricted():
-    """Regression: «Параметры системы» падали, не показав окна.
-
-    KStandardAction спрашивает KAuthorized и на запрет возвращает nullptr, а
-    не отключённое действие; приложение, которое это не проверяет, падает.
-    Найдено перебором на носителе: ключи группы убирали по одному, и живым
-    systemsettings становился ровно без action/help_report_bug.
-    """
-    text = kiosk.kdeglobals(make_kde_config())
-
-    assert "help_report_bug" not in text
-    # Остальные ограничения группы остаются: проверено тем же перебором --
-    # без каждого из них падение сохранялось.
-    assert "shell_access=false" in text
-    assert "action/help_contents=false" in text
-
-
-def test_settings_modules_are_computed_on_the_target_not_listed_here():
-    """KDE не умеет whitelist модулей -- только отказ поимённо, а набор
-    модулей зависит от образа (в РЕД ОС 8 их 62). Значит список отказов
-    строится там, где модули лежат."""
-    script = kiosk.settings_modules_script(
-        make_kiosk_config(desktop_environment="kde",
-                          allowed_settings=["network", "datetime"])
-    )
-
-    assert "kcm_networkmanagement" in script
-    assert "kcm_clock" in script
-    assert "kcm_pulseaudio" not in script, "звук не разрешали"
-    # Стартовая страница обязана остаться: без неё приложение падает в
-    # SettingsBase::changePlugin, не дойдя до первой отрисовки.
-    assert kiosk.SETTINGS_LANDING_MODULE in script
-    # Перечисление идёт по установленным файлам, а не по списку из кода, и по
-    # признаку модуля, а не по имени: «Внешние носители» зовутся
-    # device_automounter_kcm и маску kcm* не проходят.
-    assert 'grep -q "KCModule"' in script
-    assert "/usr/share/applications/*.desktop" in script
-    assert "[KDE Control Module Restrictions]" in script
-
-
-def test_the_modules_themselves_are_removed_not_just_their_entries():
-    """Regression: удаления .desktop оказалось мало.
-
-    «Параметры системы» Plasma 5 берут список из плагинов, чьи метаданные
-    лежат внутри .so. Замер на носителе: после удаления 59 записей
-    «Пользователи», «Уведомления» и «Учётные записи в Интернете» остались на
-    месте; после удаления 62 плагинов в списке осталось два раздела вместо
-    восьми.
-    """
-    script = kiosk.settings_modules_script(
-        make_kiosk_config(desktop_environment="kde", allowed_settings=["network"])
-    )
-
-    assert "plugins/plasma/kcms" in script
-    assert "plugins_removed" in script
-    # Разрешённый модуль переживает чистку -- иначе «Параметры» откроются
-    # пустыми, а администратор думает, что сеть настраивать можно.
-    assert 'is_kept "${n%.so}" && continue' in script
-
-
-def test_nothing_is_allowed_by_default_and_the_landing_page_stays_shut():
-    script = kiosk.settings_modules_script(make_kiosk_config(desktop_environment="kde"))
-
-    assert 'KEEP_MODULES=""' in script
-    assert kiosk.SETTINGS_LANDING_MODULE not in script
-
-
-def test_the_panel_carries_the_allowed_applications_and_locks_itself():
-    """Regression: панель приезжала с ярлыком «Параметры системы», а
-    «Избранное» меню -- с их же плиткой. Ни того, ни другого администратор не
-    разрешал."""
-    script = kiosk.plasma_layout_script(
-        make_kiosk_config(desktop_environment="kde", allowed_apps=["mate-calc", "atril"])
-    )
-
-    # Список собирается на целевой системе из $ALLOWED -- того, что она сама
-    # вычислила по пакетам. Раньше имена вписывались сюда при сборке, и панель
-    # могла показывать не то, что установлено.
-    assert "for a in $ALLOWED" in script
-    assert "applications:$a.desktop" in script
-    assert "systemsettings" not in script, "настройки не разрешены -- нечего выносить"
-    assert "ordering=" in script, "иначе в избранном останется набор дистрибутива"
-    # immutability=2 -- SystemImmutable: пользователь не разблокирует виджеты.
-    assert "immutability=2" in script
-    assert "/etc/skel" in script
-
-
-def test_settings_reach_the_panel_only_when_something_is_allowed():
-    """Запускатель настроек ищется на носителе, а не называется из кода.
-
-    Имя у «Параметров системы» разное: РЕД ОС кладёт
-    `kdesystemsettings.desktop`, Plasma 6 в Debian -- `systemsettings.desktop`.
-    Прогон 12.09.2026: мы называли второе, на носителе лежало первое, и
-    настройки не попадали никуда -- ни в панель, ни в избранное, ни в меню;
-    поиск по «settings» и по «system» в живом сеансе не находил ничего, хотя
-    сам `systemsettings` в образе есть.
-    """
-    with_settings = kiosk.plasma_layout_script(
-        make_kiosk_config(desktop_environment="kde", allowed_apps=["mate-calc"],
-                          allowed_settings=["network"])
-    )
-    # Имя не вписано, а выбрано из тех, что действительно лежат на носителе, --
-    # и выбрано общим механизмом проверок «на месте», а не своим кодом здесь.
-    assert "SETTINGS_ENTRY=$(poa_probe_file" in with_settings
-    assert "/usr/share/applications/ .desktop kdesystemsettings systemsettings)" in with_settings
-    # И попадает в тот же список, что и разрешённые приложения.
-    assert "for a in $ALLOWED $SETTINGS_ENTRY" in with_settings
-    # Если ни одного из имён на носителе нет -- в журнале установки будет и что
-    # искали, и чем это обернётся; сама строка печатается общим механизмом.
-    assert "разрешённые настройки будут недоступны из меню и панели" in with_settings
-
-    without = kiosk.plasma_layout_script(
-        make_kiosk_config(desktop_environment="kde", allowed_apps=["mate-calc"])
-    )
-    assert "systemsettings" not in without, "настройки не разрешены -- нечего выносить"
-    assert "SETTINGS_ENTRY=" not in without
-
-
 def test_the_generated_script_is_valid_shell_in_every_combination():
     """`sh -n` по всему скрипту, а не по глазам.
 
@@ -1337,7 +975,7 @@ def test_the_generated_script_is_valid_shell_in_every_combination():
     import subprocess
 
     for target in ("redos", "debian"):
-        for desktop in ("kde", "mate"):
+        for desktop in ("mate",):
             script = kiosk.apply_script(
                 make_kiosk_config(
                     target,
@@ -1360,44 +998,6 @@ def test_the_generated_script_is_valid_shell_in_every_combination():
                     assert script.index(f"{helper}() {{") < script.index(call)
 
 
-def test_the_device_notifier_is_removed_rather_than_hidden():
-    """Regression, найдено пользователем в живом сеансе: апплет «Диски и
-    устройства» вернулся после вычистки из конфигурации и показывал служебные
-    разделы носителя с кнопкой «Безопасно извлечь» напротив системного тома.
-    Системный лоток собирает состав из установленных плазмоидов, поэтому
-    убирать надо сам плазмоид."""
-    script = kiosk.plasma_layout_script(
-        make_kiosk_config(desktop_environment="kde", allowed_apps=["mate-calc"])
-    )
-
-    assert "org.kde.plasma.devicenotifier" in script
-    assert "rm -rf \"/usr/share/plasma/plasmoids/$plasmoid\"" in script
-
-
-def test_the_plasma_layout_is_kde_only():
-    assert kiosk.plasma_layout_script(make_kiosk_config(allowed_apps=["mate-calc"])) == ""
-
-
-def test_no_desktop_shortcuts_are_promised_where_they_cannot_launch():
-    """Ярлык, который не запускается, хуже отсутствующего."""
-    blocked = kiosk.apply_script(
-        make_kiosk_config(allowed_apps=["mate-calc"], desktop_environment="kde",
-                          allow_removable_media=True)
-    )
-    assert 'DESKTOP_SHORTCUTS=""' in blocked
-
-    working = kiosk.apply_script(
-        make_kiosk_config(allowed_apps=["mate-calc"], desktop_environment="kde",
-                          allow_removable_media=False)
-    )
-    assert 'DESKTOP_SHORTCUTS="1"' in working
-    # MATE ограничения не знает, поэтому ярлыки у него есть всегда.
-    mate = kiosk.apply_script(
-        make_kiosk_config(allowed_apps=["mate-calc"], allow_removable_media=True)
-    )
-    assert 'DESKTOP_SHORTCUTS="1"' in mate
-
-
 def test_the_program_list_is_not_switched_off_wholesale():
     """Regression: the menu stopped opening, so nothing could be started.
 
@@ -1414,78 +1014,29 @@ def test_the_program_list_is_not_switched_off_wholesale():
 # ----------------------------------------------------------------------
 # Разделение по средам
 # ----------------------------------------------------------------------
-def test_each_environment_gets_only_its_own_fragment():
-    """Ради этого модули и разнесены.
-
-    До разделения скрипт нёс обе ветки и выбирал по `$DESKTOP` уже на целевой
-    системе. Из шести дефектов, найденных живыми прогонами, четыре были одного
-    вида: правило написано для одной среды и молча применено к другой. Теперь
-    ветка выбирается при генерации, и чужого куска в скрипте просто нет.
-    """
+def test_the_script_carries_only_the_mate_fragment():
+    """Кусок среды выбирается при генерации, а не по `$DESKTOP` на целевой
+    системе: чужого (бывшего KDE) куска в скрипте нет."""
     mate = kiosk.apply_script(make_kiosk_config(allowed_apps=["mate-calc"]))
     assert "dconf update" in mate
     assert "kbuildsycoca" not in mate
-    assert "$DESKTOP" != "", "переменная осталась для прочих проверок"
-
-    kde = kiosk.apply_script(
-        make_kiosk_config(allowed_apps=["mate-calc"], desktop_environment="kde")
-    )
-    assert "kbuildsycoca" in kde
-    assert "dconf update" not in kde
-
-
-def test_the_environment_answers_whether_shortcuts_work():
-    """Причина у каждой среды своя, поэтому и ответ даёт она сама."""
-    from portable_os_admin.install.kiosk.environments import base
-
-    kde = base.for_config(make_kiosk_config(desktop_environment="kde",
-                                            allow_removable_media=True))
-    assert not kde.desktop_shortcuts_work(
-        make_kiosk_config(desktop_environment="kde", allow_removable_media=True)
-    )
-    mate = base.for_config(make_kiosk_config(allow_removable_media=True))
-    assert mate.desktop_shortcuts_work(make_kiosk_config(allow_removable_media=True))
+    assert "DESKTOP_SHORTCUT" not in mate
 
 
 def test_the_public_names_survived_the_split():
     """Пакет заменил модуль, и всё, чем пользуются снаружи, осталось на месте."""
-    for name in ("config_files", "chroot_commands", "apply_script", "kdeglobals",
+    for name in ("config_files", "chroot_commands", "apply_script",
                  "dconf_keyfile", "polkit_rules", "logind_conf", "session_entry",
-                 "hardening_fstab_rows", "settings_modules_script",
-                 "plasma_layout_script", "kscreenlockerrc", "powermanagement_profiles",
-                 "HARDENED_OPTS", "EXCHANGE_DIR", "DESKTOP_KDE", "SESSION_NAME"):
+                 "hardening_fstab_rows", "HARDENED_OPTS", "EXCHANGE_DIR",
+                 "DESKTOP_MATE", "SESSION_NAME"):
         assert hasattr(kiosk, name), name
-
-
-def test_the_generation_comes_from_the_image_not_from_the_release():
-    """Regression, предупреждённый заранее: Debian 13 несёт Plasma 6.
-
-    Проверено чтением настоящих образов 27.08.2026: РЕД ОС 8 — Plasma 5.27.11,
-    Debian 13 — Plasma 6.3.6. Ограничения у поколений разные, и выбор не того
-    означает молча неприменённые ограничения, а не заметную ошибку.
-    """
-    from types import SimpleNamespace
-
-    from portable_os_admin.install.kiosk.environments import base
-
-    config = make_kiosk_config(desktop_environment="kde", allowed_apps=["mate-calc"])
-
-    five = base.for_config(config, SimpleNamespace(desktop_versions={"kde": "5.27.11"}))
-    six = base.for_config(config, SimpleNamespace(desktop_versions={"kde": "4:6.3.6-1"}))
-    assert type(five).__name__ == "Kde5Environment"
-    assert type(six).__name__ == "Kde6Environment"
-
-    # Расходятся не именами классов, а тем, что делают на целевой системе.
-    assert "kservices5" in five.apply_fragment(config)
-    assert "kbuildsycoca5" in five.apply_fragment(config)
-    assert "kservices6" in six.apply_fragment(config)
-    assert "kbuildsycoca6" in six.apply_fragment(config)
-    assert "qt6" in six.apply_fragment(config)
-    assert "qt5" not in six.apply_fragment(config)
+    # Имена упразднённой среды KDE ушли вместе с ней.
+    for gone in ("DESKTOP_KDE", "kdeglobals", "wants_wayland", "SESSION_WAYLAND"):
+        assert not hasattr(kiosk, gone), gone
 
 
 def test_mate_is_chosen_regardless_of_what_the_image_carries():
-    """Версия KDE в образе не делает киоск на MATE киоском на KDE."""
+    """Что бы ни нёс образ, среда киоска -- MATE (KDE упразднён 01.10.2026)."""
     from types import SimpleNamespace
 
     from portable_os_admin.install.kiosk.environments import base
@@ -1590,21 +1141,6 @@ def test_a_carried_in_drive_is_refused_at_the_device_level(layout):
 # ----------------------------------------------------------------------
 # Файловый менеджер: его нет ни в пакетах, ни в компонентах сессии
 # ----------------------------------------------------------------------
-def test_kde_installs_no_file_manager_at_all():
-    """У KDE обзор файлов закрывается отсутствием, и это сильнее запретов.
-
-    Рабочий стол Plasma рисует plasmashell, поэтому Dolphin не нужен вовсе.
-    Проверено сборками 01.09.2026: в собранных корнях РЕД ОС + KDE и
-    Debian + KDE нет ни dolphin, ни caja.
-    """
-    for target_os in ("debian", "redos"):
-        config = make_kiosk_config(target_os, allowed_apps=["mate-calc"])
-        config.kiosk.desktop_environment = "kde"
-        packages = get_backend(target_os).desktop_packages(config)
-        for manager in ("caja", "dolphin", "nautilus", "thunar", "pcmanfm"):
-            assert manager not in packages, f"{target_os}: в наборе KDE есть {manager}"
-
-
 def test_mate_keeps_caja_because_the_session_needs_it():
     """В MATE файловый менеджер -- часть среды, и убрать его нельзя.
 
@@ -1853,178 +1389,9 @@ def test_the_dconf_database_actually_compiles():
             )
 
 
-def test_the_panel_layout_is_delivered_the_way_plasma_reads_it():
-    """Правка чужого файла не работала, и это молчало с самого начала.
-
-    До 04.09.2026 раскладка панели наносилась правкой
-    `plasma-org.kde.plasma.desktop-appletsrc` в домашнем каталоге. Этого файла
-    при установке ещё нет: Plasma создаёт его при первом входе, уже после
-    того, как отработал скрипт. Правка пропускалась молча (`[ -f "$f" ] ||
-    continue`), и носитель уезжал с умолчаниями Plasma. Прочитано с живого
-    носителя: `immutability=1` и `launchers=applications:systemsettings.desktop,
-    applications:org.kde.discover.desktop` -- то есть виджеты не заперты, а в
-    панели закреплены «Параметры системы» и «Центр приложений».
-
-    Теперь раскладка отдаётся так, как Plasma её читает: пакетом оформления,
-    названным в kdeglobals. Его сценарий выполняется при первом входе.
-    """
-    from portable_os_admin.install.kiosk.environments import kde
-
-    config = make_kiosk_config(desktop_environment="kde")
-    files = kde.Kde5Environment().files(config)
-
-    assert kde.LOOK_AND_FEEL_METADATA in files, "пакета оформления нет"
-    assert kde.LOOK_AND_FEEL_DEFAULTS in files
-    assert "poa-kiosk" in files[kde.LOOK_AND_FEEL_METADATA][0]
-
-    settings = kde.kdeglobals(config)
-    assert f"LookAndFeelPackage={kde.LOOK_AND_FEEL_NAME}" in settings, (
-        "Plasma не узнает, откуда брать раскладку"
-    )
-
-
-def test_widgets_are_locked_by_a_restriction_not_by_a_file_that_may_not_exist():
-    """Запрет читает сама оболочка при запуске -- ему не нужен чужой файл.
-
-    `plasma/plasmashell/unlockedDesktop=false` запрещает разблокировать
-    виджеты, добавлять и убирать панели и менять избранное в меню. В отличие
-    от `immutability=2` в конфигурации пользователя, он действует с первого
-    входа.
-    """
-    from portable_os_admin.install.kiosk.environments import kde
-
-    settings = kde.kdeglobals(make_kiosk_config(desktop_environment="kde"))
-
-    assert "plasma/plasmashell/unlockedDesktop=false" in settings
-    # И он в неизменяемой группе -- иначе это лишь умолчание.
-    restrictions = settings[settings.index("[KDE Action Restrictions][$i]"):]
-    assert "plasma/plasmashell/unlockedDesktop=false" in restrictions
-
-
-def test_the_panel_pins_the_allowed_applications_and_nothing_else():
-    """В панели закрепляется то, что установил администратор.
-
-    По умолчанию Plasma закрепляет «Параметры системы» и «Центр приложений»:
-    и то, и другое в киоске недопустимо, и увидели мы их на живом носителе, а
-    не вывели рассуждением.
-    """
-    from portable_os_admin.install.kiosk.environments import kde
-
-    script = kde.plasma_layout_script(make_kiosk_config(desktop_environment="kde"))
-
-    assert "org.kde.plasma.icontasks" in script
-    assert "writeConfig('launchers'" in script
-    assert "$APPLETSRC_LAUNCHERS" in script, "список должен приходить из вычисленного"
-    assert "systemsettings.desktop,applications:org.kde.discover" not in script
-    # Переключателя рабочих мест нет: место одно, а виджет -- лишняя дверь.
-    assert "org.kde.plasma.pager" not in script
-
-
-def test_the_desktop_container_is_named_explicitly():
-    """Чем рисуется рабочий стол -- решение, а не умолчание дистрибутива."""
-    from portable_os_admin.install.kiosk.environments import kde
-
-    defaults = kde.look_and_feel_defaults()
-
-    assert "Containment=org.kde.plasma.folder" in defaults, (
-        "стол должен показывать ярлыки разрешённых приложений"
-    )
-    assert "Containment=org.kde.panel" in defaults
-
-
-def test_the_generations_do_not_share_a_settings_tree():
-    """Разделы у Plasma 5 и 6 разные, и перепутать их дорого.
-
-    Прочитано из образов по `X-KDE-System-Settings-Parent-Category`: в 5.27
-    регион лежит под персонализацией
-    (`settings-personalization-regionalsettings`), а в 6.3 это раздел верхнего
-    уровня (`settings-regionalsettings`), и раскладка получила собственный
-    подраздел. Разреши шестому поколению пятое дерево -- и пользователь
-    получит либо пустой видимый раздел, либо спрятанное разрешённое. Пустой
-    раздел в этом проекте уже находили: «Внешние носители».
-    """
-    from portable_os_admin.install.kiosk.environments import kde
-
-    config = make_kiosk_config("debian", allowed_apps=["mate-calc"],
-                               allowed_settings=["localisation"])
-    five = kde.settings_modules_script(config, kde.KDE5_PATHS)
-    six = kde.settings_modules_script(config, kde.KDE6_PATHS)
-
-    assert "settings-personalization-regionalsettings" in five
-    assert "settings-regionalsettings" in six
-    # Именно то, чего нельзя допустить: персонализация в шестом поколении
-    # осталась бы пустой, потому что регион из неё уехал.
-    assert "settings-personalization" not in six
-    # А в пятом нет раздела верхнего уровня, который есть в шестом.
-    assert " settings-regionalsettings" not in five.replace(
-        "settings-personalization-regionalsettings", "")
-
-
-def test_the_keyboard_section_follows_the_generation():
-    """Раскладка: в 5.27 под оборудованием, в 6.3 -- собственный подраздел."""
-    from portable_os_admin.install.kiosk.environments import kde
-
-    config = make_kiosk_config("debian", allowed_apps=["mate-calc"],
-                               allowed_settings=["keyboard"])
-    five = kde.settings_modules_script(config, kde.KDE5_PATHS)
-    six = kde.settings_modules_script(config, kde.KDE6_PATHS)
-
-    assert "settings-hardware-input" in five and "settings-hardware" in five
-    assert "settings-hardware-keyboard" in six
-
-
 # ----------------------------------------------------------------------
-# Plasma 6: чем шестое поколение отличается от пятого
+# Схемы GSettings
 # ----------------------------------------------------------------------
-def test_favourites_are_written_where_each_generation_keeps_them():
-    """Избранное Kickoff живёт в двух местах, и писать надо в оба.
-
-    В конфигурации плазмоида org.kde.plasma.kickoff 6.3.6 есть и `favorites`
-    (список самого апплета), и `favoritesPortedToKAstats` -- признак того, что
-    список перенесён в KActivitiesStats. Какое из двух мест окажется главным,
-    зависит от поколения и от истории профиля, поэтому пишутся оба: лишняя
-    правка ничего не ломает, а пропущенная оставила бы пользователю чужое
-    избранное. На РЕД ОС оно ставило «Параметры системы» в один клик от того,
-    кому туда нельзя.
-    """
-    from portable_os_admin.install.kiosk.environments import kde
-
-    config = make_kiosk_config(allowed_apps=["mate-calc"])
-    config.kiosk.desktop_environment = "kde"
-
-    for paths in (kde.KDE5_PATHS, kde.KDE6_PATHS):
-        script = kde.plasma_layout_script(config, paths)
-        assert "favorites=$FAVOURITES" in script, "не задано избранное самого апплета"
-        assert "ordering=$FAVOURITES" in script, "не задано избранное KAStats"
-
-
-def test_only_plasma_5_has_applet_service_files_to_delete():
-    """Удалить плазмоид в пятом поколении мало: рядом лежит его `.desktop`.
-
-    В Plasma 6 таких записей нет вовсе -- метаданные переехали в
-    `metadata.json` внутрь самого плазмоида. Проверено по
-    plasma-workspace-data 6.3.6 и plasma-desktop-data 6.3.6 Debian 13: ни
-    одной записи в kservices.
-
-    Разница важна не ради экономии одной команды: `rm -f` на отсутствующий
-    файл молчит, и без этого поля «удалили» было бы неотличимо от «искали не
-    там».
-    """
-    from portable_os_admin.install.kiosk.environments import kde
-
-    config = make_kiosk_config(allowed_apps=["mate-calc"])
-    config.kiosk.desktop_environment = "kde"
-
-    five = kde.plasma_layout_script(config, kde.KDE5_PATHS)
-    six = kde.plasma_layout_script(config, kde.KDE6_PATHS)
-
-    assert "plasma-applet-$plasmoid.desktop" in five
-    assert "kservices5" in five
-    assert "plasma-applet-" not in six, "шестое поколение ищет то, чего у него нет"
-    # Сам плазмоид удаляется в обоих: каталог у поколений один и тот же.
-    assert "/usr/share/plasma/plasmoids/$plasmoid" in six
-
-
 def test_mate_gets_its_gsettings_schemas():
     """Без схем сеанс MATE не поднимается вовсе.
 
@@ -2052,167 +1419,9 @@ def test_mate_gets_its_gsettings_schemas():
         )
 
 
-def test_the_menu_does_not_pretend_to_have_favourites():
-    """Избранное в раскладке не задаётся, и это решение (задача 31).
-
-    Меню киоска -- `kicker` (задача 29, он единственный без вкладки мест), а
-    он избранное **не показывает вовсе**: `globalFavorites` рисуется только в
-    `DashboardRepresentation.qml`, то есть в полноэкранном `kickerdash`.
-    Прогон 07.09.2026 это подтвердил: в меню Office, Utilities, Power /
-    Session -- и ничего больше. Значит запись `favoriteApps` при создании
-    виджета ничего не рисовала, и её убрали 12.09.2026.
-
-    Полноэкранное меню ради третьего пути к тем же приложениям не берут:
-    разрешённое доступно из панели и ярлыком на столе, оба пути подтверждены
-    живыми загрузками обоих семейств 12.09.2026.
-
-    Что остаётся -- вычистка чужого избранного из уже существующей
-    конфигурации: она не рисует ничего, а убирает то, чего пользователю видеть
-    нельзя. На РЕД ОС там оказывались «Параметры системы».
-    """
-    from portable_os_admin.install.kiosk.environments import kde
-
-    script = kde.plasma_layout_script(make_kiosk_config(desktop_environment="kde"))
-
-    assert "menu.writeConfig('favoriteApps'" not in script, (
-        "мёртвая запись избранного вернулась: kicker её не рисует"
-    )
-    assert "menu.writeConfig('favoritesPortedToKAstats'" not in script
-    # Вычистка чужого избранного -- остаётся.
-    assert "favoriteApps=" in script and "favorites=" in script, (
-        "перестали вычищать чужое избранное из существующей конфигурации"
-    )
-
-
-def test_the_install_log_names_the_restrictions_that_are_in_force():
-    """Что запрещено на носителе -- видно в журнале, а не по памяти.
-
-    Прогон 04.09.2026: ярлык на рабочем столе Plasma отвечал «You are not
-    authorized to execute this file», и первым делом пришлось выяснять, какие
-    ограничения вообще действуют, -- монтировать корень и читать kdeglobals
-    глазами. Установка теперь называет их сама, тем же приёмом «проверять на
-    месте, а не предполагать», что и остальные проверки целевой системы.
-    """
-    from portable_os_admin.install.kiosk.environments import kde
-
-    config = make_kiosk_config(desktop_environment="kde")
-    fragment = kde.Kde5Environment().apply_fragment(config)
-
-    assert "poa-kiosk: ограничения KDE:" in fragment, "перечень не попадает в журнал"
-    # Читается из того же файла, который мы пишем, а не из списка в коде:
-    # список в коде отвечает на вопрос «что мы собирались», а нужен ответ
-    # «что оказалось на носителе».
-    assert "/etc/xdg/kdeglobals" in fragment
-
-
-
 # ----------------------------------------------------------------------
-# Задача 29: места и служебные разделы
+# Служебные разделы
 # ----------------------------------------------------------------------
-def test_the_places_list_hides_every_group():
-    """Список мест пуст, и наполнить его заново KIO не может.
-
-    Прогон 04.09.2026 показал в меню Plasma «Home», «Desktop», «Trash»,
-    «Network», «Recent» и служебный раздел носителя `POA_EXCHANGE`. Их даёт
-    `KFilePlacesModel`, и закрывается он не поштучно, а группами: фильтр меню
-    (`computermodel.cpp:53`) спрашивает `isHidden()`, а тот -- «скрыт элемент
-    или скрыта его группа» (`kfileplacesmodel.cpp:486`). Групповой ключ живёт
-    в метаданных корня и действует на записи, которых в файле ещё нет, -- в
-    том числе на устройство, которое подключат завтра.
-
-    Два условия проверяются здесь потому, что нарушение любого возвращает
-    список целиком:
-
-    * скрыты все семь групп, а не те, что вспомнились;
-    * в файле есть закладка и объявлена версия выше той, которую KIO чинит.
-      Файл без закладок считается новым (`newFile = root.first().isNull()`),
-      а файл со старой версией KIO дополняет умолчаниями по своему списку.
-    """
-    from portable_os_admin.install.kiosk.environments import kde
-
-    places = kde.user_places(make_kiosk_config(desktop_environment="kde"))
-
-    for group in ("Places", "Remote", "RecentlySaved", "SearchFor",
-                  "Devices", "RemovableDevices", "Tags"):
-        assert f"<GroupState-{group}-IsHidden>true</GroupState-{group}-IsHidden>" in places, (
-            f"группа {group} осталась видимой"
-        )
-    assert "<bookmark href=" in places, (
-        "в файле нет ни одной закладки -- KIO сочтёт его новым и наполнит умолчаниями"
-    )
-    assert kde.PLACES_VERSION > 4, (
-        "версия не выше той, что KIO чинит (в 6.13 s_currentVersion = 4)"
-    )
-    assert f"<kde_places_version>{kde.PLACES_VERSION}</kde_places_version>" in places
-
-
-def test_the_places_list_reaches_the_account_that_already_exists():
-    """Файл мест кладётся и в /etc/skel, и в готовые домашние каталоги.
-
-    Тот же разрыв, на котором дважды обжигались панель (задача 8) и избранное
-    (задача 31): при установке домашнего каталога может ещё не быть -- тогда
-    работает /etc/skel, -- а может уже быть, и тогда `useradd -m` файл не
-    копировал, потому что в /etc/skel его на тот момент не было.
-    """
-    from portable_os_admin.install.kiosk.environments import kde
-
-    config = make_kiosk_config(desktop_environment="kde")
-    files = kde.Kde5Environment().files(config)
-    script = kde.plasma_layout_script(config)
-
-    assert kde.USER_PLACES_PATH in files, "файл мест не попадает на носитель"
-    assert kde.USER_PLACES_PATH.startswith("etc/skel/"), "файл мимо /etc/skel"
-    assert f'cp "/{kde.USER_PLACES_PATH}"' in script, (
-        "готовые домашние каталоги остаются со своим списком мест"
-    )
-
-
-def test_the_menu_has_no_places_tab():
-    """Меню киоска -- kicker: у kickoff вкладку мест отключить нечем.
-
-    Ключа нет ни в одном поколении: прочитано в `contents/config/main.xml`
-    плазмоида из самих образов -- Plasma 5.27.11 РЕД ОС и 6.3.6 Debian, --
-    вкладка задана прямо в `Footer.qml`. У kicker её нет вовсе: ни `Places`,
-    ни `ComputerModel` в его QML не встречаются, проверено в обоих
-    поколениях.
-
-    Kickoff при этом удаляется из системы. Сам он не вернётся -- панель
-    собирается нашим сценарием, а виджеты заперты, -- но пока он лежит на
-    месте, он остаётся тем меню, которое покажет служебный раздел носителя,
-    стоит раскладке однажды не примениться.
-    """
-    from portable_os_admin.install.kiosk.environments import kde
-
-    script = kde.plasma_layout_script(make_kiosk_config(desktop_environment="kde"))
-
-    assert "panel.addWidget('org.kde.plasma.kicker')" in script, "меню без вкладки мест не поставлено"
-    assert "panel.addWidget('org.kde.plasma.kickoff')" not in script, "в панель ставится меню с местами"
-    assert "org.kde.plasma.kickoff" in kde.REMOVED_PLASMOIDS, "меню с местами остаётся в системе"
-
-
-def test_the_menu_does_not_remember_what_was_launched():
-    """Недавние приложения и документы в киоске не показываются.
-
-    Носитель переходит из рук в руки, и список «что открывали» -- это
-    сведения о предыдущем пользователе, выданные следующему. У kickoff таких
-    ключей нет вовсе; у kicker есть, и это вторая причина, по которой меню
-    именно он.
-
-    `useExtraRunners` -- о том же, но про строку поиска: с ним она подключает
-    krunner_shell и три других runner'а (умолчание прочитано в main.xml).
-    Сам shell-runner в киоске молчит -- он спрашивает `run_command` и
-    `shell_access`, а оба запрещены (`shellrunner.cpp:31`), -- но запрет не
-    должен быть единственным, что стоит между поиском и запуском команды.
-    """
-    from portable_os_admin.install.kiosk.environments import kde
-
-    script = kde.plasma_layout_script(make_kiosk_config(desktop_environment="kde"))
-
-    assert "menu.writeConfig('showRecentApps', 'false')" in script
-    assert "menu.writeConfig('showRecentDocs', 'false')" in script
-    assert "menu.writeConfig('useExtraRunners', 'false')" in script
-
-
 def test_service_volumes_are_hidden_from_the_desktop():
     """Служебные разделы носителя не показываются рабочим столом.
 
@@ -2241,45 +1450,9 @@ def test_service_volumes_are_hidden_from_the_desktop():
     assert 'ENV{ID_FS_LABEL}=="POA_*"' in rules, "правило не по метке носителя"
     assert "authorized" not in rules, "правило что-то деавторизует -- носитель отключит сам себя"
 
-    files = kiosk_mode.config_files(make_kiosk_config(desktop_environment="kde"))
+    files = kiosk_mode.config_files(make_kiosk_config())
     assert common.HIDDEN_VOLUMES_RULES_PATH in files, "правило не попадает на носитель"
     assert common.HIDDEN_VOLUMES_RULES_PATH.startswith("etc/udev/rules.d/"), (
         "правило не в /etc: положенное в /run оно переживёт только текущую загрузку"
     )
 
-
-def test_the_kde_desktop_shortcut_is_a_link_to_the_system_entry():
-    """Ярлык KDE -- ссылка на системную запись, а не её копия.
-
-    Прогон 07.09.2026, живая загрузка: двойной щелчок по копии спрашивал
-    «This will start the program…», а после согласия отвечал «You are not
-    authorized to execute this file». Главный подозреваемый прошлого разбора
-    -- `shell_access` -- **проверен и отвергнут**: запрет сняли прямо на
-    носителе, загрузились снова, и отказ остался слово в слово.
-
-    Настоящий механизм прочитан в исходниках: доверие к `.desktop` решает
-    `KDesktopFile::isAuthorizedDesktopFile` (kf6-kconfig 6.13,
-    `kdesktopfile.cpp:98`), и первый её критерий -- лежит ли **канонический**
-    путь файла в каталоге приложений XDG. Символическая ссылка на
-    `/usr/share/applications/…` проходит эту проверку; копия в домашнем
-    каталоге до неё не доходит и попадает в путь с предупреждением о
-    недоверенной программе (`applicationlauncherjob.cpp:145`) и повторной
-    проверкой уже после согласия (`kprocessrunner.cpp:238`).
-
-    У MATE ответ обратный, и это не непоследовательность: Caja запускает
-    ярлык, если файл исполняемый, а ссылку на удалённый пакетом файл он
-    показывает битой.
-    """
-    from portable_os_admin.install.kiosk import script
-    from portable_os_admin.install.kiosk.environments import kde, mate
-
-    assert kde.Kde5Environment.desktop_shortcuts_are_links is True
-    assert mate.MateEnvironment.desktop_shortcuts_are_links is False
-
-    kde_script = script.apply_script(make_kiosk_config(desktop_environment="kde"))
-    assert 'DESKTOP_SHORTCUT_LINKS="1"' in kde_script, "KDE кладёт ярлык копией"
-    assert 'ln -s "$src"' in kde_script, "в сценарии нет ссылки"
-
-    mate_script = script.apply_script(make_kiosk_config(desktop_environment="mate"))
-    assert 'DESKTOP_SHORTCUT_LINKS=""' in mate_script, "MATE кладёт ярлык ссылкой"
-    assert 'cp "$src"' in mate_script, "копия убрана из сценария целиком"

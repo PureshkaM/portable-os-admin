@@ -188,26 +188,13 @@ class RedOSInstallBackend(InstallBackend):
 
     #: Чем РЕД ОС отличается от общего описания среды (install/desktop_roles.py).
     #:
-    #: KDE здесь родная, а не добавленная: РЕД ОС 8 несёт Plasma как свою
-    #: оболочку и кладёт в образ redos-kde-theme-cert -- тему сертифицированной
-    #: редакции. Терминал (`konsole5` в терминологии дистрибутива) и центр
-    #: настроек в набор всё равно не входят: их отсутствие -- сильнейшее из
-    #: ограничений этого режима.
-    #:
-    #: Три строки на две среды -- столько и есть настоящих различий. До
-    #: 02.09.2026 здесь лежали оба набора целиком, тридцать с лишним строк, из
-    #: которых с Debian совпадали десять из двенадцати у MATE и четыре из семи
-    #: у KDE.
+    #: Одна строка -- столько и есть настоящих различий. До 02.09.2026 здесь
+    #: лежали наборы целиком, и с Debian они совпадали десятью пакетами из
+    #: двенадцати у MATE.
     DESKTOP_PACKAGE_OVERRIDES = {
         # Роли те же, что у Debian; имена совпадают, кроме апплета сети.
         "mate": {"network-applet": "network-manager-applet"},
-        # kwin у РЕД ОС не разделён на x11/wayland-варианты.
-        "kde": {"compositor": "kwin"},
     }
-
-    #: Пакет настроек Plasma, которому пары у Debian нет: он несёт умолчания
-    #: оболочки, принятые в этом дистрибутиве.
-    DESKTOP_EXTRA_PACKAGES = {"kde": ("kde-settings-plasma",)}
 
 
 
@@ -223,7 +210,7 @@ class RedOSInstallBackend(InstallBackend):
         return ["dnf", "--installroot", mount_root, "-y", "clean", "all"]
 
     def display_manager_files(self, config: InstallConfig) -> dict[str, str]:
-        """SDDM autologin, both desktops.
+        """SDDM autologin.
 
         `Relogin=true` matters here in a way it does not on a normal desktop:
         the kiosk account cannot log in by hand -- its password is locked -- so
@@ -235,10 +222,7 @@ class RedOSInstallBackend(InstallBackend):
                 "[Autologin]\n"
                 f"User={config.account.username}\n"
                 # This program's own session entry rather than the
-                # distribution's: "plasma" is the X11 session on Plasma 5 and
-                # the Wayland one on Plasma 6, so naming it would pick a
-                # different protocol -- and a different set of restrictions --
-                # depending on which distribution this runs against.
+                # distribution's: the name stays the same on every release.
                 f"Session={kiosk_mode.SESSION_NAME}\n"
                 "Relogin=true\n"
                 "\n"

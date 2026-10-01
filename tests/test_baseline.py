@@ -174,3 +174,48 @@ def test_a_configuration_written_with_package_autoupdate_still_opens():
 
     assert not hasattr(config, "auto_update")
     assert "auto_update" not in config.to_dict()
+
+
+def test_a_kde_configuration_opens_as_mate():
+    """KDE Plasma упразднён 01.10.2026 (LIVE-2.0). Конфигурация, собиравшая
+    киоск на KDE, должна открываться -- как MATE-киоск, с ключом типа сеанса
+    (x11|wayland), который был нужен только KDE, молча отброшенным."""
+    data = InstallConfig.create_baseline("stick", "redos").to_dict()
+    data["kiosk"]["desktop_environment"] = "kde"
+    data["kiosk"]["session_type"] = "wayland"
+    data["validation_status"] = "valid"
+
+    config = InstallConfig.from_dict(data)
+
+    assert config.kiosk.desktop_environment == "mate"
+    assert not hasattr(config.kiosk, "session_type")
+    assert "session_type" not in config.to_dict()["kiosk"]
+    # Собираться будет уже другая система -- подтверждать её надо заново.
+    assert config.validation_status == "unchecked"
+    errors = BuiltinConfigValidator().validate(config).errors
+    assert not any("рабочая среда" in error for error in errors)
+
+
+def test_a_mate_configuration_with_the_old_session_key_keeps_its_status():
+    """Ключ сеанса у MATE-конфигурации просто лишний: он отбрасывается, а
+    проверенная конфигурация остаётся проверенной."""
+    data = InstallConfig.create_baseline("stick", "debian").to_dict()
+    data["kiosk"]["session_type"] = "x11"
+    data["validation_status"] = "valid"
+
+    config = InstallConfig.from_dict(data)
+
+    assert config.kiosk.desktop_environment == "mate"
+    assert "session_type" not in config.to_dict()["kiosk"]
+    assert config.validation_status == "valid"
+
+
+def test_kde_set_directly_is_refused_by_validation():
+    """Миграция работает при чтении; значение, вписанное в обход неё,
+    отклоняется проверкой, а не собирается молча."""
+    config = InstallConfig.create_baseline("stick", "debian")
+    config.kiosk.desktop_environment = "kde"
+
+    errors = BuiltinConfigValidator().validate(config).errors
+
+    assert any("рабочая среда" in error for error in errors)

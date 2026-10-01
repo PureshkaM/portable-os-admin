@@ -1142,8 +1142,6 @@ class ReleaseWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
         mode = "киоск" if meta.profile == "kiosk" else "консольная система"
         if meta.desktop_environment:
             mode += f" / {meta.desktop_environment}"
-            if meta.session_type:
-                mode += f" ({meta.session_type})"
         rows = [
             ("Дистрибутив:", meta.name or "(без имени)"),
             ("Система:", f"{meta.target_os} {meta.release} · {meta.arch}"),

@@ -440,7 +440,7 @@ def test_building_refuses_an_unvalidated_configuration(session, tmp_path):
 def test_the_metadata_describes_what_was_built(session, kiosk_config, tmp_path):
     """Read back on deployment to refuse a mismatch before erasing anything."""
     kiosk_config.arch = "amd64"
-    kiosk_config.kiosk.desktop_environment = "kde"
+    kiosk_config.kiosk.desktop_environment = "mate"
     ConfigManager().validate(kiosk_config)
 
     result = OSInstaller(session).build_distribution(
@@ -448,7 +448,7 @@ def test_the_metadata_describes_what_was_built(session, kiosk_config, tmp_path):
     )
 
     assert result.metadata.profile == "kiosk"
-    assert result.metadata.desktop_environment == "kde"
+    assert result.metadata.desktop_environment == "mate"
     assert result.metadata.arch == "amd64"
     assert result.metadata.target_os == "debian"
     # The configuration travels whole, so deployment writes fstab and the

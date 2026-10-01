@@ -115,12 +115,6 @@ def apply_script(config: InstallConfig, image=None) -> str:
     use_firejail = "1" if kiosk.firejail else ""
     desktop = desktop_of(config)
     environment = environments.for_config(config, image)
-    # Ярлык, который виден и не запускается, хуже отсутствующего -- отвечает
-    # на это сама среда, потому что причина у каждой своя.
-    shortcuts = "1" if environment.desktop_shortcuts_work(config) else ""
-    # Ярлык -- ссылка или копия: у сред разные представления о том, какому
-    # `.desktop` можно доверять. См. `desktop_shortcuts_are_links`.
-    shortcut_links = "1" if environment.desktop_shortcuts_are_links else ""
     # Шлюз сеанса -- только при включённом отзыве. Импорт локальный по той же
     # причине, что и бэкенды.
     from .. import revocation
@@ -137,8 +131,6 @@ PKG_FILES="{files_command}"
 DESKTOP="{desktop}"
 USE_FIREJAIL="{use_firejail}"
 FIREJAIL_OPTS="{firejail_opts}"
-DESKTOP_SHORTCUTS="{shortcuts}"
-DESKTOP_SHORTCUT_LINKS="{shortcut_links}"
 SESSION_GATE="{session_gate}"
 OVERRIDE_DIR=/{OVERRIDE_DIR}
 
@@ -275,12 +267,7 @@ fi
 # домашний каталог уже существующего пользователя, потому что порядок шагов
 # установки на это не влияет.
 placed=0
-if [ -z "$DESKTOP_SHORTCUTS" ]; then
-    echo "poa-kiosk: ярлыки на рабочем столе не кладутся: запрет run_desktop_files" \
-         "не даст их запустить, запуск идёт из меню" >&2
-fi
 for home in /etc/skel /home/*; do
-    [ -n "$DESKTOP_SHORTCUTS" ] || break
     [ -d "$home" ] || continue
     desktop_dir="$home/Desktop"
     mkdir -p "$desktop_dir" || continue
@@ -292,21 +279,10 @@ for home in /etc/skel /home/*; do
         [ -f "$src" ] || src="/usr/share/applications/$a.desktop"
         [ -f "$src" ] || continue
         rm -f "$desktop_dir/$a.desktop"
-        if [ -n "$DESKTOP_SHORTCUT_LINKS" ]; then
-            # KDE доверяет записи по её каноническому пути: ссылка на
-            # /usr/share/applications проходит проверку в первой же ветви
-            # `isAuthorizedDesktopFile`, а копия в домашнем каталоге -- нет.
-            # Прогон 07.09.2026: копия спрашивала «This will start the
-            # program…» и после согласия отвечала «You are not authorized to
-            # execute this file», причём запрет `shell_access` тут ни при чём
-            # -- его сняли на носителе и загрузились снова, отказ остался.
-            ln -s "$src" "$desktop_dir/$a.desktop" 2>/dev/null || continue
-        else
-            cp "$src" "$desktop_dir/$a.desktop" 2>/dev/null || continue
-            # Caja запускает ярлык только если он исполняемый и помечен
-            # доверенным.
-            chmod 0755 "$desktop_dir/$a.desktop" 2>/dev/null || true
-        fi
+        cp "$src" "$desktop_dir/$a.desktop" 2>/dev/null || continue
+        # Caja запускает ярлык только если он исполняемый и помечен
+        # доверенным.
+        chmod 0755 "$desktop_dir/$a.desktop" 2>/dev/null || true
         placed=$((placed + 1))
     done
     # Владелец: домашний каталог пользователя должен остаться его.

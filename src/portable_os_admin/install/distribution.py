@@ -170,14 +170,12 @@ class DistributionMetadata:
     #: in it and cannot be turned into a kiosk by deployment alone.
     profile: str = "console"
     desktop_environment: str = ""
-    session_type: str = ""
-    #: Версии оболочек образа, из которого собран этот корень: {"kde": "6.3.6"}.
+    #: Версии оболочек образа, из которого собран этот корень: {"mate": "1.28.2"}.
     #:
-    #: Едет вместе с дистрибутивом, потому что при развёртывании образа уже нет,
-    #: а ограничения киоска у Plasma 5 и 6 разные. Без этого поля развёртывание
-    #: писало бы конфигурацию пятого поколения в корень, собранный на шестом, —
-    #: и не выдало бы ни ошибки, ни предупреждения: файлы легли бы туда, где их
-    #: никто не читает.
+    #: Едет вместе с дистрибутивом, потому что при развёртывании образа уже нет.
+    #: Сведения для человека: пока жил KDE (упразднён 01.10.2026), по ним
+    #: выбиралось поколение Plasma. Поле `session_type` старых дистрибутивов
+    #: при чтении отбрасывается (`from_dict` берёт только известные поля).
     desktop_versions: dict = field(default_factory=dict)
     #: The configuration the root was built from, kept whole so the deployment
     #: writes fstab, crypttab and the account exactly as the build intended.
@@ -230,7 +228,6 @@ class DistributionMetadata:
             arch=arch,
             profile=config.profile,
             desktop_environment=config.kiosk.desktop_environment if config.kiosk.enabled else "",
-            session_type=config.kiosk.session_type if config.kiosk.enabled else "",
             desktop_versions=dict(desktop_versions or {}),
             config=config.to_dict(),
             archive=archive,

@@ -89,20 +89,12 @@ class InstallBackend(ABC):
     #: что crypttab один на оба семейства, и опция, написанная для одного,
     #: уезжала на носитель другого.
     crypttab_keyscript: bool = True
-    #: Non-empty means this family supports the kiosk profile at all. The unit
-    #: actually enabled depends on the desktop as well, so ask
-    #: display_manager_for() rather than reading this; a kiosk configuration
-    #: for a family whose value is empty is refused rather than half-built.
+    #: Non-empty means this family supports the kiosk profile at all; a kiosk
+    #: configuration for a family whose value is empty is refused rather than
+    #: half-built.
     display_manager_service: str = ""
-    #: Display manager used for a KDE session. SDDM is KDE's own, ships in both
-    #: families' images, and autologins without a session bus of its own.
-    kde_display_manager: str = "sddm"
 
     def display_manager_for(self, config: InstallConfig) -> str:
-        if not self.display_manager_service:
-            return ""
-        if kiosk_mode.desktop_of(config) == kiosk_mode.DESKTOP_KDE:
-            return self.kde_display_manager
         return self.display_manager_service
 
     # ------------------------------------------------------------------
@@ -390,18 +382,9 @@ class InstallBackend(ABC):
             desktop,
             overrides=self.DESKTOP_PACKAGE_OVERRIDES,
             extras=self.DESKTOP_EXTRA_PACKAGES,
-            # Гашение экрана -- роль MATE: у Plasma его делает kscreenlocker,
-            # который приходит вместе с оболочкой.
             blank_screen=config.kiosk.screen_blank_minutes > 0,
         )
-        if desktop == kiosk_mode.DESKTOP_KDE and kiosk_mode.wants_wayland(config):
-            packages += list(self.WAYLAND_PACKAGES)
         return packages
-
-    #: Дополнение к сеансу Plasma под Wayland. Пусто там, где сеанса Wayland
-    #: нет вовсе: в образе РЕД ОС 8 его не существует, и пара «РЕД ОС +
-    #: Wayland» отклоняется проверкой конфигурации, а не молча подменяется.
-    WAYLAND_PACKAGES: tuple[str, ...] = ()
 
     # ------------------------------------------------------------------
     # Как этот дистрибутив называется и где лежит
@@ -1105,7 +1088,7 @@ echo "poa-boot: меню загрузки написано для ядра $vers
     def _keyboard_conf(self, config: InstallConfig) -> str:
         """Раскладка графического сеанса.
 
-        Отдельно от консольной: под X11 и Wayland действует не KEYMAP из
+        Отдельно от консольной: в графическом сеансе действует не KEYMAP из
         vconsole.conf, а настройка X-сервера, и система с русской консолью и
         английским рабочим столом — обычный результат того, что задали только
         первое.

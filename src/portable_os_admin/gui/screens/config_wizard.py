@@ -1155,55 +1155,11 @@ class ConfigWizardFrame(WizardFrame):
             ).pack(anchor="w", pady=(0, theme.SPACE_XS))
 
         self.kiosk_frame = ttk.LabelFrame(
-            body, text="Рабочая среда, приложения и ограничения", padding=theme.SPACE_SM
+            body, text="Приложения и ограничения", padding=theme.SPACE_SM
         )
         self.kiosk_frame.pack(fill="both", expand=True, pady=(0, theme.SPACE_MD))
         inner = ttk.Frame(self.kiosk_frame)
         inner.pack(fill="both", expand=True)
-
-        self.desktop_var = tk.StringVar(value=kiosk.desktop_environment or "mate")
-        desktop_row = ttk.Frame(inner)
-        desktop_row.pack(fill="x", pady=(0, theme.SPACE_SM))
-        ttk.Label(desktop_row, text="Рабочая среда:").pack(side="left", padx=(0, theme.SPACE_MD))
-        ttk.Radiobutton(
-            desktop_row, text="MATE", value="mate", variable=self.desktop_var
-        ).pack(side="left")
-        ttk.Radiobutton(
-            desktop_row, text="KDE Plasma", value="kde", variable=self.desktop_var
-        ).pack(side="left", padx=(theme.SPACE_MD, 0))
-        ttk.Label(
-            inner,
-            text="KDE ограничивает строже (запрет проверяют сами приложения), "
-            "но тяжелее и дольше ставится.",
-            style="Hint.TLabel",
-            wraplength=theme.TEXT_WRAP,
-        ).pack(anchor="w", pady=(0, theme.SPACE_SM))
-
-        self.session_var = tk.StringVar(value=kiosk.session_type or "x11")
-        if self.expert_mode:
-            # X11 -- то, на чём проверены все четыре комбинации; Wayland есть
-            # только у Plasma и только в Debian. Выбор осмысленный, но не для
-            # того, кто собирает обычный носитель.
-            session_row = ttk.Frame(inner)
-            session_row.pack(fill="x")
-            ttk.Label(session_row, text="Графический протокол:").pack(
-                side="left", padx=(0, theme.SPACE_MD)
-            )
-            ttk.Radiobutton(
-                session_row, text="X11", value="x11", variable=self.session_var
-            ).pack(side="left")
-            ttk.Radiobutton(
-                session_row,
-                text="Wayland (только KDE)",
-                value="wayland",
-                variable=self.session_var,
-            ).pack(side="left", padx=(theme.SPACE_MD, 0))
-            ttk.Label(
-                inner,
-                text="В образе РЕД ОС Wayland-сеанса Plasma нет — только X11.",
-                style="Hint.TLabel",
-                wraplength=theme.TEXT_WRAP,
-            ).pack(anchor="w", pady=(0, theme.SPACE_SM))
 
         ttk.Label(
             inner,
@@ -1262,11 +1218,10 @@ class ConfigWizardFrame(WizardFrame):
 
         # Что из «Параметров системы» открыто пользователю.
         #
-        # Поля здесь не было вовсе -- найдено 12.09.2026. Механизм в коде есть
-        # с обеих сторон (`SETTINGS_MODULES`, запреты модулей KDE), а задать
-        # его администратору было нечем: носитель с разрешёнными настройками
-        # приложением не собирался. Тот же класс дефекта, что был с полем
-        # привязки и со своими пакетами -- код есть, выхода в интерфейс нет.
+        # Поля здесь не было вовсе -- найдено 12.09.2026: механизм в коде был
+        # (запреты модулей KDE), а задать его администратору было нечем. После
+        # упразднения KDE (01.10.2026) под MATE выбор пока ни на что не влияет
+        # -- см. KioskConfig.allowed_settings.
         #
         # Показывается в обоих режимах: это решение о том, что пользователю
         # позволено менять в системе, и прятать его за «экспертностью» значит
@@ -1407,8 +1362,8 @@ class ConfigWizardFrame(WizardFrame):
         self.config.profile = self.profile_var.get()
         kiosk = self.config.kiosk
         kiosk.enabled = self.config.profile == "kiosk"
-        kiosk.desktop_environment = self.desktop_var.get()
-        kiosk.session_type = self.session_var.get()
+        # Среда одна -- MATE (KDE упразднён 01.10.2026), выбирать нечего.
+        kiosk.desktop_environment = "mate"
         kiosk.hidden_launchers = sorted(
             name for name, variable in self.launcher_vars.items() if not variable.get()
         )
@@ -1455,17 +1410,6 @@ class ConfigWizardFrame(WizardFrame):
                     "пользователю нечего будет запустить."
                 )
                 return False
-            if kiosk.session_type == "wayland":
-                if kiosk.desktop_environment == "mate":
-                    self.message_bar.error(
-                        "MATE не умеет работать под Wayland — выберите X11 или KDE."
-                    )
-                    return False
-                if self.config.target_os == "redos":
-                    self.message_bar.error(
-                        "В образе РЕД ОС нет Wayland-сеанса Plasma — для РЕД ОС выберите X11."
-                    )
-                    return False
             if kiosk.autostart_app and kiosk.autostart_app in kiosk.hidden_launchers:
                 self.message_bar.error(
                     f"Запускатель «{kiosk.autostart_app}» снят из показа — приложение "

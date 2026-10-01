@@ -117,28 +117,11 @@ def test_components_fall_back_to_main_when_nothing_matches(tmp_path):
 # ----------------------------------------------------------------------
 # Версии графических оболочек
 # ----------------------------------------------------------------------
-def test_desktop_major_survives_the_debian_epoch():
-    """`4:6.3.6-1` — шестое поколение, а не четвёртое.
-
-    Ведущая эпоха Debian говорит о порядке обновлений, а не о версии
-    программы. Приняв её за поколение, программа выбрала бы несуществующую
-    ветку и молча применила бы чужие ограничения.
-    """
-    from portable_os_admin.install.image_source import desktop_major
-
-    assert desktop_major("5.27.11") == 5
-    assert desktop_major("4:6.3.6-1") == 6
-    assert desktop_major("1.28.1") == 1
-    # Ничего не разобралось — 0, то есть «неизвестно», а не «первое поколение».
-    assert desktop_major("") == 0
-    assert desktop_major("не версия") == 0
-
-
 def test_apt_index_yields_the_desktop_version():
     """Версия читается из индекса образа, а не выводится из выпуска.
 
-    Debian 13 несёт Plasma 6, Debian 12 — Plasma 5; правило «такой-то выпуск
-    значит такое-то поколение» пришлось бы обновлять к каждому релизу.
+    Правило «такой-то выпуск значит такая-то версия» пришлось бы обновлять к
+    каждому релизу. Пакеты упразднённого KDE (01.10.2026) больше не читаются.
     """
     import gzip
     import tempfile
@@ -155,7 +138,7 @@ def test_apt_index_yields_the_desktop_version():
         path = handle.name
 
     versions = _desktop_versions_from_apt(path)
-    assert versions == {"kde": "4:6.3.6-1", "mate": "1.26.2-1.2"}
+    assert versions == {"mate": "1.26.2-1.2"}
 
 
 def test_an_unreadable_index_is_not_a_failure():

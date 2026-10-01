@@ -1216,7 +1216,7 @@ def _write_distribution(directory, secret=None, **overrides):
     config.release = "8.0"
     config.arch = "amd64"
     config.packages = ["mate-calc"]
-    config.kiosk = KioskConfig(enabled=True, desktop_environment="kde")
+    config.kiosk = KioskConfig(enabled=True, desktop_environment="mate")
     archive = directory / distribution.ARCHIVE_NAME
     archive.write_bytes(b"not a real archive, only its name matters here")
     metadata = distribution.DistributionMetadata.for_config(
@@ -1357,7 +1357,7 @@ def test_deploy_wizard_shows_what_it_is_about_to_write(gui_app, tmp_path):
     # за край окна.
     assert metadata.sha256[:32] in shown and metadata.sha256[32:] in shown
     assert "redos 8.0" in shown
-    assert "kde" in shown
+    assert "mate" in shown
     assert "/dev/sdz" in shown
     assert "эмуляц" in shown
 

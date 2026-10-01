@@ -63,13 +63,11 @@ class ImageInfo:
     #: Why it is not complete, in a form that can be shown to a person.
     incomplete_reason: str = ""
     #: Версии графических оболочек, найденные в индексе образа:
-    #: {"kde": "5.27.11"}. Пусто там, где оболочки в образе нет.
+    #: {"mate": "1.28.2"}. Пусто там, где оболочки в образе нет.
     #:
-    #: Читается, а не выводится из выпуска дистрибутива: Debian 13 несёт
-    #: Plasma 6, Debian 12 -- Plasma 5, и правило «такой-то выпуск значит
-    #: такое-то поколение» пришлось бы обновлять к каждому релизу. Поколение
-    #: решает, какой набор ограничений киоска верен, поэтому ошибка здесь
-    #: означает молча неприменённые ограничения.
+    #: Сведения для человека (обзор образа, описание дистрибутива): выбор
+    #: ограничений киоска от версии не зависит. Когда в программе был ещё и
+    #: KDE (упразднён 01.10.2026), по ней выбиралось поколение Plasma.
     desktop_versions: dict[str, str] = field(default_factory=dict)
 
     def describe(self) -> str:
@@ -291,11 +289,10 @@ def _index_package_names(index: str) -> set[str]:
     return names
 
 
-#: Пакет, по версии которого определяется поколение оболочки. Один на среду и
+#: Пакет, по версии которого определяется версия оболочки. Один на среду и
 #: намеренно не «любой подходящий»: версия среды -- это версия её ядра, а не
 #: случайного пакета, который в неё входит.
 DESKTOP_VERSION_PACKAGES = {
-    "kde": "plasma-desktop",
     "mate": "mate-desktop",
 }
 
@@ -361,23 +358,6 @@ def _desktop_versions_from_rpm(mountpoint: str) -> dict[str, str]:
         if len(found) == len(DESKTOP_VERSION_PACKAGES):
             break
     return found
-
-
-def desktop_major(version: str) -> int:
-    """Поколение оболочки: 5 из "5.27.11", 1 из "4:5.27.11-1" и 0 из мусора.
-
-    Ведущая эпоха Debian (`4:`) отбрасывается -- она про порядок обновлений, а
-    не про версию программы, и приняв её за поколение, программа выбрала бы
-    несуществующую ветку.
-    """
-    text = (version or "").split(":")[-1]
-    digits = ""
-    for char in text:
-        if char.isdigit():
-            digits += char
-        else:
-            break
-    return int(digits) if digits else 0
 
 
 def _open_gz(path: str):

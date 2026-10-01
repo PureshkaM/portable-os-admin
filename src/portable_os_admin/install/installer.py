@@ -153,8 +153,8 @@ class _DeployedImage:
     """То немногое от образа, что нужно знать при развёртывании.
 
     Полного ImageInfo здесь взять неоткуда — образ участвовал в сборке и мог
-    остаться на другой машине. Нужны же от него только версии оболочек,
-    поэтому они и едут в метаданных дистрибутива.
+    остаться на другой машине. Нужны же от него только версии оболочек
+    (сведения для описания дистрибутива), поэтому они и едут в метаданных.
     """
 
     desktop_versions: dict
@@ -173,9 +173,8 @@ class OSInstaller:
         self.luks_manager = luks_manager or LuksManager()
         self.runner = runner or CommandRunner()
         self._progress = _Progress(None)
-        #: Образ, из которого идёт этот прогон, или None. Нужен, чтобы выбрать
-        #: поколение графической оболочки: ограничения киоска у Plasma 5 и 6
-        #: разные, а по выпуску дистрибутива поколение не выводится.
+        #: Образ, из которого идёт этот прогон, или None. Передаётся в
+        #: генераторы файлов и даёт версии оболочек для метаданных дистрибутива.
         self._image = None
         #: Удостоверение носителя, который пишется сейчас: идентификатор,
         #: раскладка с UUID томов, ключи, выданные коды и опись загрузчика.
@@ -670,8 +669,7 @@ class OSInstaller:
         metadata = distribution.read_metadata(directory)
         config = InstallConfig.from_dict(metadata.config)
         backend = get_backend(config.target_os)
-        # Поколение оболочки приехало вместе с дистрибутивом: образа здесь уже
-        # нет, а ограничения киоска у Plasma 5 и 6 разные.
+        # Версии оболочек приехали вместе с дистрибутивом: образа здесь уже нет.
         self._image = _DeployedImage(metadata.desktop_versions or {})
         warnings = self._check_arch(backend, config)
         if not dry_run:
@@ -1335,9 +1333,7 @@ class OSInstaller:
         # Kept for the install-time sources written into the chroot further
         # down, which need the components the image actually publishes.
         self._source_components = info.components
-        # Тем же образом определяется поколение графической оболочки: ограничения
-        # киоска у Plasma 5 и 6 разные, и выбор не того означает молча
-        # неприменённые ограничения, а не заметную ошибку.
+        # Образ запоминается для генераторов файлов и версий оболочек.
         self._image = info
         # The image's own idea of what its base system is, preferred over any
         # list written into this program -- see ImageInfo.core_packages.

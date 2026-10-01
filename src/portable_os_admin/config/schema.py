@@ -90,7 +90,6 @@ FIELD_LABELS = {
     "remote_access.params": "Параметры удалённого доступа",
     "kiosk.enabled": "Режим киоска",
     "kiosk.desktop_environment": "Рабочая среда",
-    "kiosk.session_type": "Графический протокол",
     "kiosk.hidden_launchers": "Скрытые запускатели",
     "kiosk.allowed_settings": "Что можно настраивать",
     "kiosk.autostart_app": "Приложение автозапуска",
@@ -212,12 +211,11 @@ def _known_releases_of(target_os: str) -> "tuple[str, ...]":
 #: whose menu holds only the applications the administrator allowed.
 SYSTEM_PROFILES = ("console", "kiosk")
 
-#: Desktops the kiosk profile can be built on. Both exist in the installation
-#: images of both supported families -- checked against their own indexes.
-SUPPORTED_DESKTOPS = ("mate", "kde")
-
-#: Display protocols a kiosk session can run on.
-SUPPORTED_SESSION_TYPES = ("x11", "wayland")
+#: Desktops the kiosk profile can be built on. Only MATE since 01.10.2026
+#: (LIVE-2.0): KDE Plasma was dropped -- less code, memory and image size, and
+#: the user works in a full-screen RDP session anyway. Old configurations
+#: naming "kde" are moved to MATE on load (see `_migrated`).
+SUPPORTED_DESKTOPS = ("mate",)
 
 
 @dataclass
@@ -241,36 +239,14 @@ class KioskConfig:
     """
 
     enabled: bool = False
-    #: Which desktop the restricted session is built on.
+    #: Which desktop the restricted session is built on. Only "mate": it
+    #: mirrors what RED OS's own kiosk uses, and restricts the session through
+    #: dconf -- settings written system-wide and locked so the user cannot
+    #: write them back.
     #:
-    #: "mate" mirrors what RED OS's own kiosk uses, and restricts the session
-    #: through dconf: settings written system-wide and locked so the user
-    #: cannot write them back.
-    #:
-    #: "kde" uses KDE's Kiosk framework, which is a different kind of thing and
-    #: a stronger one. Its restrictions are not settings-that-are-locked but
-    #: authorisation checks the applications themselves perform: `shell_access`
-    #: is consulted by KAuthorized before anything opens a shell, so Konsole
-    #: refuses to start and Dolphin stops offering "open terminal" -- rather
-    #: than the launcher merely being hidden. It also has two things MATE has
-    #: no equivalent for: `run_desktop_files`, which refuses to execute a
-    #: .desktop file that did not come from a system directory, and URL
-    #: restrictions, which can stop file dialogs from browsing outside a
-    #: permitted path.
+    #: The field stays (rather than being implied) so that a configuration
+    #: says what it builds; "kde" from before 01.10.2026 is migrated to "mate".
     desktop_environment: str = "mate"
-    #: Display protocol of the session: "x11" or "wayland".
-    #:
-    #: Only KDE can do Wayland -- MATE has no Wayland session at all, and
-    #: asking for that pairing is refused rather than quietly downgraded.
-    #:
-    #: Kept as an explicit choice because it changes which restrictions apply.
-    #: `xorg.conf` is not read under Wayland, so the `DontVTSwitch` line that
-    #: blocks Ctrl+Alt+F<n> there does nothing; what holds in both cases is the
-    #: polkit refusal of org.freedesktop.login1.chvt, plus masked getty units
-    #: and NAutoVTs=0. Plasma is moving to Wayland, so this is the field that
-    #: keeps the mode honest as that happens rather than silently losing a
-    #: restriction.
-    session_type: str = "x11"
     #: Запускатели, которые администратор снял вручную.
     #:
     #: Списка разрешённого здесь нет и не должно быть: что администратор
@@ -297,12 +273,11 @@ class KioskConfig:
     #: and a call to the help desk. Everything else in System Settings stays
     #: shut, disks and devices first among them.
     #:
-    #: Named by purpose rather than by module, because the module that serves a
-    #: purpose differs between desktops: KDE's network module is
-    #: `kcm_networkmanagement`, MATE's is a different program entirely. The
-    #: installed set is read off the target rather than listed here, so an
-    #: image carrying a different selection of modules still gets a complete
-    #: list of refusals (see kiosk.settings_modules_script).
+    #: Named by purpose rather than by module.
+    #:
+    #: Запреты по этому списку умела применять только среда KDE (модули
+    #: «Параметров системы»), упразднённая 01.10.2026. Под MATE поле пока ни на
+    #: что не влияет: центр управления MATE в киоск не ставится вовсе.
     allowed_settings: list[str] = field(default_factory=list)
     #: Desktop entry started automatically when the session opens. Empty means
     #: the user gets the (restricted) desktop itself.
@@ -583,6 +558,17 @@ def _migrated(data: dict) -> dict:
     сообщить о разнице версий.
     """
     kiosk = dict(data.get("kiosk") or {})
+
+    # KDE Plasma упразднён 01.10.2026 (LIVE-2.0): конфигурация, собиравшая
+    # киоск на KDE, открывается как MATE-киоск. Отметка проверки сбрасывается
+    # -- собираться будет уже другая система, и подтверждать её надо заново.
+    if kiosk.get("desktop_environment") == "kde":
+        kiosk["desktop_environment"] = "mate"
+        data["validation_status"] = "unchecked"
+        data["validation_errors"] = []
+    # Тип сеанса (x11|wayland) упразднён вместе с KDE: Wayland был только у
+    # него, а MATE работает под X11. Ключ из старых конфигураций отбрасывается.
+    kiosk.pop("session_type", None)
 
     # `allowed_apps` -> `packages`. Смысл поля изменился 02.09.2026: доступное
     # пользователю больше не перечисляется, а выводится из установленных

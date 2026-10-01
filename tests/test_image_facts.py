@@ -71,14 +71,11 @@ def test_architectures_without_an_image_explain_themselves():
     assert "не опознан" in facts.architectures.reason
 
 
-def test_desktops_are_read_with_their_generation():
-    """Поколение оболочки решает, какой набор ограничений киоска верен, и
-    читается из образа: Debian 13 несёт Plasma 6, Debian 12 -- Plasma 5."""
-    facts = image_facts.ImageFacts(
-        info=_info(desktop_versions={"kde": "4:6.3.6-1", "mate": "1.26.2-1.2"})
-    )
-    assert facts.desktops.values == ("kde", "mate")
-    assert facts.desktops.label_for("kde") == "kde 4:6.3.6-1"
+def test_desktops_are_read_with_their_version():
+    """Версия оболочки читается из образа, а не выводится из выпуска."""
+    facts = image_facts.ImageFacts(info=_info(desktop_versions={"mate": "1.26.2-1.2"}))
+    assert facts.desktops.values == ("mate",)
+    assert facts.desktops.label_for("mate") == "mate 1.26.2-1.2"
 
 
 def test_an_image_with_no_desktops_says_so():

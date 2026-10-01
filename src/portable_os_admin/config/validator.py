@@ -24,7 +24,6 @@ from .schema import (
     LUKS_KDFS,
     SUPPORTED_ARCH,
     SUPPORTED_DESKTOPS,
-    SUPPORTED_SESSION_TYPES,
     supported_target_os,
     InstallConfig,
 )
@@ -242,27 +241,6 @@ class BuiltinConfigValidator:
                 f"неподдерживаемая рабочая среда киоска: {desktop!r} "
                 f"(ожидается одно из {', '.join(SUPPORTED_DESKTOPS)})"
             )
-
-        session_type = getattr(kiosk, "session_type", "") or ""
-        if session_type not in SUPPORTED_SESSION_TYPES:
-            errors.append(
-                f"неподдерживаемый тип сеанса: {session_type!r} "
-                f"(ожидается одно из {', '.join(SUPPORTED_SESSION_TYPES)})"
-            )
-        elif session_type == "wayland":
-            # MATE has no Wayland session at all, and RED OS 8's image carries
-            # Plasma 5.27 without `startplasma-wayland` -- checked against the
-            # image's own file list. Refusing here beats a medium that installs
-            # cleanly and then has no session to start.
-            if desktop == "mate":
-                errors.append(
-                    "MATE не умеет работать под Wayland: выберите X11 или рабочую среду KDE"
-                )
-            elif config.target_os == "redos":
-                errors.append(
-                    "в образе РЕД ОС нет Wayland-сеанса Plasma (есть только startplasma-x11): "
-                    "для РЕД ОС выберите X11"
-                )
 
         # Пакеты, а не список имён: что администратор поставил, то пользователю
         # и доступно. Носитель без единого пакета -- это рабочий стол, с
