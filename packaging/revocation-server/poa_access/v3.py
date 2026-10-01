@@ -24,7 +24,7 @@ import time
 
 from cryptography.hazmat.primitives.asymmetric import ed25519
 
-from . import ca, canon, tlscrypt, totp
+from . import ca, canon, catalog, tlscrypt, totp
 from .store import ROOT_GROUP, Store
 
 MEDIA_RE = re.compile(r"\A[0-9a-f]{8}(?:-[0-9a-f]{8})?\Z")
@@ -688,7 +688,13 @@ def _cmd_log(h, db, obj):
     events_since = obj.get("events_since", 0)
     events_rows = db.execute("SELECT rowid AS id, * FROM device_events WHERE rowid > ?"
                              " ORDER BY rowid LIMIT 2000", (events_since,)).fetchall()
-    return {"server": [dict(r) for r in rows], "device": [dict(r) for r in events_rows]}
+    device = []
+    for row in events_rows:
+        record = dict(row)
+        params = json.loads(record["params"] or "{}")
+        record["text"] = catalog.describe(record["media_id"], record["code"], params)
+        device.append(record)
+    return {"server": [dict(r) for r in rows], "device": device}
 
 
 COMMANDS = {
