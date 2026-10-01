@@ -1836,6 +1836,12 @@ class OSInstaller:
         run(["mkdir", "-p", layout.mount_root])
         run(overlay.mount_command(container, layout.mount_root))
         state.mounts.append(layout.mount_root)
+        # Каталоги, поверх которых смонтируется состояние, должны существовать
+        # в системе (иначе нечему брать метку и некуда монтировать).
+        for _name, path in overlay.STATE_BINDS:
+            run(["mkdir", "-p", f"{layout.mount_root}/{path}"])
+        for argv in overlay.state_label_commands(container, layout.mount_root):
+            run(argv)
         return overlay.LOWER_MOUNT
 
     def _overlay_root(self, config, metadata) -> bool:

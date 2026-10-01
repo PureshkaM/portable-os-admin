@@ -32,17 +32,21 @@
 Внутри LUKS-тома лежит обычная ext4 — контейнер, а в нём::
 
     /system.squashfs      эталон, только чтение
-    /overlay/upper/       изменения системы
-    /overlay/work/        служебный каталог overlayfs
+    /medium/              слой носителя: всё, что записал установщик
+    /state/               постоянное состояние: сети Wi-Fi, /var/lib/poa
+    /overlay/work/        служебный каталог overlayfs при записи носителя
 
-При загрузке initramfs открывает LUKS, монтирует контейнер, подключает образ
-петлевым устройством и собирает overlay, который и становится корнем.
+**LIVE-2.0 (01.10.2026, этап Э3): корень в оперативной памяти.** При загрузке
+initramfs открывает LUKS, монтирует контейнер и собирает overlay из трёх
+слоёв: сверху tmpfs (всё, что изменилось за сеанс, исчезает с выключением),
+посередине `medium` только для чтения (fstab, crypttab, ключи, скрипты
+привязки и отзыва -- то, что установщик записал этому носителю), внизу образ.
+Постоянно только явно перечисленное в `STATE_BINDS`: оно монтируется из
+`state` поверх соответствующих каталогов.
 
-Верхний слой лежит на том же шифрованном томе — решение пользователя от
-26.08.2026. Значит, изменения переживают перезагрузку: работает
-автообновление, копятся журналы, сохраняются настройки сети. Вариант с
-верхним слоем в оперативной памяти (каждая загрузка — чистая система)
-обсуждался и отклонён именно поэтому.
+Прежнее решение 26.08.2026 (верхний слой на носителе ради автообновления,
+журналов и сетей) пересмотрено: автообновления пакетов больше нет, журналы
+живут на своём томе, сети -- в `state`.
 """
 from __future__ import annotations
 
@@ -53,9 +57,26 @@ SYSTEM_IMAGE = "system.squashfs"
 #: всей RHEL-линейки и берётся из её же политики; там, где мандатного контроля
 #: нет, метка лежит неиспользованной и ничему не мешает.
 ROOT_CONTEXT = "system_u:object_r:root_t:s0"
-#: Каталоги overlayfs внутри контейнера.
-UPPER_DIR = "overlay/upper"
+#: Слой носителя внутри контейнера. При записи носителя это верхний слой
+#: overlay (туда ложится всё, что пишет установщик), при загрузке -- средний,
+#: только для чтения.
+MEDIUM_DIR = "medium"
+#: Прежнее имя того же каталога -- для носителей, записанных до LIVE-2.0.
+UPPER_DIR = MEDIUM_DIR
+#: Служебный каталог overlayfs при записи носителя.
 WORK_DIR = "overlay/work"
+#: Постоянное состояние внутри контейнера.
+STATE_DIR = "state"
+#: Что переживает перезагрузку: (каталог в state, путь в системе). Всё прочее,
+#: изменённое за сеанс, живёт в tmpfs и исчезает.
+STATE_BINDS = (
+    ("nm", "etc/NetworkManager/system-connections"),   # сохранённые сети Wi-Fi
+    ("poa", "var/lib/poa"),                             # звено, описатель (Э8)
+)
+#: Где initramfs монтирует tmpfs верхнего слоя.
+RW_MOUNT = "/run/poa/rw"
+#: Предел tmpfs. Без него переполнение верхнего слоя съело бы всю память.
+RW_SIZE = "50%"
 
 #: Как носитель говорит своему initramfs, что корень собирается из образа.
 #:
@@ -104,9 +125,11 @@ def prepare_commands(container_root: str) -> list[list[str]]:
     которому это не очевидно.
     """
     _, upper, work = container_paths(container_root)
+    root = container_root.rstrip("/")
     return [
         ["mkdir", "-p", upper],
         ["mkdir", "-p", work],
+        *(["mkdir", "-p", f"{root}/{STATE_DIR}/{name}"] for name, _ in STATE_BINDS),
         # Метка мандатного контроля на самом верхнем слое.
         #
         # Корень собранного overlay берёт инод от `upperdir`, а этот каталог
@@ -127,6 +150,27 @@ def prepare_commands(container_root: str) -> list[list[str]]:
         # метка просто не используется и ничего не стоит.
         ["setfattr", "-n", "security.selinux", "-v", ROOT_CONTEXT, upper],
     ]
+
+
+def state_label_commands(container_root: str, mount_root: str) -> list[list[str]]:
+    """Метки SELinux каталогов состояния -- как у каталогов, поверх которых их
+    смонтируют.
+
+    Каталог в `state` создан на свежем ext4 без метки; смонтированный поверх
+    /etc/NetworkManager/system-connections, он дал бы NetworkManager отказ на
+    `unlabeled_t` -- тот же класс поломки, что 12.09.2026 с корнем. Метка
+    берётся с собранной системы, а не пишется здесь: она своя у каждой политики.
+    Где SELinux нет, getfattr ничего не вернёт, и команда ничего не сделает.
+    """
+    root = container_root.rstrip("/")
+    commands = []
+    for name, path in STATE_BINDS:
+        commands.append([
+            "sh", "-c",
+            f'v=$(getfattr --only-values -n security.selinux "{mount_root}/{path}" 2>/dev/null) '
+            f'&& [ -n "$v" ] && setfattr -n security.selinux -v "$v" "{root}/{STATE_DIR}/{name}"; true',
+        ])
+    return commands
 
 
 def copy_image_command(archive: str, container_root: str) -> list[str]:
@@ -171,6 +215,7 @@ def boot_script(
     rootmnt_var: str = ROOTMNT_INITRAMFS_TOOLS,
     *,
     mount_container: bool = False,
+    selinux: bool = False,
 ) -> str:
     """Тело загрузочного скрипта, одинаковое для обоих семейств.
 
@@ -252,8 +297,11 @@ fail() {{
 container={CONTAINER_MOUNT}
 lower={LOWER_MOUNT}
 image="$container/{SYSTEM_IMAGE}"
-upper="$container/{UPPER_DIR}"
-work="$container/{WORK_DIR}"
+medium="$container/{MEDIUM_DIR}"
+state="$container/{STATE_DIR}"
+rw={RW_MOUNT}
+upper="$rw/upper"
+work="$rw/work"
 
 [ -b /dev/mapper/{mapper_name} ] || fail "зашифрованный том не открыт"
 
@@ -269,12 +317,22 @@ modprobe overlay 2>/dev/null || true
 
 mount -t squashfs -o loop,ro "$image" "$lower" || fail "не подключить образ системы"
 
-mkdir -p "$upper" "$work" || fail "не создать каталоги слоя изменений"
+[ -d "$medium" ] || fail "в контейнере нет слоя носителя $medium"
 
+# Верхний слой -- в оперативной памяти (LIVE-2.0): всё, что изменилось за
+# сеанс, исчезает с выключением. Предел -- чтобы переполнение не съело память.
+mkdir -p "$rw" || fail "не создать точку монтирования tmpfs"
+mount -t tmpfs -o "mode=0755,size={RW_SIZE}" poa-rw "$rw" || fail "не смонтировать tmpfs"
+mkdir -p "$upper" "$work" || fail "не создать каталоги слоя изменений"
+__LABEL__
 mount -t overlay poa-overlay \\
-    -o "lowerdir=$lower,upperdir=$upper,workdir=$work" "$__ROOTMNT__" \\
+    -o "lowerdir=$medium:$lower,upperdir=$upper,workdir=$work" "$__ROOTMNT__" \\
     || fail "не собрать overlay"
 
+# Постоянное состояние -- поверх своих каталогов. Если каталог в state пуст,
+# в него сперва переносится то, что лежит в системе (например, сети,
+# записанные при выпуске носителя), -- иначе монтирование спрятало бы их.
+__BINDS__
 # Нижний слой обязан уехать в новый корень вместе с остальным.
 #
 # Найдено прогоном 11.09.2026, и найдено дорого. Носитель загружался целиком:
@@ -297,12 +355,37 @@ mount -o move "$lower" "$__ROOTMNT__{LOWER_MOUNT}" 2>/dev/null || \\
     mount --move "$lower" "$__ROOTMNT__{LOWER_MOUNT}" 2>/dev/null || \\
     fail "не перенести образ системы в новый корень"
 
+# То же для tmpfs верхнего слоя: overlay держится и на нём.
+mkdir -p "$__ROOTMNT__{RW_MOUNT}"
+mount --make-private "$rw" 2>/dev/null || true
+mount -o move "$rw" "$__ROOTMNT__{RW_MOUNT}" 2>/dev/null || \\
+    mount --move "$rw" "$__ROOTMNT__{RW_MOUNT}" 2>/dev/null || \\
+    fail "не перенести слой изменений в новый корень"
+
 # Контейнер должен остаться доступным изнутри системы: на нём лежит и образ, и
-# слой изменений, и размонтировать его нельзя, пока система работает.
+# слой носителя, и состояние, и размонтировать его нельзя, пока система работает.
 mkdir -p "$__ROOTMNT__{CONTAINER_MOUNT}"
 mount -o move "$container" "$__ROOTMNT__{CONTAINER_MOUNT}" 2>/dev/null || \\
     mount --move "$container" "$__ROOTMNT__{CONTAINER_MOUNT}" 2>/dev/null || true
 """
+    if selinux:
+        # Метка корня: корень overlay берёт инод от upperdir, а он создан здесь,
+        # в initramfs, без метки -- иначе `/` получит unlabeled_t (найдено
+        # прогоном 12.09.2026 для прежнего верхнего слоя на ext4).
+        label = (f'setfattr -n security.selinux -v "{ROOT_CONTEXT}" "$upper" 2>/dev/null || '
+                 'echo "poa-overlay: метка корня не поставлена" >&2')
+    else:
+        label = ""
+    binds = []
+    for name, path in STATE_BINDS:
+        binds.append(
+            f'mkdir -p "$state/{name}" "$__ROOTMNT__/{path}" && {{ '
+            f'[ -n "$(ls -A "$state/{name}" 2>/dev/null)" ] || '
+            f'cp -a "$__ROOTMNT__/{path}/." "$state/{name}/" 2>/dev/null || true; '
+            f'mount -o bind "$state/{name}" "$__ROOTMNT__/{path}" || '
+            f'echo "poa-overlay: состояние {name} не подключено" >&2; }}'
+        )
+    script = script.replace("__LABEL__", label).replace("__BINDS__", "\n".join(binds))
     return script.replace("__ROOTMNT__", rootmnt_var)
 
 

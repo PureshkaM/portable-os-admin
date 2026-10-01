@@ -658,3 +658,48 @@ def test_the_script_looks_for_the_image_before_it_moves_the_root():
     ][0]
 
     assert script.index('[ -f "$rootmnt/') < script.index('mount -o move "$rootmnt"')
+
+
+# -- LIVE-2.0, этап Э3: корень в оперативной памяти ---------------------------
+def test_upper_layer_lives_in_ram_and_vanishes_at_shutdown():
+    script = overlay.boot_script("poa-root")
+    assert "mount -t tmpfs" in script and f"size={overlay.RW_SIZE}" in script
+    assert 'upper="$rw/upper"' in script and 'work="$rw/work"' in script
+
+
+def test_medium_layer_sits_between_tmpfs_and_the_image():
+    script = overlay.boot_script("poa-root")
+    assert 'lowerdir=$medium:$lower' in script, "слой носителя должен лежать над образом"
+    assert f'medium="$container/{overlay.MEDIUM_DIR}"' in script
+
+
+def test_tmpfs_is_moved_into_the_new_root_like_the_lower_layer():
+    """Иначе -- та же поломка 11.09.2026: overlay держится на смонтированном
+    в initramfs, и каждый новый exec получает ENOENT."""
+    script = overlay.boot_script("poa-root")
+    move_rw = script.index(f'"$rootmnt{overlay.RW_MOUNT}"')
+    move_container = script.index(f'"$rootmnt{overlay.CONTAINER_MOUNT}"')
+    assert move_rw < move_container
+
+
+def test_only_the_listed_state_survives_and_is_seeded_from_the_system():
+    script = overlay.boot_script("poa-root")
+    for name, path in overlay.STATE_BINDS:
+        assert f'mount -o bind "$state/{name}" "$rootmnt/{path}"' in script
+        assert f'cp -a "$rootmnt/{path}/." "$state/{name}/"' in script
+    assert "--bind" not in script, "BusyBox в initramfs не знает длинных опций"
+
+
+def test_root_label_is_set_only_where_selinux_exists():
+    assert "setfattr" not in overlay.boot_script("poa-root")
+    assert "setfattr" in overlay.boot_script("poa-root", overlay.ROOTMNT_DRACUT,
+                                             mount_container=True, selinux=True)
+
+
+def test_state_directories_are_created_and_labelled_at_deploy():
+    commands = overlay.prepare_commands("/mnt/container")
+    for name, _ in overlay.STATE_BINDS:
+        assert ["mkdir", "-p", f"/mnt/container/{overlay.STATE_DIR}/{name}"] in commands
+    labels = overlay.state_label_commands("/mnt/container", "/mnt/root")
+    assert len(labels) == len(overlay.STATE_BINDS)
+    assert all("getfattr" in c[2] and "setfattr" in c[2] for c in labels)

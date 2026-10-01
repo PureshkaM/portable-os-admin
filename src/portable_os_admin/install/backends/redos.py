@@ -872,6 +872,8 @@ class RedOSInstallBackend(InstallBackend):
             "    instmods overlay squashfs loop\n"
             "}\n"
             "install() {\n"
+            "    # setfattr -- метка корня на tmpfs верхнего слоя (LIVE-2.0).\n"
+            "    inst_multiple -o setfattr\n"
             '    inst_hook cmdline 30 "$moddir/poa-overlay-parse.sh"\n'
             '    inst_hook mount 90 "$moddir/poa-overlay-hook.sh"\n'
             "}\n"
@@ -899,7 +901,7 @@ class RedOSInstallBackend(InstallBackend):
             "fi\n"
         )
         body = overlay_mode.boot_script(
-            layout.mapper_name, overlay_mode.ROOTMNT_DRACUT, mount_container=True
+            layout.mapper_name, overlay_mode.ROOTMNT_DRACUT, mount_container=True, selinux=True
         )
         # Хук монтирования вызывается на любом носителе, где включён модуль, а
         # его первая строка -- проверка, что корень наш. Чужой корень (носитель
