@@ -135,7 +135,7 @@ class ConfigWizardFrame(WizardFrame):
             ("disk", "Диск и шифрование", ""),
             ("remote", "Удалённый доступ", "Необязательно."),
             ("packages", "Пакеты для предустановки", "Необязательно."),
-            ("profile", "Режим системы и обновления", ""),
+            ("profile", "Режим системы и отзыв", ""),
             ("review", "Проверка и сохранение", ""),
         ]
 
@@ -1106,7 +1106,7 @@ class ConfigWizardFrame(WizardFrame):
     def _save_step_packages(self) -> None:
         return  # config.packages is kept in sync live by _add_package/_remove_package
 
-    # -- step 5: system profile and updates ----------------------------------
+    # -- step 5: system profile ----------------------------------
     def _build_step_profile(self, body: ttk.Frame) -> None:
         """Placed after the package step on purpose.
 
@@ -1306,46 +1306,7 @@ class ConfigWizardFrame(WizardFrame):
             firejail_row.pack(fill="x", padx=(theme.SPACE_LG, 0))
             add_field(firejail_row, 0, "Параметры firejail:", self.firejail_opts_var, width=26)
 
-        settings = self.config.auto_update
-        self.update_enabled_var = tk.BooleanVar(value=settings.enabled)
-        self.update_kernel_var = tk.BooleanVar(value=settings.include_kernel)
-        self.update_delay_var = tk.StringVar(value=str(settings.delay_minutes))
-        if self.expert_mode:
-            # Обновление на носителе -- отдельное решение со своей ценой:
-            # оно требует сети, времени на загрузке и рабочего репозитория.
-            # В минимальной системе выключено.
-            updates = ttk.LabelFrame(body, text="Автоматические обновления", padding=theme.SPACE_SM)
-            updates.pack(fill="x")
-            ttk.Checkbutton(
-                updates,
-                text="Обновлять систему при каждой загрузке носителя",
-                variable=self.update_enabled_var,
-            ).pack(anchor="w")
-            ttk.Label(
-                updates,
-                text="Обновления берутся из репозитория, указанного на шаге 1. Без него "
-                "обновляться неоткуда: установочный образ на носителе недоступен.",
-                style="Hint.TLabel",
-                wraplength=theme.TEXT_WRAP,
-            ).pack(anchor="w", padx=(theme.SPACE_LG, 0))
-            ttk.Checkbutton(
-                updates,
-                text="Обновлять ядро и загрузчик",
-                variable=self.update_kernel_var,
-            ).pack(anchor="w", pady=(theme.SPACE_XS, 0))
-            update_opts = ttk.Frame(updates)
-            update_opts.pack(anchor="w", pady=(theme.SPACE_XS, 0))
-            add_field(
-                update_opts,
-                0,
-                "Начинать через, мин:",
-                self.update_delay_var,
-                width=8,
-                hint="Пауза после загрузки, чтобы обновление не соперничало с рабочим столом "
-                "за ту же флешку.",
-            )
-
-        # Отзыв показывается в обоих режимах, в отличие от обновлений: это не
+        # Отзыв показывается в обоих режимах: это не
         # удобство, а единственное, что администратор может сделать с
         # носителем, которого у него нет в руках.
         revocation = self.config.revocation
@@ -1471,14 +1432,6 @@ class ConfigWizardFrame(WizardFrame):
         self.config.revocation.enabled = self.revocation_enabled_var.get()
         self.config.revocation.url = self.app.session.container.data.revocation_server_url
 
-        settings = self.config.auto_update
-        settings.enabled = self.update_enabled_var.get()
-        settings.include_kernel = self.update_kernel_var.get()
-        try:
-            settings.delay_minutes = int(self.update_delay_var.get().strip() or 0)
-        except ValueError:
-            settings.delay_minutes = -1
-
     def _validate_step_profile(self) -> bool:
         if self.config.revocation.enabled and not self.config.revocation.url:
             self.message_bar.error(
@@ -1528,17 +1481,6 @@ class ConfigWizardFrame(WizardFrame):
                 )
                 return False
 
-        settings = self.config.auto_update
-        if settings.enabled:
-            if not self.config.mirror:
-                self.message_bar.error(
-                    "Для автообновления нужен адрес репозитория — задайте его на первом шаге. "
-                    "Установочный образ на носителе недоступен, обновляться будет неоткуда."
-                )
-                return False
-            if settings.delay_minutes < 0:
-                self.message_bar.error("Задержка перед обновлением — целое число минут, 0 или больше.")
-                return False
         return True
 
     # -- step 5: review + edit + save --------------------------------------
@@ -1567,7 +1509,7 @@ class ConfigWizardFrame(WizardFrame):
             # переключатель наверху открывает и редактор, и всё прочее.
             ttk.Label(
                 body,
-                text="Остальное — размеры разделов, шифрование, обновления, удалённый "
+                text="Остальное — размеры разделов, шифрование, удалённый "
                 "доступ — программа задала сама. Экспертный режим наверху показывает "
                 "и их, и текст конфигурации целиком.",
                 style="Hint.TLabel",

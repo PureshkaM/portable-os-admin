@@ -179,10 +179,7 @@ def test_the_service_waits_for_the_volume_its_log_lives_on():
     приложения читает том, а не корень. Найдено живой загрузкой 13.09.2026 --
     две строки службы отзыва оказались недоступны администратору.
     """
-    from portable_os_admin.install import autoupdate
-
     assert "RequiresMountsFor=/var/log" in revocation.service_unit()
-    assert "RequiresMountsFor=/var/log" in autoupdate.service_unit(_config())
 
 
 def test_nothing_enables_the_service_through_chroot_any_more():

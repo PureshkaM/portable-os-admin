@@ -918,7 +918,7 @@ def test_the_wizard_can_open_system_settings_to_the_user(gui_app, tmp_path):
     app.update()
     wizard = app._current_frame
     # Шаг открывается напрямую: проверяется он сам, а не дорога к нему.
-    wizard.step_index = wizard.step_titles.index("Режим системы и обновления")
+    wizard.step_index = wizard.step_titles.index("Режим системы и отзыв")
     wizard._render_step()
     app.update()
 
@@ -1154,7 +1154,7 @@ def test_final_step_lists_what_the_administrator_changed(gui_app, tmp_path):
     wizard.arch_var.set("amd64")
     _allow_an_application(app, wizard)
     # Флажок живёт на шаге киоска и появляется только когда шаг построен.
-    _advance_to(app, wizard, "Режим системы и обновления")
+    _advance_to(app, wizard, "Режим системы и отзыв")
     wizard.allow_media_var.set(True)
     _advance_to(app, wizard, "Проверка и сохранение")
 

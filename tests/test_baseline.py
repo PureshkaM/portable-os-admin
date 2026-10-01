@@ -27,7 +27,6 @@ def test_every_optional_opening_starts_closed():
     assert config.kiosk.allow_removable_media is False
     assert config.account.sudo is False
     assert config.remote_access.enabled is False
-    assert config.auto_update.enabled is False
     assert config.packages == []
     assert config.system_tasks == []
 
@@ -162,3 +161,16 @@ def test_migration_does_not_overwrite_packages_that_are_already_there():
     config = InstallConfig.from_dict(old)
 
     assert config.packages == ["mate-calc"]
+
+
+def test_a_configuration_written_with_package_autoupdate_still_opens():
+    """Пакетное автообновление упразднено в LIVE-2.0 -- носитель обновляется
+    выпуском образа целиком. Конфигурации, сохранённые раньше, несут ключ
+    `auto_update`; он должен молча отбрасываться, а не ронять загрузку."""
+    data = InstallConfig.create_baseline("stick", "debian").to_dict()
+    data["auto_update"] = {"enabled": True, "include_kernel": True, "delay_minutes": 5}
+
+    config = InstallConfig.from_dict(data)
+
+    assert not hasattr(config, "auto_update")
+    assert "auto_update" not in config.to_dict()

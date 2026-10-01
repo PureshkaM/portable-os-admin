@@ -99,9 +99,6 @@ FIELD_LABELS = {
     "kiosk.allow_removable_media": "Съёмные носители",
     "kiosk.firejail": "Песочница firejail",
     "kiosk.firejail_options": "Параметры firejail",
-    "auto_update.enabled": "Автообновление",
-    "auto_update.include_kernel": "Обновлять ядро",
-    "auto_update.delay_minutes": "Задержка обновления, мин",
 }
 
 #: Never reported as a change: derived from the configuration rather than
@@ -346,39 +343,6 @@ class KioskConfig:
     firejail: bool = False
     #: Extra firejail switches, e.g. "--net=none --nosound".
     firejail_options: str = ""
-
-
-@dataclass
-class AutoUpdateConfig:
-    """Unattended updates on every boot of the finished medium.
-
-    The point is a fleet: many identical sticks handed out to many people, with
-    no way to collect them again to patch each one by hand. Each medium updates
-    itself from the repository named in `InstallConfig.mirror`.
-
-    That mirror is what makes this work at all. The installation image is
-    mounted on the administrator's machine and is gone the moment the stick is
-    unplugged, so a medium built from an image alone has no package source and
-    nothing to update from -- which is why the validator refuses this option
-    when no mirror is configured, instead of installing a service that fails
-    silently on every boot for the life of the medium.
-    """
-
-    enabled: bool = False
-    #: Include kernel and bootloader packages in the upgrade.
-    #:
-    #: On by default because the kernel is where the security fixes that matter
-    #: most land, and excluding it would make the whole feature cosmetic. The
-    #: trade-off is real and belongs to the administrator: a kernel upgrade
-    #: rebuilds the initramfs on the medium, and while this project's recovery
-    #: hooks live in /etc/initramfs-tools and are re-applied by that rebuild, a
-    #: rebuild interrupted by someone pulling the stick out leaves a medium
-    #: that does not boot.
-    include_kernel: bool = True
-    #: Minutes to wait after boot before starting. Not zero by default: the
-    #: update runs on a USB stick, and competing with the desktop session for
-    #: the same slow device makes the first minutes after login crawl.
-    delay_minutes: int = 5
 
 
 @dataclass
@@ -641,7 +605,6 @@ def _migrated(data: dict) -> dict:
         ("machine_binding", MachineBindingConfig),
         ("account", UserAccountConfig),
         ("remote_access", RemoteAccessConfig),
-        ("auto_update", AutoUpdateConfig),
         ("revocation", RevocationConfig),
         ("localisation", LocalisationConfig),
         ("boot", BootConfig),
@@ -731,7 +694,6 @@ class InstallConfig:
     services: ServicesConfig = field(default_factory=ServicesConfig)
     remote_access: RemoteAccessConfig = field(default_factory=RemoteAccessConfig)
     kiosk: KioskConfig = field(default_factory=KioskConfig)
-    auto_update: AutoUpdateConfig = field(default_factory=AutoUpdateConfig)
     system_tasks: list[str] = field(default_factory=list)
     packages: list[str] = field(default_factory=list)
     validation_status: str = "unchecked"  # "unchecked" | "valid" | "invalid"
@@ -764,7 +726,9 @@ class InstallConfig:
         # Configurations written before the kiosk profile existed simply have
         # no such key, and default to the console system they were made for.
         kiosk = KioskConfig(**data.pop("kiosk", {}))
-        auto_update = AutoUpdateConfig(**data.pop("auto_update", {}))
+        # Пакетное автообновление упразднено (LIVE-2.0): носитель обновляется
+        # выпуском образа целиком. Ключ из старых конфигураций отбрасывается.
+        data.pop("auto_update", None)
         # Конфигурации, написанные до появления удалённого отзыва, этого ключа
         # не имеют и получают отзыв выключенным.
         revocation = RevocationConfig(**data.pop("revocation", {}))
@@ -784,7 +748,6 @@ class InstallConfig:
             account=account,
             remote_access=remote_access,
             kiosk=kiosk,
-            auto_update=auto_update,
             localisation=localisation,
             boot=boot,
             network=network,
@@ -852,7 +815,6 @@ class InstallConfig:
         # Every optional opening starts closed.
         config.account.sudo = False
         config.remote_access = RemoteAccessConfig(enabled=False)
-        config.auto_update = AutoUpdateConfig(enabled=False)
         config.packages = []
         config.system_tasks = []
         # Зеркало -- часть минимальной конфигурации, а не поле, которое

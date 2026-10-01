@@ -653,45 +653,6 @@ class DebianInstallBackend(InstallBackend):
         )
         return self.chroot(mount_root, "sh", "-c", script)
 
-    # ------------------------------------------------------------------
-    # Unattended updates, run on the medium itself
-    # ------------------------------------------------------------------
-    def update_refresh_command(self) -> list[str]:
-        return ["apt-get", "update"]
-
-    def update_upgrade_command(self, *, include_kernel: bool) -> list[str]:
-        return [
-            "env",
-            "DEBIAN_FRONTEND=noninteractive",
-            "apt-get",
-            "-y",
-            # Nobody is at the keyboard to answer a config-file prompt, and a
-            # dpkg waiting on one blocks until the timeout kills it partway
-            # through. Keeping the medium's own files is the right default
-            # here: this project wrote several of them (fstab, crypttab, the
-            # kiosk lockdown), and letting a package replace those would undo
-            # the install.
-            "-o",
-            "Dpkg::Options::=--force-confdef",
-            "-o",
-            "Dpkg::Options::=--force-confold",
-            "upgrade",
-        ]
-
-    def update_hold_commands(self, *, include_kernel: bool) -> list[str]:
-        if include_kernel:
-            # Explicitly unheld, so a medium whose configuration is changed
-            # from "не трогать ядро" to "обновлять всё" actually starts
-            # receiving kernel updates instead of staying pinned forever.
-            return [
-                'log "ядро включено в обновление"',
-                "apt-mark unhold 'linux-image-*' 'grub-efi-*' >/dev/null 2>&1",
-            ]
-        return [
-            'log "ядро и загрузчик исключены из обновления"',
-            "apt-mark hold 'linux-image-*' 'grub-efi-*' >/dev/null 2>&1",
-        ]
-
     def temporary_files(self) -> dict[str, tuple[str, int | None]]:
         return {
             # Keeps apt from starting the daemons it installs. Without it,

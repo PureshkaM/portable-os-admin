@@ -15,7 +15,7 @@ import shutil
 from abc import ABC, abstractmethod
 
 from ...config.schema import ExtraUserConfig, InstallConfig
-from .. import autoupdate, revocation
+from .. import revocation
 from .. import desktop_roles
 from .. import kiosk as kiosk_mode
 from .. import machine_binding
@@ -273,28 +273,6 @@ class InstallBackend(ABC):
         """argv refreshing the target's package index before installing into
         it, or None if the family's installer does not need one."""
         return None
-
-    # ------------------------------------------------------------------
-    # Unattended updates on the finished medium
-    # ------------------------------------------------------------------
-    # These three run *on the medium*, long after this program is done, so they
-    # carry no chroot prefix and no reference to the install-time repository.
-    def update_refresh_command(self) -> list[str]:
-        """Refreshes the package index on the running portable system."""
-        raise NotImplementedError
-
-    def update_upgrade_command(self, *, include_kernel: bool) -> list[str]:
-        """Installs available upgrades, optionally leaving the kernel alone."""
-        raise NotImplementedError
-
-    def update_hold_commands(self, *, include_kernel: bool) -> list[str]:
-        """Shell lines pinning packages before the upgrade runs.
-
-        Returned as text rather than argv because they are written straight
-        into the update script; a family that expresses exclusions as flags on
-        the upgrade command itself returns nothing here.
-        """
-        return []
 
     def package_cleanup_command(self, mount_root: str) -> list[str] | None:
         """Frees the space the package manager used while building the medium.
@@ -831,7 +809,6 @@ echo "poa-boot: меню загрузки написано для ядра $vers
 
         commands.append(self.systemctl_enable(mount_root, "rsyslog"))
 
-        commands += autoupdate.chroot_commands(mount_root, config, self)
         # Службу отзыва здесь не включаем: она включается ссылкой при записи
         # носителя, рядом с записью её файлов. Команды chroot выполняются
         # только на пути установки, и включение здесь означало бы, что носитель,
@@ -1167,7 +1144,6 @@ echo "poa-boot: меню загрузки написано для ядра $vers
         files: dict[str, tuple[str, int | None]] = {}
         files.update(self.generic_initramfs_files())
         files.update(kiosk_mode.config_files(config, image))
-        files.update(autoupdate.config_files(config, self))
         # Отзыв -- только при записи носителя: скрипт называет идентификатор
         # этого носителя и его раздел. В эталонном корне дистрибутива ни того,
         # ни другого ещё нет, и общий на всех скрипт спрашивал бы ресурс об

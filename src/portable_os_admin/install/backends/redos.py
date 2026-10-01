@@ -222,19 +222,6 @@ class RedOSInstallBackend(InstallBackend):
         """
         return ["dnf", "--installroot", mount_root, "-y", "clean", "all"]
 
-    def update_refresh_command(self) -> list[str]:
-        return ["dnf", "-y", "makecache"]
-
-    def update_upgrade_command(self, *, include_kernel: bool) -> list[str]:
-        argv = ["dnf", "-y", "upgrade"]
-        if not include_kernel:
-            # dnf expresses this as an exclusion on the transaction, so unlike
-            # apt there is nothing to pin beforehand and nothing left pinned
-            # afterwards. `kernel-lt` is named too: that is what RED OS 8 calls
-            # its kernel, and `kernel*` alone would not match it.
-            argv.append("--exclude=kernel*,kernel-lt*,grub2*,shim*")
-        return argv
-
     def display_manager_files(self, config: InstallConfig) -> dict[str, str]:
         """SDDM autologin, both desktops.
 

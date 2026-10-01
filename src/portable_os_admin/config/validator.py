@@ -171,32 +171,9 @@ class BuiltinConfigValidator:
             errors.append("некорректный порт удалённого доступа")
 
         errors += self._kiosk_errors(config)
-        errors += self._auto_update_errors(config)
         errors += self._revocation_errors(config)
 
         return ValidationResult(ok=not errors, errors=errors, warnings=boot_warnings(config))
-
-    def _auto_update_errors(self, config: InstallConfig) -> list[str]:
-        errors: list[str] = []
-        settings = getattr(config, "auto_update", None)
-        if settings is None or not settings.enabled:
-            return errors
-
-        # The one check that matters. The installation image lives on the
-        # administrator's machine and is gone once the stick is unplugged, so a
-        # medium with no mirror has no package source at all: the update
-        # service would install cleanly and then fail on every boot for the
-        # life of the medium, writing errors to a log nobody reads.
-        if not config.mirror:
-            errors.append(
-                "автообновление включено, но не задан адрес репозитория: "
-                "установочный образ на носителе недоступен, обновляться будет неоткуда"
-            )
-
-        if settings.delay_minutes < 0:
-            errors.append("задержка перед автообновлением не может быть отрицательной")
-
-        return errors
 
     def _revocation_errors(self, config: InstallConfig) -> list[str]:
         """Проверки удалённого отзыва.
