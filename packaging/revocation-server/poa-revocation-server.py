@@ -58,6 +58,11 @@ import urllib.parse
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ed25519
 
+# Пакет сервера доступа v3 лежит рядом со скриптом (`poa_access/`).
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from poa_access import secrets_store, v3  # noqa: E402
+from poa_access.store import Store  # noqa: E402
+
 #: Идентификатор носителя: восемь шестнадцатеричных знаков, как их выдаёт
 #: программа. Проверяется до всего остального -- в подписанное сообщение
 #: попадает то, что прислали, и мусор туда попадать не должен.
@@ -244,6 +249,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
     admins: dict = {}  # допущенные администраторы по отпечатку
     admins_dir = None  # где они лежат; туда же пишется новый при знакомстве
     db = None
+    store = None       # хранилище v3 (та же база)
+    secrets = None     # ключи сервера доступа
+    state_dir = None   # каталог состояния: выпуски, описатель, настройки VPN
     #: «Прочитать код -- сверить -- сжечь» обязано быть одним шагом: сервер
     #: многопоточный, и два одновременных знакомства с одним кодом иначе
     #: прошли бы оба -- оба прочитали код раньше, чем первый его удалил.
@@ -324,6 +332,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
         prefix = "/admin/media/"
         if parsed.path.startswith(prefix):
             self._admin_asks(parsed.path[len(prefix):])
+            return
+        if parsed.path == "/v3/descriptor":
+            v3.descriptor(self)
+            return
+        if parsed.path == "/v3/crl":
+            v3.crl(self)
+            return
+        if parsed.path.startswith("/v3/release/"):
+            v3.release_file(self, parsed.path[len("/v3/release/"):])
             return
         self.send_error(404, "unknown endpoint")
 
@@ -411,6 +428,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if parsed.path == "/admin/enroll":
             self._enroll()
             return
+        device_routes = {"/v3/nonce": v3.nonce, "/v3/activate": v3.activate,
+                         "/v3/session": v3.session, "/v3/session/confirm": v3.confirm,
+                         "/v3/events": v3.events}
+        if parsed.path in device_routes:
+            device_routes[parsed.path](self)
+            return
+        if parsed.path.startswith("/admin/v3/"):
+            v3.admin_command(self, parsed.path[len("/admin/v3/"):])
+            return
         prefix = "/admin/media/"
         if not parsed.path.startswith(prefix):
             self.send_error(404, "unknown endpoint")
@@ -481,6 +507,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
         replaced = ", ключ заменён" if device_key and device_key != record["device_key"] else ""
         print(f"носитель {media}: состояние {state} (номер {counter}){replaced}", flush=True)
         self._send(204)
+
+    def do_PUT(self) -> None:  # noqa: N802 - имя задано базовым классом
+        parsed = urllib.parse.urlparse(self.path)
+        prefix = "/admin/v3/upload/"
+        if parsed.path.startswith(prefix):
+            v3.admin_upload(self, parsed.path[len(prefix):])
+            return
+        self.send_error(404, "unknown endpoint")
 
     def _enroll(self) -> None:
         """Первое знакомство с администратором: он присылает свой открытый ключ.
@@ -553,10 +587,20 @@ def main() -> int:
                         help="адрес; по умолчанию только локальный -- наружу "
                              "смотрит обратный прокси с TLS")
     parser.add_argument("--port", type=int, default=8081)
+    parser.add_argument("--credentials", type=pathlib.Path, default=None,
+                        help="каталог ключей сервера доступа v3 (учётные данные systemd); "
+                             "без него работает только v2")
+    parser.add_argument("--state", type=pathlib.Path, default=None,
+                        help="каталог состояния v3: выпуски, описатель, настройки VPN "
+                             "(по умолчанию -- каталог базы)")
     args = parser.parse_args()
 
     Handler.key = serialization.load_pem_private_key(args.key.read_bytes(), password=None)
     Handler.db = Database(args.db)
+    Handler.store = Store(args.db)
+    Handler.state_dir = args.state or args.db.parent
+    Handler.secrets = (secrets_store.load(args.credentials, sign_key_path=args.key)
+                       if args.credentials else secrets_store.ServerSecrets(sign_key=Handler.key))
     Handler.admins = load_admins(args.admins)
     Handler.admins_dir = args.admins
 
