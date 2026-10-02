@@ -321,6 +321,15 @@ mkdir -p "$container" "$lower" || fail "не создать точки монт�
 
 {container_mount}
 
+# Антиоткат (Э4): выпуск слота не старше разрешённого. min_serial поднимает
+# система после успешной загрузки (poa-boot-ok) -- на зашифрованном томе, то
+# есть подменить его без фразы нельзя.
+serial=$(sed -n 's/.*poa\\.serial=\\([0-9]*\\).*/\\1/p' /proc/cmdline)
+min_serial=$(cat "$container/{STATE_DIR}/poa/min_serial" 2>/dev/null || echo 0)
+if [ -n "$serial" ] && [ "$serial" -lt "$min_serial" ] 2>/dev/null; then
+    fail "выпуск $serial старше разрешённого ($min_serial) -- откат запрещён"
+fi
+
 modprobe loop 2>/dev/null || true
 modprobe squashfs 2>/dev/null || true
 modprobe overlay 2>/dev/null || true

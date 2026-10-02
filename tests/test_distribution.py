@@ -778,3 +778,4 @@ def _as_v3(metadata):
     metadata.generic_initramfs = True
     metadata.verity = distribution.VERITY_NAME
     metadata.verity_root_hash = "ab" * 32
+    metadata.release_serial = 1_800_000_000

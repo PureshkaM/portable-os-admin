@@ -47,3 +47,8 @@ RECOVERY_DIR = "etc/poa/recovery"
 PLYMOUTH_THEME_NAME = "poa"
 #: Where the same files end up inside the initramfs.
 RECOVERY_INITRAMFS_DIR = "/poa"
+
+#: Переменные выбора слота A/B на ESP (Э4): GRUB пишет только в FAT.
+GRUB_ENV_DIR = "EFI/poa"
+#: Сколько раз пробовать новый слот до возврата к проверенному.
+BOOT_TRIES = 3

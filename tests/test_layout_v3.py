@@ -80,8 +80,13 @@ def test_grub_boots_the_slot_kernel_with_its_root_hash():
     config, layout = _layout()
     layout.slot, layout.root_hash = "a", "cd" * 32
     script = get_backend("debian").grub_config_script(layout, config, "/boot/grub/grub.cfg")
-    assert "ls -1 /boot/slot-a/vmlinuz-*" in script
-    assert f"poa.slot=a poa.roothash={'cd' * 32}" in script
+    # Э4: меню одно на оба слота -- слот выбирают переменные на ESP, хеш и
+    # номер выпуска -- slot.cfg слота.
+    assert "load_env -f $poa_env poa_good poa_try poa_tries" in script
+    assert "save_env -f $poa_env poa_try poa_tries" in script
+    assert "source /slot-$poa_slot/slot.cfg" in script
+    assert "poa.slot=$poa_slot poa.roothash=$poa_roothash poa.serial=$poa_serial" in script
+    assert "linux /slot-$poa_slot/vmlinuz" in script
 
 
 def test_initramfs_carries_veritysetup_and_dm_verity():

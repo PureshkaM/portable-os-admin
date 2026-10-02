@@ -205,6 +205,8 @@ class DistributionMetadata:
     #: доверяется: с Э4/Э5 он входит в подписанный выпуск.
     verity: str = ""
     verity_root_hash: str = ""
+    #: Номер выпуска (Э4): растёт; по нему носитель не даёт откатиться.
+    release_serial: int = 0
     #: Emulation note when the root was built for a foreign architecture, so
     #: it travels with the artefact instead of being forgotten.
     built_under_emulation: bool = False
@@ -597,6 +599,10 @@ def sanitise_commands(root: str) -> list[list[str]]:
         )
     return commands
 
+
+#: Описание выпуска (Э4): номер, sha256 ядра и initramfs, корневой хеш;
+#: подписано рабочим ключом администратора, если у него есть сертификат.
+RELEASE_NAME = "release.json"
 
 #: Имя файла дерева dm-verity рядом с образом.
 VERITY_NAME = "rootfs.verity"

@@ -96,5 +96,4 @@ def test_grub_loads_the_medium_initrd_when_it_is_there():
     )
     config = InstallConfig.create_baseline("stick", "debian")
     script = get_backend("debian").grub_config_script(layout, config, "/boot/grub/grub.cfg")
-    assert '[ -f /boot/poa-medium.img ] && medium_initrd=" /poa-medium.img"' in script
-    assert "initrd ${initrd#/boot}$medium_initrd" in script
+    assert "initrd /slot-$poa_slot/initrd.img /poa-medium.img" in script

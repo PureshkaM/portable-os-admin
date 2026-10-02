@@ -253,6 +253,7 @@ def _deployed_commands(session, config, device, tmp_path):
     metadata.sha256 = distribution.sha256_of(str(archive))
     metadata.generic_initramfs, metadata.verity, metadata.verity_root_hash = (
         True, distribution.VERITY_NAME, "ab" * 32)
+    metadata.release_serial = 1_800_000_000
     distribution.write_metadata(str(directory), metadata)
 
     result = OSInstaller(session).deploy_distribution(
@@ -406,23 +407,17 @@ def test_the_distributions_own_generator_stays_for_the_plain_root(layout):
 def test_the_menu_finds_the_kernel_by_name_on_the_medium(layout):
     """Имя ядра программа не знает и не выдумывает -- ищет на месте.
 
-    Версия ядра приходит с образом, и захардкоженное имя разошлось бы с
-    первым же обновлением дистрибутива. Скрипт берёт последнее по версии и
-    отказывается, если ядра или initramfs нет, -- вместо того чтобы записать
-    меню, которое ничего не загрузит.
+    С Э4 поиск -- при записи слота: самое новое ядро образа и его initramfs
+    ложатся в слот под постоянными именами, и меню их не ищет вовсе. Без ядра
+    или initramfs запись слота останавливается, а не пишет пустой слот.
     """
-    from portable_os_admin.config import InstallConfig
-    from portable_os_admin.install.backends import get_backend
+    from portable_os_admin.install.installer import slot_files_script
 
-    config = InstallConfig.create_default("stick", "debian")
-    script = get_backend("debian").grub_config_script(layout, config, "/boot/grub/grub.cfg")
-
-    # Разметка v3: ядро -- в каталоге слота.
-    assert "ls -1 /boot/slot-a/vmlinuz-*" in script
-    assert "sort -V | tail -1" in script, "берётся не последняя версия ядра"
-    assert "initrd.img-" in script and "initramfs-" in script, "учтено имя только одного семейства"
-    assert "exit 1" in script, "при отсутствии ядра меню всё равно пишется"
-
+    script = slot_files_script("/run/poa/lower/boot", "/mnt/x/boot/slot-a")
+    assert "sort -V | tail -n 1" in script, "берётся не последняя версия ядра"
+    assert "initrd.img-$v" in script and "initramfs-$v.img" in script, "учтено имя только одного семейства"
+    assert "exit 1" in script
+    assert script.endswith('cp "$i" "/mnt/x/boot/slot-a/initrd.img"')
 
 def test_what_the_image_keeps_on_the_service_volumes_is_carried_onto_them(
     session, kiosk_config, big_device, tmp_path
@@ -444,7 +439,8 @@ def test_what_the_image_keeps_on_the_service_volumes_is_carried_onto_them(
     commands = _deployed_commands(session, kiosk_config, big_device, tmp_path)
 
     mounted_boot = next(i for i, c in enumerate(commands) if c.rstrip().endswith("/boot"))
-    copied = [i for i, c in enumerate(commands) if "cp -a" in c and "/run/poa/lower" in c]
+    copied = [i for i, c in enumerate(commands)
+              if "/run/poa/lower" in c and ("cp -a" in c or "slot-a/vmlinuz" in c)]
     assert copied, "содержимое образа не переносится на служебные разделы"
     assert min(copied) > mounted_boot, "перенос идёт до подключения разделов"
 
@@ -511,6 +507,7 @@ def test_the_medium_gets_the_scripts_that_could_not_be_in_the_image(
     metadata.sha256 = distribution.sha256_of(str(archive))
     metadata.generic_initramfs, metadata.verity, metadata.verity_root_hash = (
         True, distribution.VERITY_NAME, "ab" * 32)
+    metadata.release_serial = 1_800_000_000
     distribution.write_metadata(str(directory), metadata)
 
     result = OSInstaller(session).deploy_distribution(

@@ -16,6 +16,7 @@ import importlib.resources
 import os
 import tempfile
 import subprocess
+import re
 import time
 import uuid
 from collections.abc import Callable
@@ -59,6 +60,32 @@ MIN_IMAGES_PARTITION_MB = 10240
 #: Keyslot the day-to-day user password lives in. cryptsetup puts the first
 #: passphrase in slot 0; recovery needs to name it to replace it.
 USER_KEYSLOT = 0
+
+
+def _version_key(name: str) -> list:
+    """Как `sort -V`: числа сравниваются числами (6.12.101 новее 6.12.21)."""
+    return [(0, int(p), "") if p.isdigit() else (1, 0, p) for p in re.split(r"(\d+)", name)]
+
+
+def slot_files_script(source_boot: str, slot_dir: str) -> str:
+    """Самое новое ядро и его initramfs -- в каталог слота под постоянными
+    именами `vmlinuz` и `initrd.img` (Э4). Этим же пользуется обновление."""
+    return (
+        f'set -e; cd "{source_boot}"; '
+        'k=$(ls -1 vmlinuz-* 2>/dev/null | sort -V | tail -n 1); '
+        '[ -n "$k" ] || { echo "в образе нет ядра" >&2; exit 1; }; '
+        'v=${k#vmlinuz-}; '
+        'for i in "initrd.img-$v" "initramfs-$v.img"; do [ -f "$i" ] && break; i=; done; '
+        '[ -n "$i" ] || { echo "к ядру $v нет initramfs" >&2; exit 1; }; '
+        f'cp "$k" "{slot_dir}/vmlinuz"; cp "$i" "{slot_dir}/initrd.img"'
+    )
+
+
+def slot_cfg(root_hash: str, serial: int) -> str:
+    """То, что GRUB читает о слоте (`source`): хеш образа и номер выпуска."""
+    if not (len(root_hash) == 64 and all(c in "0123456789abcdef" for c in root_hash)):
+        raise InstallError("корневой хеш образа не похож на sha256")
+    return f"set poa_roothash={root_hash}\nset poa_serial={int(serial)}\n"
 
 
 #: Где установка с образа собирает дистрибутив (Э10): постоянный временный
@@ -592,12 +619,63 @@ class OSInstaller:
             metadata.verity_root_hash = (distribution.parse_root_hash(result.stdout)
                                          if not dry_run else "0" * 64)
 
+        # Номер выпуска (Э4): растёт со временем сборки -- носитель не даст
+        # откатиться на выпуск с меньшим номером.
+        metadata.release_serial = int(time.time())
+
         self._progress.step("Подсчёт контрольной суммы")
         if not dry_run:
             _, digest = distribution.write_checksum(archive)
             metadata.sha256 = digest
             distribution.write_metadata(destination, metadata)
+            if generic_initramfs:
+                self._write_release(destination, root, metadata)
         return metadata
+
+    def _write_release(self, destination: str, root: str, metadata) -> None:
+        """`release.json` (Э4): что это за выпуск и чем его проверить.
+
+        Подписывается рабочим ключом администратора с сертификатом корня
+        организации, если сертификат есть; без него -- неподписанный, и
+        обновление по сети (Э9) такой выпуск не примет.
+        """
+        import hashlib
+        import json
+
+        from ..admin import org_root
+        from .access.runtime import poa_trust
+
+        def sha(path: str) -> str:
+            digest = hashlib.sha256()
+            with open(path, "rb") as handle:
+                for chunk in iter(lambda: handle.read(1 << 20), b""):
+                    digest.update(chunk)
+            return digest.hexdigest()
+
+        boot = os.path.join(root, "boot")
+        kernels = sorted((n for n in os.listdir(boot) if n.startswith("vmlinuz-")),
+                         key=_version_key)
+        kernel = kernels[-1]
+        version = kernel[len("vmlinuz-"):]
+        initrd = next(n for n in (f"initrd.img-{version}", f"initramfs-{version}.img")
+                      if os.path.exists(os.path.join(boot, n)))
+        payload = {
+            "kind": "poa-release", "format": 1, "serial": metadata.release_serial,
+            "name": metadata.name, "family": metadata.target_os, "arch": metadata.arch,
+            "layout": 3, "image": {"file": metadata.archive, "sha256": metadata.sha256},
+            "kernel": {"version": version, "sha256": sha(os.path.join(boot, kernel))},
+            "initrd": {"sha256": sha(os.path.join(boot, initrd))},
+            "verity_root_hash": metadata.verity_root_hash,
+        }
+        container = self.session.container
+        if container.data.working_key_cert_json:
+            document = poa_trust.sign_document(org_root.working_key(container),
+                                               json.loads(container.data.working_key_cert_json),
+                                               "release", payload)
+        else:
+            document = {"release": payload}
+        with open(os.path.join(destination, distribution.RELEASE_NAME), "w", encoding="utf-8") as handle:
+            json.dump(document, handle, ensure_ascii=False, indent=2)
 
     def deploy_distribution(
         self,
@@ -687,7 +765,8 @@ class OSInstaller:
         # RHEL-семейства бесполезен: собрать его на месте нечем, grub2-install
         # для EFI там отключён. Раньше это выяснялось через час работы, когда
         # носитель уже стёрт.
-        if not (metadata.generic_initramfs and metadata.verity and metadata.verity_root_hash):
+        if not (metadata.generic_initramfs and metadata.verity and metadata.verity_root_hash
+                and metadata.release_serial):
             raise InstallError(
                 "дистрибутив собран до перехода на LiveCD-разметку (нет общего "
                 "initramfs и дерева проверки dm-verity) — пересоберите его.\n"
@@ -792,16 +871,24 @@ class OSInstaller:
         run(["sh", "-c",
              f"cp -a {overlay.LOWER_MOUNT}/var/log/. {layout.mount_root}/var/log/ 2>/dev/null || true"],
             timeout=BOOTSTRAP_TIMEOUT)
-        # Раздел загрузки (v3): ядро и общий initramfs -- в каталог слота;
-        # остальное /boot образа (каталоги загрузчика) -- в корень раздела,
-        # где их ждут grub-install и опись.
+        # Раздел загрузки (v3/Э4): ядро и общий initramfs -- в каталог слота
+        # под постоянными именами (меню GRUB одно на оба слота), номер
+        # выпуска и корневой хеш -- в slot.cfg; остальное /boot образа
+        # (каталоги загрузчика) -- в корень раздела.
         slot_boot = f"{layout.mount_root}/boot/slot-{layout.slot}"
         run(["mkdir", "-p", slot_boot])
+        run(["sh", "-c", slot_files_script(overlay.LOWER_MOUNT + "/boot", slot_boot)],
+            timeout=BOOTSTRAP_TIMEOUT)
         run(["sh", "-c",
-             f"cd {overlay.LOWER_MOUNT}/boot && for f in vmlinuz-* initrd.img-* initramfs-*.img "
-             f"config-* System.map-* symvers-*; do [ -e \"$f\" ] && cp -a \"$f\" {slot_boot}/; done; "
+             f"cd {overlay.LOWER_MOUNT}/boot && "
              f"for d in */; do [ -d \"$d\" ] && cp -a \"$d\" {layout.mount_root}/boot/; done; true"],
             timeout=BOOTSTRAP_TIMEOUT)
+        self._write_file(f"{slot_boot}/slot.cfg",
+                         slot_cfg(metadata.verity_root_hash, metadata.release_serial),
+                         plan, dry_run, confirm_device, mode=0o644)
+        release = os.path.join(directory, distribution.RELEASE_NAME)
+        if os.path.exists(release):
+            run(["cp", release, f"{slot_boot}/{distribution.RELEASE_NAME}"])
 
         # Часть того же шага, а не отдельный: копирование не закончено, пока
         # данные не на носителе, а не в кэше страниц. Без этого следующая же

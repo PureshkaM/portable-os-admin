@@ -901,6 +901,7 @@ class RedOSInstallBackend(InstallBackend):
     #: Каталог этого дистрибутива на разделе EFI. Туда пакеты кладут grub, и
     #: оттуда же он читает свою конфигурацию: путь вшит в сам grubx64.efi.
     EFI_VENDOR_DIR = "EFI/redos"
+    GRUB_EDITENV = "grub2-editenv"
 
     def firewall_commands(self, mount_root: str, config: InstallConfig) -> list[list[str]]:
         """firewalld плюс открытые порты.
