@@ -25,7 +25,10 @@ SERVICE_PATH = f"etc/systemd/system/{SERVICE_NAME}"
 VPN_UNIT_PATH = "etc/systemd/system/poa-vpn@.service"
 AUTOSTART_PATH = "etc/xdg/autostart/poa-connect.desktop"
 RUNTIME_FILES = ("poa_client.py", "poa_accessd.py", "poa_launch.py", "poa_connect.py",
-                 "poa_qr.py", "poa_ssh.py", "poa_vnc.py", "poa_events.py")
+                 "poa_qr.py", "poa_ssh.py", "poa_vnc.py", "poa_events.py", "poa_firewall.py")
+FIREWALL_SERVICE_NAME = "poa-firewall.service"
+FIREWALL_SERVICE_PATH = f"etc/systemd/system/{FIREWALL_SERVICE_NAME}"
+SYSUSERS_PATH = "usr/lib/sysusers.d/poa-access.conf"
 EVENTS_SERVICE_NAME = "poa-events.service"
 EVENTS_SERVICE_PATH = f"etc/systemd/system/{EVENTS_SERVICE_NAME}"
 EVENT_CLI_PATH = "usr/local/sbin/poa-event"
@@ -102,6 +105,25 @@ WantedBy=multi-user.target
 """
 
 
+def firewall_unit() -> str:
+    """Экран ставится раньше сети: до него носитель не говорит ни с кем."""
+    return """[Unit]
+Description=Сетевой экран носителя (по умолчанию закрыто всё)
+DefaultDependencies=no
+Before=network-pre.target
+Wants=network-pre.target
+After=systemd-sysusers.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/python3 -c "import sys; sys.path.insert(0, '/usr/lib/poa-access'); import poa_firewall; poa_firewall.Firewall().load()"
+
+[Install]
+WantedBy=sysinit.target
+"""
+
+
 def image_files(config: InstallConfig) -> dict[str, tuple[str, int | None]]:
     if not is_enabled(config):
         return {}
@@ -113,6 +135,9 @@ def image_files(config: InstallConfig) -> dict[str, tuple[str, int | None]]:
     files[VPN_UNIT_PATH] = (vpn_unit(), 0o644)
     files[AUTOSTART_PATH] = (autostart_entry(), 0o644)
     files[EVENTS_SERVICE_PATH] = (events_unit(), 0o644)
+    files[FIREWALL_SERVICE_PATH] = (firewall_unit(), 0o644)
+    # Пользователь окна портала: экран пускает в веб только его (Э14).
+    files[SYSUSERS_PATH] = ('u poa-portal - "Окно портала" /nonexistent\n', 0o644)
     files[EVENT_CLI_PATH] = ("#!/bin/sh\nexec /usr/bin/python3 /usr/lib/poa-access/poa_events.py \"$@\"\n", 0o755)
     return files
 

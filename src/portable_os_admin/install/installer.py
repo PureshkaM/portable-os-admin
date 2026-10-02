@@ -959,6 +959,10 @@ class OSInstaller:
         for path, name in ((access_files.SERVICE_PATH, access_files.SERVICE_NAME),
                            (access_files.EVENTS_SERVICE_PATH, access_files.EVENTS_SERVICE_NAME)):
             self._run(["ln", "-sf", f"/{path}", f"{wants}/{name}"], plan, dry_run, confirm_device)
+        sysinit = f"{layout.mount_root}/etc/systemd/system/sysinit.target.wants"
+        self._run(["mkdir", "-p", sysinit], plan, dry_run, confirm_device)
+        self._run(["ln", "-sf", f"/{access_files.FIREWALL_SERVICE_PATH}",
+                   f"{sysinit}/{access_files.FIREWALL_SERVICE_NAME}"], plan, dry_run, confirm_device)
 
     def _write_medium_files(
         self, config, backend, identity, plan, state, dry_run, confirm_device,
