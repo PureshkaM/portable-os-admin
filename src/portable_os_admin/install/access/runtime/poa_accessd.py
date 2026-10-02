@@ -50,6 +50,9 @@ DESCRIPTOR = "/var/lib/poa/descriptor.json"
 TLS_PIN = "/var/lib/poa/tls-pin"
 #: Якоря после замены корня (Э18) -- постоянное состояние.
 ROOTS = "/var/lib/poa/roots.json"
+#: Обновление образа (Э9): запрос службе и её прогресс.
+UPDATE_REQUEST = "/run/poa/update-request.json"
+UPDATE_STATE = "/run/poa/update.json"
 #: Последний подлинный список отзыва рабочих ключей (Э18).
 REVOKED = "/var/lib/poa/revoked.json"
 #: Поправлять часы, если расходятся с сервером больше чем на столько секунд:
@@ -178,6 +181,7 @@ class Service:
             "not_after": (self.grant or {}).get("not_after"),
             "targets": (self.grant or {}).get("targets", []),
             "authorized": os.path.exists("/run/poa/authorized"),
+            "update": self.update_state(),
         }
 
     def activate(self, code: str) -> dict:
@@ -194,7 +198,15 @@ class Service:
 
     def login(self, totp_code: str) -> dict:
         key_pem, vpn_request = self._vpn_key()
-        grant = self.client().login(self.state, totp_code, self._status(), vpn_request)
+        try:
+            grant = self.client().login(self.state, totp_code, self._status(), vpn_request)
+        except poa_client.AccessError as exc:
+            if exc.code == 426:
+                # Выпуск ниже обязательного: без обновления входа не будет --
+                # загрузка начинается сразу, окно скажет «идёт обновление».
+                self.start_update((exc.body or {}).get("release"))
+            raise
+        self.start_update(self.state.load().get("release"))
         data = self.state.load()
         if not data.get("activated"):
             self.state.save({**data, "activated": True})
@@ -246,10 +258,40 @@ class Service:
         return {"version": self.config.get("version", ""), "virt": detect_virt(self.run)}
 
     def _status(self) -> dict:
-        release = self.config.get("release", {})
-        return {"virt": detect_virt(self.run), "serial": release.get("serial", 0),
-                "distribution": release.get("distribution", ""),
+        # Номер работающего выпуска -- из командной строки ядра (его ставит
+        # GRUB из slot.cfg слота): по нему сервер решает про обновление и 426.
+        import poa_update
+
+        try:
+            serial = int(poa_update.cmdline_value("poa.serial") or 0)
+        except (OSError, ValueError):
+            serial = 0
+        return {"virt": detect_virt(self.run), "serial": serial,
+                "distribution": self.config.get("release", {}).get("distribution", ""),
                 "version": self.config.get("version", ""), "medium": "flash"}
+
+    # -- обновление образа (Э9) -------------------------------------------
+    def start_update(self, info: dict | None) -> None:
+        """Назначенный сервером выпуск новее работающего -- запустить загрузку
+        в неактивный слот (служба poa-image-update, под systemd-inhibit)."""
+        if not info:
+            return
+        try:
+            if int(info.get("serial", 0)) <= self._status()["serial"]:
+                return
+        except (TypeError, ValueError):
+            return
+        os.makedirs(os.path.dirname(UPDATE_REQUEST), exist_ok=True)
+        poa_client.atomic_write(self.config.get("update_request", UPDATE_REQUEST),
+                                json.dumps(info).encode(), 0o600)
+        self.run(["systemctl", "start", "--no-block", "poa-image-update.service"], check=False)
+
+    def update_state(self) -> dict:
+        try:
+            with open(self.config.get("update_state", UPDATE_STATE), encoding="utf-8") as handle:
+                return json.load(handle)
+        except (OSError, ValueError):
+            return {}
 
     def _vpn_key(self) -> tuple[bytes, dict]:
         """Ключ VPN рождается здесь и живёт только в RAM (/run -- tmpfs)."""

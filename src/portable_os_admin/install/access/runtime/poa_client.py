@@ -66,7 +66,8 @@ class Endpoint:
     url: str                       # https://access.example.org
     pins: tuple[str, ...] = ()     # sha256 SPKI; пусто допустимо только для http://127.0.0.1 в тестах
 
-    def request(self, method: str, path: str, body: bytes = b"", headers: dict | None = None):
+    def _open(self):
+        """Соединение с сервером, узнанным по закреплённому отпечатку TLS."""
         parts = urllib.parse.urlsplit(self.url)
         host, port = parts.hostname, parts.port
         if parts.scheme == "https":
@@ -85,12 +86,47 @@ class Endpoint:
             conn = http.client.HTTPConnection(host, port or 80, timeout=TIMEOUT)   # только тесты
         else:
             raise AccessError(0, "insecure_endpoint")
+        return conn, parts.path.rstrip("/")
+
+    def request(self, method: str, path: str, body: bytes = b"", headers: dict | None = None):
+        conn, base = self._open()
         try:
-            conn.request(method, parts.path.rstrip("/") + path, body=body,
+            conn.request(method, base + path, body=body,
                          headers={"Content-Length": str(len(body)), **(headers or {})})
             response = conn.getresponse()
             data = response.read(1 << 24)
             return response.status, data
+        except (OSError, socket.timeout, http.client.HTTPException) as exc:
+            raise AccessError(0, f"network: {exc}") from exc
+        finally:
+            conn.close()
+
+    def download(self, path: str, dest: str, progress=None) -> int:
+        """Файл выпуска в `dest` потоком, с докачкой (`Range`) -- образы весят
+        гигабайты, а связь у ноутбука в поезде рвётся. Возвращает размер."""
+        offset = os.path.getsize(dest) if os.path.exists(dest) else 0
+        conn, base = self._open()
+        try:
+            conn.request("GET", base + path, headers={"Range": f"bytes={offset}-"} if offset else {})
+            response = conn.getresponse()
+            if response.status == 416 and offset:      # уже скачан целиком
+                return offset
+            if response.status == 200:
+                offset, mode = 0, "wb"                 # сервер начал сначала
+            elif response.status == 206:
+                mode = "ab"
+            else:
+                raise AccessError(response.status, "download")
+            with open(dest, mode) as handle:
+                while True:
+                    chunk = response.read(1 << 20)
+                    if not chunk:
+                        break
+                    handle.write(chunk)
+                    offset += len(chunk)
+                    if progress:
+                        progress(offset)
+            return offset
         except (OSError, socket.timeout, http.client.HTTPException) as exc:
             raise AccessError(0, f"network: {exc}") from exc
         finally:

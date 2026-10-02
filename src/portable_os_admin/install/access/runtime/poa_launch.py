@@ -94,3 +94,17 @@ def client_command(target: dict) -> tuple[list[str], bool]:
     if kind == "vnc":
         return ["python3", os.path.join(RUNTIME, "poa_vnc.py"), json.dumps(target)], False
     raise ValueError(f"неизвестный тип цели: {kind}")
+
+
+def update_text(state: dict) -> str:
+    """Что сказать человеку об обновлении системы (Э9)."""
+    kind = state.get("state")
+    if kind in ("checking", "downloading"):
+        total, done = int(state.get("total") or 0), int(state.get("done") or 0)
+        share = f" ({done * 100 // total}%)" if total else ""
+        return f"Загружается обновление системы{share}. Не выключайте компьютер."
+    if kind == "ready":
+        return "Обновление загружено и применится при следующем включении."
+    if kind == "failed":
+        return "Обновление не загрузилось; попробуем при следующем входе."
+    return ""

@@ -659,12 +659,23 @@ class OSInstaller:
         version = kernel[len("vmlinuz-"):]
         initrd = next(n for n in (f"initrd.img-{version}", f"initramfs-{version}.img")
                       if os.path.exists(os.path.join(boot, n)))
+        # Ядро и initramfs -- рядом с образом под постоянными именами: так их
+        # публикуют на сервере и так кладут в слот (Э9).
+        import shutil
+
+        shutil.copyfile(os.path.join(boot, kernel), os.path.join(destination, "vmlinuz"))
+        shutil.copyfile(os.path.join(boot, initrd), os.path.join(destination, "initrd.img"))
+
+        def entry(name: str) -> dict:
+            path = os.path.join(destination, name)
+            return {"file": name, "sha256": sha(path), "size": os.path.getsize(path)}
+
         payload = {
             "kind": "poa-release", "format": 1, "serial": metadata.release_serial,
             "name": metadata.name, "family": metadata.target_os, "arch": metadata.arch,
-            "layout": 3, "image": {"file": metadata.archive, "sha256": metadata.sha256},
-            "kernel": {"version": version, "sha256": sha(os.path.join(boot, kernel))},
-            "initrd": {"sha256": sha(os.path.join(boot, initrd))},
+            "layout": 3, "kernel_version": version,
+            "image": entry(metadata.archive), "verity": entry(metadata.verity),
+            "kernel": entry("vmlinuz"), "initrd": entry("initrd.img"),
             "verity_root_hash": metadata.verity_root_hash,
         }
         container = self.session.container

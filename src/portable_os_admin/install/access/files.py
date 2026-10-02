@@ -25,10 +25,11 @@ TLS_PIN_PATH = "etc/poa/tls-pin"
 SERVICE_NAME = "poa-accessd.service"
 SERVICE_PATH = f"etc/systemd/system/{SERVICE_NAME}"
 VPN_UNIT_PATH = "etc/systemd/system/poa-vpn@.service"
+UPDATE_UNIT_PATH = "etc/systemd/system/poa-image-update.service"
 AUTOSTART_PATH = "etc/xdg/autostart/poa-connect.desktop"
 RUNTIME_FILES = ("poa_client.py", "poa_accessd.py", "poa_launch.py", "poa_connect.py",
                  "poa_qr.py", "poa_ssh.py", "poa_vnc.py", "poa_events.py", "poa_firewall.py",
-                 "poa_trust.py", "poa_gost.py")
+                 "poa_trust.py", "poa_gost.py", "poa_update.py")
 FIREWALL_SERVICE_NAME = "poa-firewall.service"
 FIREWALL_SERVICE_PATH = f"etc/systemd/system/{FIREWALL_SERVICE_NAME}"
 SYSUSERS_PATH = "usr/lib/sysusers.d/poa-access.conf"
@@ -63,6 +64,21 @@ NoNewPrivileges=yes
 
 [Install]
 WantedBy=multi-user.target
+"""
+
+
+def update_unit() -> str:
+    """Обновление образа в неактивный слот (Э9). systemd-inhibit -- чтобы
+    выключение и сон подождали конца записи на носитель."""
+    return """[Unit]
+Description=Обновление системы в неактивный слот
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemd-inhibit --what=shutdown:sleep --who=poa --why="Записывается обновление системы" /usr/bin/python3 /usr/lib/poa-access/poa_update.py /etc/poa/access.json /run/poa/update-request.json
+Nice=10
+IOSchedulingClass=idle
 """
 
 
@@ -136,6 +152,7 @@ def image_files(config: InstallConfig) -> dict[str, tuple[str, int | None]]:
     }
     files[SERVICE_PATH] = (service_unit(), 0o644)
     files[VPN_UNIT_PATH] = (vpn_unit(), 0o644)
+    files[UPDATE_UNIT_PATH] = (update_unit(), 0o644)
     files[AUTOSTART_PATH] = (autostart_entry(), 0o644)
     files[EVENTS_SERVICE_PATH] = (events_unit(), 0o644)
     files[FIREWALL_SERVICE_PATH] = (firewall_unit(), 0o644)
@@ -170,4 +187,7 @@ def medium_config(config: InstallConfig, media_id: str, server_key_pem: str,
         # Корни организации (Э18): по ним носитель проверяет описатели сервера.
         # Хранилище LUKS -- не образ: образ не может нести собственный якорь.
         "roots": list(roots or []),
+        # Утилита переменных GRUB у семейства -- ею обновление (Э9) просит
+        # загрузчик попробовать новый слот.
+        "grub_editenv": "grub2-editenv" if config.target_os == "redos" else "grub-editenv",
     }, ensure_ascii=False, indent=2) + "\n"

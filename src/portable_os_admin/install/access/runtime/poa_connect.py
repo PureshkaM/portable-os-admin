@@ -38,7 +38,12 @@ class ConnectWindow(Gtk.Window):
         self.set_default_size(560, 420)
         self.set_position(Gtk.WindowPosition.CENTER)
         self.stack = Gtk.Stack()
-        self.add(self.stack)
+        # Строка об обновлении системы (Э9) -- над любым экраном окна.
+        self.update_label = Gtk.Label(xalign=0, wrap=True, margin=12)
+        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        outer.pack_start(self.update_label, False, False, 0)
+        outer.pack_start(self.stack, True, True, 0)
+        self.add(outer)
         self.message = ""
         self.targets: list[dict] = []
         self.qr_modules = None
@@ -49,6 +54,7 @@ class ConnectWindow(Gtk.Window):
         # окно открывалось пустым (найдено тестом под Xvfb 01.10.2026).
         self.stack.show_all()
         GLib.timeout_add_seconds(POLL_SECONDS, self._poll)
+        GLib.timeout_add_seconds(POLL_SECONDS, self._poll_update)
         self._poll()
 
     # -- экраны -------------------------------------------------------------
@@ -127,6 +133,13 @@ class ConnectWindow(Gtk.Window):
             self._show_targets()
         else:
             self.stack.set_visible_child_name("totp" if status.get("activated") else "activate")
+        return True
+
+    def _poll_update(self) -> bool:
+        status = poa_launch.ask({"cmd": "status"}, timeout=5)
+        text = poa_launch.update_text(status.get("update") or {})
+        self.update_label.set_text(text)
+        self.update_label.set_visible(bool(text))
         return True
 
     # -- действия ---------------------------------------------------------------
