@@ -169,7 +169,13 @@ class Updater:
                 last[0] = now
                 progress(size)
 
-        for attempt in range(1, ATTEMPTS + 1):
+        # Считаются только попытки без продвижения: обрыв, после которого файл
+        # вырос, -- это работа, а не отказ (живая проверка 02.10.2026: образ
+        # шёл кусками по 6 МБ, и счётчик всех обрывов сдался бы на 30-м).
+        stalled = 0
+        size = os.path.getsize(part) if os.path.exists(part) else 0
+        while stalled < ATTEMPTS:
+            before = size
             try:
                 self.endpoint.download(path, part, throttled)
             except poa_client.AccessError:
@@ -179,7 +185,10 @@ class Updater:
                 return
             if size > expected:
                 os.unlink(part)      # мусор от прежней попытки -- заново
-            self.sleep(min(30, 2 * attempt))
+                size = 0
+            stalled = 0 if size > before else stalled + 1
+            if stalled:
+                self.sleep(min(30, 2 * stalled))
         raise UpdateError(f"{os.path.basename(part)[:-5]}: не скачался за {ATTEMPTS} попыток")
 
     def verify(self, document: dict, info: dict) -> dict:

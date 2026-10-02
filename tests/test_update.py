@@ -153,3 +153,25 @@ def test_a_broken_download_is_resumed_from_where_it_stopped(world):
     # release.json + по две попытки на каждый из четырёх файлов
     assert updater.endpoint.calls == 1 + 2 * 4
 
+
+def test_many_small_pieces_are_not_counted_as_failures(world, monkeypatch):
+    """Обрыв с продвижением -- не отказ: 100 кусков при пределе в 30 попыток."""
+    updater, publish, _boot, images, srv, _calls, _keys = world
+
+    class Trickle(Server):
+        def download(self, path, dest, progress=None):
+            self.calls += 1
+            data = (self.root / path.rsplit("/", 1)[-1]).read_bytes()
+            dest = pathlib.Path(dest)
+            have = dest.stat().st_size if dest.exists() else 0
+            step = len(data) if path.endswith("release.json") else max(1, len(data) // 100)
+            with open(dest, "ab") as handle:
+                handle.write(data[have:have + step])
+            return dest.stat().st_size
+
+    monkeypatch.setattr(update, "ATTEMPTS", 30)
+    updater.endpoint = Trickle(srv)
+    publish(_payload(11))
+    assert updater.apply(INFO) == "b"
+    assert (images / "slot-b" / "rootfs.squashfs").read_bytes() == FILES["rootfs.squashfs"]
+
