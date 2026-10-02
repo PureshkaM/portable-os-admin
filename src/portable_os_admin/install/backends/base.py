@@ -89,6 +89,10 @@ class InstallBackend(ABC):
     #: что crypttab один на оба семейства, и опция, написанная для одного,
     #: уезжала на носитель другого.
     crypttab_keyscript: bool = True
+    #: Где initramfs семейства ищет crypttab корня -- туда его кладёт второй
+    #: initrd носителя (Э2). None: семейство открывает корень иначе
+    #: (dracut -- по `rd.luks.*` из командной строки или нашим хуком).
+    initramfs_crypttab_path: str | None = None
     #: Non-empty means this family supports the kiosk profile at all; a kiosk
     #: configuration for a family whose value is empty is refused rather than
     #: half-built.
@@ -753,6 +757,9 @@ for candidate in "/boot/initrd.img-$version" "/boot/initramfs-$version.img"; do
     [ -f "$candidate" ] && initrd="$candidate" && break
 done
 [ -n "${{initrd:-}}" ] || {{ echo "к ядру $version нет initramfs" >&2; exit 1; }}
+# Второй initrd -- данные этого носителя для общего initramfs (Э2).
+medium_initrd=""
+[ -f /boot/poa-medium.img ] && medium_initrd=" /poa-medium.img"
 
 mkdir -p "$(dirname {target})"
 cat > {target} <<CFG
@@ -765,7 +772,7 @@ search --no-floppy --fs-uuid --set=root {layout.boot_uuid}
 
 menuentry '{self.GRUB_MENU_TITLE}' {{
     linux ${{kernel#/boot}} {root} ro {cmdline}
-    initrd ${{initrd#/boot}}
+    initrd ${{initrd#/boot}}$medium_initrd
 }}
 CFG
 echo "poa-boot: меню загрузки написано для ядра $version"
@@ -1181,7 +1188,8 @@ echo "poa-boot: меню загрузки написано для ядра $vers
         # этого носителя и его раздел. В эталонном корне дистрибутива ни того,
         # ни другого ещё нет, и общий на всех скрипт спрашивал бы ресурс об
         # одном и том же идентификаторе со всех флешек сразу.
-        if layout is not None and getattr(layout, "mapper_name", ""):
+        if layout is not None and getattr(layout, "mapper_name", "") \
+                and not getattr(layout, "generic", False):
             files.update(
                 revocation.config_files(
                     config,

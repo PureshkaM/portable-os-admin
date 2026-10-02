@@ -197,6 +197,10 @@ class DistributionMetadata:
     #: версией программы, которая выбрасывала boot/efi/EFI, иначе выяснился бы
     #: через час, на последнем шаге.
     has_bootloader: bool = False
+    #: Общий initramfs собран при сборке (Э2): при записи носителю нужен только
+    #: второй initrd с его данными (`install/medium_initrd.py`). У дистрибутивов,
+    #: собранных раньше, поля нет -- они записываются по-старому.
+    generic_initramfs: bool = False
     #: Emulation note when the root was built for a foreign architecture, so
     #: it travels with the artefact instead of being forgotten.
     built_under_emulation: bool = False
