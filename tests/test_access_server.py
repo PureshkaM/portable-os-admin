@@ -406,3 +406,13 @@ def test_unsigned_admin_command_is_refused(server):
         "X-POA-Key-Id": server.admin_id, "Content-Length": str(len(body)),
         "X-POA-Signature": canon.b64(ed25519.Ed25519PrivateKey.generate().sign(body))}, body)
     assert status == 403
+
+
+def test_rdp_security_is_nla_unless_the_target_says_tls(server, device):
+    base = {"id": "ws9", "name": "x", "type": "rdp", "host": "10.0.0.9", "port": 3389,
+            "user": "u", "domain": "", "pin": "sha256:" + "0" * 64}
+    assert server.admin_cmd("targets", media=MEDIA, targets=[base])[0] == 200
+    assert server.admin_cmd("get_targets", media=MEDIA)[1]["targets"][0]["security"] == "nla"
+    assert server.admin_cmd("targets", media=MEDIA, targets=[{**base, "security": "tls"}])[0] == 200
+    assert server.admin_cmd("get_targets", media=MEDIA)[1]["targets"][0]["security"] == "tls"
+    assert server.admin_cmd("targets", media=MEDIA, targets=[{**base, "security": "rdp"}])[0] == 400

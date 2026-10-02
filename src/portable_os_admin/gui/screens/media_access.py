@@ -156,6 +156,7 @@ class TargetDialog(tk.Toplevel):
         self.vars = {key: tk.StringVar(value=str(target.get(key, ""))) for key in
                      ("id", "name", "type", "host", "port", "user", "domain", "pin")}
         self.smartcard = tk.BooleanVar(value=bool(target.get("smartcard")))
+        self.tls_only = tk.BooleanVar(value=target.get("security") == "tls")
         form = ttk.Frame(self, padding=theme.SPACE_SM)
         form.pack(fill="both", expand=True)
         labels = (("name", "Имя"), ("type", "Тип"), ("host", "Адрес"), ("port", "Порт"),
@@ -172,9 +173,11 @@ class TargetDialog(tk.Toplevel):
             widget.grid(row=row, column=1, sticky="we", pady=2)
         ttk.Checkbutton(form, text="Вход по смарт-карте (токен рабочего места)",
                         variable=self.smartcard).grid(row=len(labels), column=1, sticky="w")
+        ttk.Checkbutton(form, text="RDP без NLA (сервер xrdp)",
+                        variable=self.tls_only).grid(row=len(labels) + 1, column=1, sticky="w")
         self.error = ttk.Label(form, foreground=theme.DANGER)
-        self.error.grid(row=len(labels) + 1, column=0, columnspan=2, sticky="w")
-        ttk.Button(form, text="Готово", command=self._ok).grid(row=len(labels) + 2, column=1, sticky="e")
+        self.error.grid(row=len(labels) + 2, column=0, columnspan=2, sticky="w")
+        ttk.Button(form, text="Готово", command=self._ok).grid(row=len(labels) + 3, column=1, sticky="e")
 
     def _default_port(self, _event=None) -> None:
         self.vars["port"].set(str(DEFAULT_PORTS[self.vars["type"].get()]))
@@ -188,6 +191,7 @@ class TargetDialog(tk.Toplevel):
         values["id"] = values["id"] or f"{values['type']}-{values['host']}".replace(":", "-")[:60]
         values["name"] = values["name"] or values["host"]
         values["smartcard"] = self.smartcard.get()
+        values["security"] = "tls" if self.tls_only.get() and values["type"] == "rdp" else "nla"
         self.on_accept(values)
         self.destroy()
 

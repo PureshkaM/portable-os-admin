@@ -39,6 +39,15 @@ def test_rdp_password_goes_through_stdin_not_argv():
     assert "/smartcard" in launch.client_command({**RDP, "smartcard": True})[0]
 
 
+def test_rdp_without_domain_still_passes_an_empty_one_and_tls_is_per_target():
+    """Без /d: FreeRDP спрашивает домен первым, и пароль из stdin уходит в
+    него (живая загрузка 02.10.2026). TLS -- только если цель так помечена."""
+    argv, _ = launch.client_command({**RDP, "domain": ""})
+    assert "/d:" in argv
+    tls, _ = launch.client_command({**RDP, "security": "tls"})
+    assert "/sec:tls" in tls and "/sec:nla" not in tls
+
+
 def test_ssh_and_vnc_open_our_own_windows():
     for kind in ("ssh", "vnc"):
         argv, needs_password = launch.client_command({**RDP, "type": kind, "port": 22})

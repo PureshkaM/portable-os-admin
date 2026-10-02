@@ -515,6 +515,13 @@ def _valid_target(spec) -> dict:
         out[key] = value
     port = spec.get("port")
     smartcard = spec.get("smartcard", False)
+    # Уровень безопасности RDP: NLA по умолчанию; TLS -- для серверов без
+    # CredSSP (xrdp на Linux-местах). Учётные данные и тогда идут только
+    # внутри TLS с закреплённым сертификатом.
+    security = spec.get("security", "nla")
+    if security not in ("nla", "tls"):
+        raise Refused(400, {"error": "bad_target", "field": "security"})
+    out["security"] = security
     if not NAME_RE.match(out["id"]) or out["type"] not in TARGET_TYPES or not out["host"] \
             or not isinstance(port, int) or not 0 < port < 65536 or not isinstance(smartcard, bool) \
             or not out["pin"]:

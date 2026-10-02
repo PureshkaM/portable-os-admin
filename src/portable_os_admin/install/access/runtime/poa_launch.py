@@ -69,17 +69,20 @@ def freerdp_binary() -> str:
 def client_command(target: dict) -> tuple[list[str], bool]:
     """(argv, нужен ли пароль через stdin) для цели.
 
-    RDP: на весь экран, NLA, сертификат цели закреплён отпечатком, диски,
+    RDP: на весь экран, NLA (или TLS для серверов без NLA -- xrdp), сертификат цели закреплён отпечатком, диски,
     принтеры и USB не пробрасываются (их нет среди ключей -- в FreeRDP 3 они
     выключены по умолчанию), смарт-карта -- только если цель этого требует.
     """
     kind = target["type"]
     if kind == "rdp":
         argv = [freerdp_binary(), f"/v:{target['host']}:{target['port']}",
-                f"/u:{target.get('user', '')}", "/f", "/sec:nla", "/from-stdin",
-                "/dynamic-resolution", "-decorations"]
-        if target.get("domain"):
-            argv.append(f"/d:{target['domain']}")
+                f"/u:{target.get('user', '')}", "/f",
+                f"/sec:{'tls' if target.get('security') == 'tls' else 'nla'}", "/from-stdin",
+                "/dynamic-resolution", "-decorations",
+                # Домен -- всегда, даже пустой: иначе /from-stdin спрашивает
+                # сначала домен, пароль уходит в него, а сам пароль получает
+                # EOF (живая загрузка 02.10.2026: ERRCONNECT_CONNECT_CANCELLED).
+                f"/d:{target.get('domain', '')}"]
         pin = target.get("pin", "")
         if pin.startswith("sha256:"):
             argv.append(f"/cert:fingerprint:sha256:{pin[len('sha256:'):]}")
