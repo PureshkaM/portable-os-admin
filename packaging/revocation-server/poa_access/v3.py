@@ -561,6 +561,11 @@ def _cmd_targets(h, db, obj):
     return {"count": len(specs)}
 
 
+def _cmd_get_targets(h, db, obj):
+    _require_media(db, obj.get("media"))
+    return {"targets": _targets(db, obj["media"])}
+
+
 def _cmd_unblock(h, db, obj):
     _require_media(db, obj.get("media"))
     db.execute("UPDATE media SET blocked = 0 WHERE media_id = ?", (obj["media"],))
@@ -701,10 +706,10 @@ COMMANDS = {
     "activation": _cmd_activation, "targets": _cmd_targets, "unblock": _cmd_unblock,
     "group": _cmd_group, "media_group": _cmd_media_group, "assign": _cmd_assign,
     "policy": _cmd_policy, "distribution": _cmd_distribution, "release": _cmd_release,
-    "vpn": _cmd_vpn, "dst": _cmd_dst, "log": _cmd_log,
+    "vpn": _cmd_vpn, "dst": _cmd_dst, "log": _cmd_log, "get_targets": _cmd_get_targets,
 }
 #: Команды, которые только читают: им не нужен счётчик (повтор безвреден).
-READ_ONLY = {"log"}
+READ_ONLY = {"log", "get_targets"}
 
 
 def admin_command(h, name: str) -> None:

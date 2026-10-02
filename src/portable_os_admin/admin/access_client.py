@@ -141,6 +141,9 @@ class AccessClient:
     def set_targets(self, media: str, targets: list[dict]) -> int:
         return self.command("targets", media=media, targets=targets).get("count", 0)
 
+    def get_targets(self, media: str) -> list[dict]:
+        return self.command("get_targets", media=media).get("targets", [])
+
     def unblock(self, media: str) -> None:
         self.command("unblock", media=media)
 

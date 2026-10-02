@@ -2780,3 +2780,52 @@ def test_a_table_inside_a_wizard_keeps_more_than_one_row_visible(gui_app):
     # Умолчание не трогаем: оно защищает кнопки под таблицей на окне 900x600.
     assert int(default_table.cget("height")) == 1
     assert int(asked_table.cget("height")) == 5
+
+
+def test_access_tab_issues_a_code_and_saves_workplaces(gui_app, tmp_path, monkeypatch):
+    """Вкладка «Доступ» (Э7): код активации показывается, рабочие места уходят
+    на сервер тем списком, что видит администратор."""
+    from portable_os_admin.admin import access_actions
+    from portable_os_admin.gui.screens.media_properties import open_media_properties
+
+    app = gui_app
+    _open_container(app, tmp_path)
+    record = _issue_a_medium(app)
+    app.session.container.data.revocation_server_url = "https://access.example.org"
+    saved = {}
+    monkeypatch.setattr(access_actions, "get_targets", lambda c, m: [
+        {"id": "rdp-1", "name": "РМ", "type": "rdp", "host": "10.0.0.5", "port": 3389,
+         "user": "u", "domain": "", "pin": "sha256:" + "a" * 64, "smartcard": False}])
+    monkeypatch.setattr(access_actions, "issue_activation", lambda c, m: "ABCDE-FGHJK")
+    monkeypatch.setattr(access_actions, "set_targets",
+                        lambda c, m, t: saved.setdefault("targets", t) and len(t))
+
+    app.show_dashboard()
+    app.update()
+    window = open_media_properties(app._current_frame, app, record.media_id)
+    tab = window._access
+    for _ in range(100):
+        app.update()
+        time.sleep(0.02)
+        if tab.targets:
+            break
+    assert [t["host"] for t in tab.targets] == ["10.0.0.5"]
+
+    tab._issue()
+    for _ in range(100):
+        app.update()
+        time.sleep(0.02)
+        if tab.code_var.get():
+            break
+    assert tab.code_var.get() == "ABCDE-FGHJK"
+
+    tab._accept({"id": "ssh-1", "name": "Сервер", "type": "ssh", "host": "10.0.0.9", "port": 22,
+                 "user": "root", "domain": "", "pin": "ssh-ed25519 AAAA", "smartcard": False})
+    tab._save()
+    for _ in range(100):
+        app.update()
+        time.sleep(0.02)
+        if saved:
+            break
+    assert [t["id"] for t in saved["targets"]] == ["rdp-1", "ssh-1"]
+    window.destroy()

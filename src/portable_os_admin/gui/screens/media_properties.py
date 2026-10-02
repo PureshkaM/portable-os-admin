@@ -108,6 +108,8 @@ class MediaPropertiesWindow(PropertiesWindow):
         self._build_integrity()
         self._build_logs()
         self._build_exchange()
+        from .media_access import build_access_tab
+        self._access = build_access_tab(self)
         self._build_revoke()
 
         # Том закрывается вместе с окном, и это не мелочь: окно свойств
