@@ -248,7 +248,7 @@ def test_foreign_architecture_is_refused_only_when_the_machine_cannot_do_it(sess
         OSInstaller(session).run(device, config, b"user-passphrase-123", dry_run=True)
 
 
-def test_log_and_exchange_volumes_are_encrypted_and_formatted_inside(session, make_config):
+def test_the_log_volume_is_encrypted_and_formatted_inside(session, make_config):
     """The same shape of defect as the original one: a partition can be
     LUKS-formatted and then have its filesystem written onto the *raw*
     partition, which silently destroys the header and leaves an unusable
@@ -260,12 +260,13 @@ def test_log_and_exchange_volumes_are_encrypted_and_formatted_inside(session, ma
         return next(part for part in argv if part.startswith("/dev/"))
 
     formatted = [device_of(a) for a in argvs if a[0] == "cryptsetup" and "luksFormat" in a]
-    # the system volume plus the two service volumes
-    assert len(formatted) == 3
+    # the system volume plus the log volume (разметка v3: тома обмена нет)
+    assert len(formatted) == 2
 
     opened = {a[3]: device_of(a) for a in argvs if a[0] == "cryptsetup" and "luksOpen" in a}
     service_mappers = [name for name in opened if name.endswith(("-logs", "-exch"))]
-    assert len(service_mappers) == 2, "log and exchange volumes are not opened"
+    assert service_mappers == [m for m in service_mappers if m.endswith("-logs")] and \
+        len(service_mappers) == 1, "log volume is not opened, or an exchange volume came back"
 
     for mapper in service_mappers:
         partition = opened[mapper]
@@ -289,7 +290,7 @@ def test_each_service_volume_also_holds_the_administrator_key(session, make_conf
     # восстановления на системном: их столько, сколько keyslot остаётся после
     # слотов машин, потому что каждый расходуется безвозвратно.
     recovery = len(machine_binding.recovery_keyslots(make_config()))
-    assert len(added) == recovery + 2
+    assert len(added) == recovery + 1  # служебный том один -- журналы
 
 
 def test_the_boot_key_file_lands_on_the_encrypted_root(session, make_config):
@@ -315,11 +316,10 @@ def test_crypttab_opens_the_service_volumes_from_that_key_file(session):
     layout = build_media_layout(plan_partitions("/dev/sdb", config.disk), "poa-abc", "/mnt/poa-abc")
     layout.luks_uuid = "11111111-1111-1111-1111-111111111111"
     layout.logs_luks_uuid = "22222222-2222-2222-2222-222222222222"
-    layout.exchange_luks_uuid = "33333333-3333-3333-3333-333333333333"
     crypttab = get_backend("debian").config_files(config, layout)["etc/crypttab"]
 
     lines = [line for line in crypttab.splitlines() if line and not line.startswith("#")]
-    assert len(lines) == 3
+    assert len(lines) == 2
     # the root still asks a human; the service volumes never do
     assert lines[0].split("\t")[2] == "none"
     for line in lines[1:]:
@@ -338,8 +338,8 @@ def test_the_medium_record_keeps_the_key_and_the_volume_uuids(session, make_conf
     record = result.media_record
     assert record.service_key_b64
     assert len(base64.b64decode(record.service_key_b64)) >= 32
-    assert record.logs_luks_uuid and record.exchange_luks_uuid
-    assert record.logs_luks_uuid != record.exchange_luks_uuid
+    assert record.logs_luks_uuid
+    assert not record.exchange_luks_uuid  # разметка v3: тома обмена нет
 
 
 def test_service_volumes_are_closed_when_the_install_ends(session, make_config):

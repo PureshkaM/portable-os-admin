@@ -68,7 +68,6 @@ def to_kickstart(config: InstallConfig) -> str:
         f"part /boot/efi --fstype=efi --size={disk.esp_partition_mb}",
         f"part /boot --fstype=ext4 --size={disk.boot_partition_mb}",
         f"part /var/log --fstype=ext4 --size={disk.log_partition_mb}",
-        f"part /mnt/exchange --fstype=ext4 --size={disk.exchange_partition_mb}",
         "part / --fstype=ext4 --grow --encrypted --luks-version=luks2 "
         f"--cipher={config.luks.cipher} --pbkdf={config.luks.kdf}",
         "bootloader --location=mbr",
@@ -121,7 +120,6 @@ def to_preseed(config: InstallConfig) -> str:
         f"{disk.esp_partition_mb} {disk.esp_partition_mb} {disk.esp_partition_mb} fat32 "
         f". {disk.boot_partition_mb} {disk.boot_partition_mb} {disk.boot_partition_mb} ext4 "
         f". {disk.log_partition_mb} {disk.log_partition_mb} {disk.log_partition_mb} ext4 "
-        f". {disk.exchange_partition_mb} {disk.exchange_partition_mb} {disk.exchange_partition_mb} ext4 "
         ". 4096 10000 -1 ext4 .",
         "d-i partman/confirm boolean true",
         "d-i partman/confirm_nooverwrite boolean true",

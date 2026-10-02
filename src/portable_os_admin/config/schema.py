@@ -41,7 +41,8 @@ FIELD_LABELS = {
     "disk.boot_partition_mb": "Размер /boot, МБ",
     "disk.system_image": "Система сжатым образом со слоем изменений",
     "disk.log_partition_mb": "Размер раздела журналов, МБ",
-    "disk.exchange_partition_mb": "Размер раздела обмена, МБ",
+    "disk.state_partition_mb": "Размер зашифрованного тома, МБ",
+    "disk.exchange_partition_mb": "Раздел обмена (упразднён), МБ",
     "machine_binding.slots": "Разных машин на носитель",
     "revocation.enabled": "Отзыв и авторизация сеанса сервером",
     "revocation.url": "Адрес ресурса отзыва",
@@ -143,10 +144,16 @@ class DiskLayoutConfig:
     """
 
     esp_partition_mb: int = 512
+    #: Ядра и initramfs обоих слотов (разметка v3).
     boot_partition_mb: int = 1024
+    #: Зашифрованный том: слой носителя и состояние. Системы в нём больше нет
+    #: -- она в образе на разделе образов, -- поэтому размер фиксированный.
+    state_partition_mb: int = 1024
     log_partition_mb: int = 512
-    exchange_partition_mb: int = 2048
-    # the LUKS/system partition consumes the remainder of the device
+    #: Раздел обмена упразднён (01.10.2026); поле оставлено, чтобы старые
+    #: конфигурации открывались, и ни на что не влияет.
+    exchange_partition_mb: int = 0
+    # the images partition consumes the remainder of the device
 
     #: Хранить систему сжатым образом плюс слой изменений, а не распакованным
     #: деревом.

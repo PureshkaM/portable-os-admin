@@ -200,6 +200,7 @@ def _deployable(directory, kiosk_config):
         kiosk_config, release="trixie", arch="amd64", rootfs_bytes=1024, emulated=False
     )
     metadata.sha256 = distribution.sha256_of(str(archive))
+    _as_v3(metadata)
     distribution.write_metadata(str(directory), metadata)
     distribution.write_checksum(str(archive))
     return directory
@@ -513,6 +514,7 @@ def test_deploying_generates_the_encryption_afresh(session, kiosk_config, big_de
         kiosk_config, release="trixie", arch="amd64", rootfs_bytes=1024, emulated=False
     )
     metadata.sha256 = distribution.sha256_of(str(archive))
+    _as_v3(metadata)
     distribution.write_metadata(str(directory), metadata)
 
     result = OSInstaller(session).deploy_distribution(
@@ -522,10 +524,10 @@ def test_deploying_generates_the_encryption_afresh(session, kiosk_config, big_de
     commands = [" ".join(r.argv) for r in result.plan.results]
     assert any("luksFormat" in c for c in commands), "шифрование не создаётся заново"
     assert any("mount" in c and "squashfs" in c for c in commands), "образ не монтируется"
-    # Система кладётся на носитель одним файлом: `cp` образа в контейнер, а не
-    # раскладка дерева. Дерево остаётся способом на случай `system_image=нет`.
-    assert any("system.squashfs" in c and c.startswith("cp ") for c in commands), (
-        "образ системы не попадает в контейнер"
+    # Система кладётся на носитель одним файлом: `cp` образа в слот A раздела
+    # образов (разметка v3), а не раскладка дерева.
+    assert any(c.endswith("slot-a/rootfs.squashfs") and c.startswith("cp ") for c in commands), (
+        "образ системы не попадает в слот"
     )
     # And the medium gets its own identity.
     assert result.media_record.media_id
@@ -564,6 +566,7 @@ def test_service_volumes_are_mounted_before_the_system_is_copied(
         kiosk_config, release="trixie", arch="amd64", rootfs_bytes=1024, emulated=False
     )
     metadata.sha256 = distribution.sha256_of(str(archive))
+    _as_v3(metadata)
     distribution.write_metadata(str(directory), metadata)
 
     result = OSInstaller(session).deploy_distribution(
@@ -597,6 +600,7 @@ def test_two_deployments_get_different_identities(session, kiosk_config, big_dev
         kiosk_config, release="trixie", arch="amd64", rootfs_bytes=1024, emulated=False
     )
     metadata.sha256 = distribution.sha256_of(str(archive))
+    _as_v3(metadata)
     distribution.write_metadata(str(directory), metadata)
 
     installer = OSInstaller(session)
@@ -702,46 +706,6 @@ def test_redos_installs_every_package_for_the_target_architecture():
     assert "--forcearch" not in native
 
 
-def test_boot_partition_is_mounted_before_the_system_is_copied(session, kiosk_config, big_device, tmp_path):
-    """Иначе ядро ложится на корневой раздел, а сверху монтируется пустой /boot.
-
-    Найдено живым прогоном: дистрибутив копировался целиком, и только потом
-    подключались служебные разделы. Всё, что дистрибутив держит в /boot —
-    ядро, initramfs, записи загрузчика — оказывалось спрятано под пустым
-    разделом. По содержимому корня это не видно: файлы на месте, просто не на
-    том разделе, а носитель не загружается.
-
-    Проверяется способ «распакованным деревом»: он остаётся на случай, когда
-    администратор выключил `disk.system_image`. Порядок при системе из
-    образа -- в тесте про служебные тома: там корень собирается overlay, и
-    разделы подключаются к уже собранному.
-    """
-    kiosk_config.disk.system_image = False
-    directory = tmp_path / "dist"
-    directory.mkdir()
-    archive = directory / distribution.ARCHIVE_NAME
-    archive.write_bytes(b"not a real image")
-    metadata = distribution.DistributionMetadata.for_config(
-        kiosk_config, release="trixie", arch="amd64", rootfs_bytes=1024, emulated=False
-    )
-    metadata.sha256 = distribution.sha256_of(str(archive))
-    distribution.write_metadata(str(directory), metadata)
-
-    result = OSInstaller(session).deploy_distribution(
-        big_device, str(directory), b"user-passphrase", dry_run=True, confirm_device="/dev/sdb"
-    )
-    commands = [" ".join(r.argv) for r in result.plan.results]
-
-    boot_mount = next(i for i, c in enumerate(commands) if "mount" in c and c.endswith("/boot"))
-    copy = next(i for i, c in enumerate(commands) if c.startswith("cp -a"))
-    assert boot_mount < copy, "/boot подключается после копирования — ядро окажется спрятано"
-
-    # А раздел EFI — наоборот, после: на FAT нет владельцев, и `cp -a` на нём
-    # спотыкается о невозможность их сохранить.
-    esp_mount = next(i for i, c in enumerate(commands) if "mount" in c and c.endswith("/boot/efi"))
-    assert esp_mount > copy, "ESP подключён до копирования — cp -a на FAT откажет"
-
-
 def test_a_distribution_without_a_bootloader_is_refused_before_the_medium_is_touched(
     session, big_device, tmp_path
 ):
@@ -764,6 +728,7 @@ def test_a_distribution_without_a_bootloader_is_refused_before_the_medium_is_tou
         config, release="8.0", arch="x86_64", rootfs_bytes=1024, emulated=False
     )
     metadata.sha256 = distribution.sha256_of(str(archive))
+    _as_v3(metadata)
     metadata.has_bootloader = False
     distribution.write_metadata(str(directory), metadata)
 
@@ -791,6 +756,7 @@ def test_the_progress_counter_matches_the_real_number_of_steps(session, kiosk_co
         kiosk_config, release="trixie", arch="amd64", rootfs_bytes=1024, emulated=False
     )
     metadata.sha256 = distribution.sha256_of(str(archive))
+    _as_v3(metadata)
     metadata.has_bootloader = True
     distribution.write_metadata(str(directory), metadata)
 
@@ -805,3 +771,10 @@ def test_the_progress_counter_matches_the_real_number_of_steps(session, kiosk_co
     assert last_index <= total, f"шагов больше, чем обещано: {last_index} из {total}"
     # И обещано не сильно больше, чем есть: полоса не должна замирать на 60%.
     assert total - last_index <= 1, f"обещано {total} шагов, выполнено {last_index}"
+
+
+def _as_v3(metadata):
+    """Дистрибутив разметки v3 (Э2/Э3b): общий initramfs и дерево dm-verity."""
+    metadata.generic_initramfs = True
+    metadata.verity = distribution.VERITY_NAME
+    metadata.verity_root_hash = "ab" * 32

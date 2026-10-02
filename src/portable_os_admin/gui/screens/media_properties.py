@@ -655,6 +655,8 @@ class MediaPropertiesWindow(PropertiesWindow):
         Том подключается явно, а не на каждую операцию: открытие LUKS считает
         функцию вывода ключа, и это заметное время.
         """
+        if not getattr(self.record, "exchange_luks_uuid", ""):
+            return  # разметка v3: раздела обмена нет (упразднён 01.10.2026)
         page = self.tab("Обмен")
 
         top = ttk.Frame(page, style="Card.TFrame")

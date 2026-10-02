@@ -737,6 +737,9 @@ class RedOSInstallBackend(InstallBackend):
             "efibootmgr",
             "dracut",
             "cryptsetup",
+            # Корень -- образ слота под dm-verity (Э3b); в семействе Fedora
+            # veritysetup -- отдельный пакет, в образ сам не приходит.
+            "veritysetup",
             # openssl, because the recovery module derives the recovery
             # passphrase with scrypt and nothing else in a boot
             # environment can do that. The initramfs hook copies it in.
@@ -930,11 +933,13 @@ class RedOSInstallBackend(InstallBackend):
             "check() { return 0; }\n"
             "depends() { echo crypt; }\n"
             "installkernel() {\n"
-            "    instmods overlay squashfs loop\n"
+            "    instmods overlay squashfs loop dm-verity\n"
             "}\n"
             "install() {\n"
             "    # setfattr -- метка корня на tmpfs верхнего слоя (LIVE-2.0).\n"
             "    inst_multiple -o setfattr\n"
+            "    # Корень -- образ слота под dm-verity (Э3b).\n"
+            "    inst_multiple veritysetup sed\n"
             '    inst_hook cmdline 30 "$moddir/poa-overlay-parse.sh"\n'
             '    inst_hook mount 90 "$moddir/poa-overlay-hook.sh"\n'
             "}\n"

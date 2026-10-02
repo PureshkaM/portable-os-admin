@@ -894,11 +894,10 @@ class ReleaseWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
         носитель», но не на вопрос «чей он», а второй как раз и задают, когда
         носитель надо отозвать или заменить.
 
-        **Файлы.** Через раздел обмена едут настройки программ, которые
-        администратор доустановил в образ. Раздел в момент записи уже
-        смонтирован -- положить в него файл здесь ничего не стоит, тогда как
-        после сборки это отдельный заход: открыть контейнер, подключить
-        носитель, открыть том, скопировать.
+        **Файлы.** Так на носитель едут настройки программ, которые
+        администратор доустановил в образ. Раздела обмена больше нет (разметка
+        v3): файлы ложатся в слой носителя на зашифрованном томе и в системе
+        видны в /mnt/exchange только для чтения.
         """
         form = ttk.Frame(body)
         form.pack(anchor="w", fill="x")
@@ -918,7 +917,7 @@ class ReleaseWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
         self.media_owner_var = tk.StringVar(value=self.media_owner)
         add_field(form, 2, "Владелец (ФИО):", self.media_owner_var, width=36)
 
-        files = ttk.LabelFrame(body, text=" Файлы в раздел обмена ", padding=theme.SPACE_SM)
+        files = ttk.LabelFrame(body, text=" Файлы на носитель ", padding=theme.SPACE_SM)
         files.pack(fill="both", expand=True, pady=(theme.SPACE_MD, 0))
         ttk.Label(
             files,
@@ -956,13 +955,13 @@ class ReleaseWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
         )
 
     def _add_exchange_files(self) -> None:
-        chosen = filedialog.askopenfilenames(parent=self, title="Файлы для раздела обмена")
+        chosen = filedialog.askopenfilenames(parent=self, title="Файлы на носитель")
         for path in chosen or ():
             if path not in self.exchange_list.get(0, "end"):
                 self.exchange_list.insert("end", path)
 
     def _add_exchange_directory(self) -> None:
-        chosen = filedialog.askdirectory(parent=self, title="Каталог для раздела обмена")
+        chosen = filedialog.askdirectory(parent=self, title="Каталог на носитель")
         if chosen and chosen not in self.exchange_list.get(0, "end"):
             self.exchange_list.insert("end", chosen)
 
@@ -1009,11 +1008,13 @@ class ReleaseWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
                     except OSError:
                         pass
         config = self.dist_config
-        capacity_mb = int(getattr(getattr(config, "disk", None), "exchange_partition_mb", 0) or 0)
-        if capacity_mb and total > capacity_mb * 1024 * 1024 * 0.9:
+        # Файлы ложатся на зашифрованный том; часть его занята слоем носителя
+        # и состоянием -- им оставляется четверть.
+        capacity_mb = int(getattr(getattr(config, "disk", None), "state_partition_mb", 0) or 0)
+        if capacity_mb and total > capacity_mb * 1024 * 1024 * 0.75:
             self.message_bar.error(
-                f"Выбрано {total / 1024 / 1024:.0f} МБ, а раздел обмена этого дистрибутива — "
-                f"{capacity_mb} МБ. Уберите лишнее или соберите дистрибутив с большим разделом."
+                f"Выбрано {total / 1024 / 1024:.0f} МБ, а зашифрованный том этого дистрибутива — "
+                f"{capacity_mb} МБ. Уберите лишнее или соберите дистрибутив с большим томом."
             )
             return False
         return True

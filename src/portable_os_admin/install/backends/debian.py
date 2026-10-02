@@ -310,6 +310,10 @@ class DebianInstallBackend(InstallBackend):
             "manual_add_modules overlay\n"
             "manual_add_modules squashfs\n"
             "manual_add_modules loop\n"
+            "# Корень -- образ слота под dm-verity (Э3b).\n"
+            "manual_add_modules dm-verity\n"
+            "copy_exec /usr/sbin/veritysetup /usr/sbin/veritysetup 2>/dev/null || "
+            "copy_exec /sbin/veritysetup /sbin/veritysetup\n"
         )
         script = (
             "#!/bin/sh\n"

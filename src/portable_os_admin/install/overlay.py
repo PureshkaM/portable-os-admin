@@ -109,6 +109,14 @@ ROOT_VALUE = "poa"
 #: появится корень, и не остаётся в собранной системе.
 CONTAINER_MOUNT = "/run/poa/container"
 LOWER_MOUNT = "/run/poa/lower"
+#: Раздел образов слотов (разметка v3) -- монтируется initramfs только для
+#: чтения и переезжает в новый корень: на нём держится dm-verity корня.
+IMAGES_MOUNT = "/run/poa/images"
+#: Имя устройства dm-verity корня.
+VERITY_MAPPER = "poa-root"
+#: Файлы слота на разделе образов.
+SLOT_IMAGE = "rootfs.squashfs"
+SLOT_VERITY = "rootfs.verity"
 
 
 def container_paths(container_root: str) -> tuple[str, str, str]:
@@ -259,8 +267,10 @@ mount --make-private "$container" 2>/dev/null || true"""
 # init-bottom не мог смонтировать /dev, run-init отказывался переходить в
 # «не точку монтирования», и initramfs уходил в петлю. Проверка на этом месте
 # делает такой носитель просто загружающимся: скрипт молча уступает.
-[ -f "$__ROOTMNT__/{SYSTEM_IMAGE}" ] || {{
-    echo "poa-overlay: образа системы нет, корень оставлен как есть" >&2
+# С разметкой v3 образ не в контейнере, а на разделе образов; признак
+# «корень наш» -- слой носителя в контейнере.
+[ -d "$__ROOTMNT__/{MEDIUM_DIR}" ] || {{
+    echo "poa-overlay: слоя носителя нет, корень оставлен как есть" >&2
     exit 0
 }}
 
@@ -296,7 +306,6 @@ fail() {{
 
 container={CONTAINER_MOUNT}
 lower={LOWER_MOUNT}
-image="$container/{SYSTEM_IMAGE}"
 medium="$container/{MEDIUM_DIR}"
 state="$container/{STATE_DIR}"
 rw={RW_MOUNT}
@@ -309,13 +318,31 @@ mkdir -p "$container" "$lower" || fail "не создать точки монт�
 
 {container_mount}
 
-[ -f "$image" ] || fail "в контейнере нет $image"
-
 modprobe loop 2>/dev/null || true
 modprobe squashfs 2>/dev/null || true
 modprobe overlay 2>/dev/null || true
+modprobe dm-verity 2>/dev/null || true
 
-mount -t squashfs -o loop,ro "$image" "$lower" || fail "не подключить образ системы"
+# Образ слота -- на разделе образов, под dm-verity (Э3b). Слот и корневой хеш
+# -- из командной строки ядра: с Э4 их передаёт проверяющая ступень после
+# проверки подписи выпуска. Без хеша корень не собирается вовсе: образ без
+# проверки целостности -- это ровно то, от чего verity защищает.
+slot=$(sed -n 's/.*poa\.slot=\([ab]\).*/\1/p' /proc/cmdline)
+roothash=$(sed -n 's/.*poa\.roothash=\([0-9a-f]\{{64\}}\).*/\1/p' /proc/cmdline)
+[ -n "$slot" ] || fail "в командной строке ядра не назван слот (poa.slot)"
+[ -n "$roothash" ] || fail "в командной строке ядра нет корневого хеша образа (poa.roothash)"
+[ -n "${{POA_IMAGES_UUID:-}}" ] || fail "носитель не назвал раздел образов"
+images={IMAGES_MOUNT}
+mkdir -p "$images" || fail "не создать точку монтирования образов"
+poa_wait=0
+while [ ! -b "/dev/disk/by-uuid/$POA_IMAGES_UUID" ] && [ "$poa_wait" -lt 30 ]; do
+    sleep 1; poa_wait=$((poa_wait + 1))
+done
+mount -o ro "/dev/disk/by-uuid/$POA_IMAGES_UUID" "$images" || fail "не смонтировать раздел образов"
+veritysetup open "$images/slot-$slot/{SLOT_IMAGE}" {VERITY_MAPPER} \
+    "$images/slot-$slot/{SLOT_VERITY}" "$roothash" \
+    || fail "образ слота $slot не прошёл проверку целостности"
+mount -t squashfs -o ro /dev/mapper/{VERITY_MAPPER} "$lower" || fail "не подключить образ системы"
 
 [ -d "$medium" ] || fail "в контейнере нет слоя носителя $medium"
 
@@ -354,6 +381,13 @@ mount --make-private "$lower" 2>/dev/null || true
 mount -o move "$lower" "$__ROOTMNT__{LOWER_MOUNT}" 2>/dev/null || \\
     mount --move "$lower" "$__ROOTMNT__{LOWER_MOUNT}" 2>/dev/null || \\
     fail "не перенести образ системы в новый корень"
+
+# Раздел образов -- тоже: на файле образа держится dm-verity нижнего слоя.
+mkdir -p "$__ROOTMNT__{IMAGES_MOUNT}"
+mount --make-private "$images" 2>/dev/null || true
+mount -o move "$images" "$__ROOTMNT__{IMAGES_MOUNT}" 2>/dev/null || \
+    mount --move "$images" "$__ROOTMNT__{IMAGES_MOUNT}" 2>/dev/null || \
+    fail "не перенести раздел образов в новый корень"
 
 # То же для tmpfs верхнего слоя: overlay держится и на нём.
 mkdir -p "$__ROOTMNT__{RW_MOUNT}"

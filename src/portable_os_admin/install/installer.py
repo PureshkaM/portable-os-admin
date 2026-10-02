@@ -53,7 +53,9 @@ from .emulation import probe as probe_emulation
 from .tooling import check_tools_available, resolve_argv
 
 MIB = 1024 * 1024
-MIN_SYSTEM_PARTITION_MB = 4096
+#: Раздел образов -- два слота (A/B); выпуск РЕД ОС весит 4,5 ГБ, Debian 2,3.
+#: С ним и служебными разделами носитель от 16 ГБ.
+MIN_IMAGES_PARTITION_MB = 10240
 #: Keyslot the day-to-day user password lives in. cryptsetup puts the first
 #: passphrase in slot 0; recovery needs to name it to replace it.
 USER_KEYSLOT = 0
@@ -85,7 +87,8 @@ def _remove_build_dir(path: str) -> None:
     shutil.rmtree(path, ignore_errors=True)
 
 
-def recovery_env(config, media_id: str, luks_uuid: str, mapper_name: str = "") -> str:
+def recovery_env(config, media_id: str, luks_uuid: str, mapper_name: str = "",
+                 images_uuid: str = "") -> str:
     """Всё, что модуль восстановления знает об этом носителе.
 
     Отдельной функцией, а не строкой внутри установщика, потому что проверить
@@ -111,6 +114,8 @@ def recovery_env(config, media_id: str, luks_uuid: str, mapper_name: str = "") -
         # Имя тома -- для общего initramfs (Э2): скрипты берут его отсюда.
         f"POA_MAPPER={mapper_name or 'poa-' + media_id}\n"
         f"POA_LUKS_UUID={luks_uuid}\n"
+        # Раздел образов слотов (разметка v3): по нему initramfs находит образ.
+        f"POA_IMAGES_UUID={images_uuid}\n"
         f"POA_RECOVERY_SLOT={recovery[0]}\n"
         f"POA_USER_SLOT={USER_KEYSLOT}\n"
         # Границы recovery-слотов: коды расходуются по одному, и модуль должен
@@ -256,9 +261,9 @@ class OSInstaller:
         required_mb = (
             config.disk.esp_partition_mb
             + config.disk.boot_partition_mb
+            + config.disk.state_partition_mb
             + config.disk.log_partition_mb
-            + config.disk.exchange_partition_mb
-            + MIN_SYSTEM_PARTITION_MB
+            + MIN_IMAGES_PARTITION_MB
         )
         check_install_eligible(device, required_mb * MIB, require_unmounted=require_unmounted)
 
@@ -440,7 +445,7 @@ class OSInstaller:
         warnings = self._check_arch(backend, config)
         if not dry_run:
             # Сборке нужен упаковщик, а не распаковщик: носителя здесь нет.
-            check_tools_available([*backend.required_tools(), "mksquashfs"])
+            check_tools_available([*backend.required_tools(), "mksquashfs", "veritysetup"])
 
         build_id = crypto.new_short_id()
         root = os.path.join(destination, f"rootfs-{build_id}")
@@ -576,6 +581,17 @@ class OSInstaller:
         metadata.has_bootloader = has_bootloader
         metadata.generic_initramfs = generic_initramfs
 
+        if generic_initramfs:
+            # Дерево dm-verity (Э3b): корень носителя проверяется по нему при
+            # каждом чтении. Считается один раз здесь, на диске администратора,
+            # а не на каждом носителе по USB.
+            self._progress.step("Дерево проверки образа (dm-verity)")
+            verity = os.path.join(destination, distribution.VERITY_NAME)
+            result = run(["veritysetup", "format", archive, verity], timeout=BOOTSTRAP_TIMEOUT)
+            metadata.verity = distribution.VERITY_NAME
+            metadata.verity_root_hash = (distribution.parse_root_hash(result.stdout)
+                                         if not dry_run else "0" * 64)
+
         self._progress.step("Подсчёт контрольной суммы")
         if not dry_run:
             _, digest = distribution.write_checksum(archive)
@@ -671,6 +687,13 @@ class OSInstaller:
         # RHEL-семейства бесполезен: собрать его на месте нечем, grub2-install
         # для EFI там отключён. Раньше это выяснялось через час работы, когда
         # носитель уже стёрт.
+        if not (metadata.generic_initramfs and metadata.verity and metadata.verity_root_hash):
+            raise InstallError(
+                "дистрибутив собран до перехода на LiveCD-разметку (нет общего "
+                "initramfs и дерева проверки dm-verity) — пересоберите его.\n"
+                "Носитель не изменён."
+            )
+
         if backend.bootloader_comes_from_packages and not metadata.has_bootloader:
             raise InstallError(
                 "в дистрибутиве нет загрузчика, а собрать его на месте для этого "
@@ -740,54 +763,45 @@ class OSInstaller:
         # разделе. ESP подключается отдельно, ниже: на FAT нет владельцев, и
         # `cp -a` на нём спотыкается о невозможность их сохранить.
         #
-        # При системе из сжатого образа порядок обратный, и по той же
+        # Разметка v3 -- только образ, и порядок обратный по той же
         # причине: корня ещё нет. Том смонтирован как контейнер, а корень --
         # overlay поверх образа, и собрать его можно только после того, как
         # образ оказался в контейнере. Служебные разделы подключаются к уже
         # собранному корню, ниже.
-        if not overlay_root:
-            self._progress.step("Подключение служебных разделов")
-            self._mount_boot_partition(layout, state, plan, dry_run, confirm_device)
-            self._mount_logs_volume(layout, state, plan, dry_run, confirm_device)
-
         self._progress.step("Копирование системы на носитель")
-        if overlay_root:
-            source = self._deploy_system_image(
-                archive, layout, state, plan, dry_run, confirm_device
-            )
-            self._progress.step("Подключение служебных разделов")
-            self._mount_boot_partition(layout, state, plan, dry_run, confirm_device)
-            self._mount_logs_volume(layout, state, plan, dry_run, confirm_device)
-            # То, что образ держит на этих путях, надо перенести на сами
-            # разделы -- иначе пустой раздел накрывает содержимое образа.
-            #
-            # Те же грабли, что были с раскладкой деревом, но с другой
-            # стороны. Там их обошли порядком: разделы подключали до
-            # копирования, и файлы ложились уже на них. Здесь порядок обратный
-            # по необходимости -- корня до сборки overlay не существует, -- и
-            # обойти нечем: ядро и initramfs лежат в образе, а раздел /boot
-            # приходит пустым и прячет их. Запись на настоящую флешку
-            # 09.09.2026 остановилась именно на этом: генератор меню не нашёл
-            # в /boot ни одного ядра.
-            for path in ("boot", "var/log"):
-                run(["sh", "-c",
-                     f"cp -a {overlay.LOWER_MOUNT}/{path}/. {layout.mount_root}/{path}/ 2>/dev/null || true"],
-                    timeout=BOOTSTRAP_TIMEOUT)
-        elif distribution.is_squashfs(metadata.archive):
-            # Эталон монтируется только на чтение, и система копируется из него
-            # в уже открытый том. Копия сохраняет владельцев, права, ACL и
-            # xattr — без последних перестают работать программы с
-            # capabilities, и понять почему по симптомам трудно.
-            source = f"/mnt/poa-dist-{identity.media_id}"
-            run(["mkdir", "-p", source])
-            run(distribution.mount_command(archive, source))
-            state.mounts.append(source)
-            run(distribution.copy_command(source, layout.mount_root), timeout=BOOTSTRAP_TIMEOUT)
-        else:
-            # Дистрибутив версии 1: корень лежит в tar-архиве, и отдельного
-            # смонтированного эталона, из которого можно взять файлы EFI, нет.
-            source = ""
-            run(distribution.unpack_command(archive, layout.mount_root), timeout=BOOTSTRAP_TIMEOUT)
+        source = self._deploy_system_image(
+            archive, layout, state, plan, dry_run, confirm_device,
+            verity=os.path.join(directory, metadata.verity),
+        )
+        layout.slot = "a"
+        layout.root_hash = metadata.verity_root_hash
+        self._progress.step("Подключение служебных разделов")
+        self._mount_boot_partition(layout, state, plan, dry_run, confirm_device)
+        self._mount_logs_volume(layout, state, plan, dry_run, confirm_device)
+        # То, что образ держит на этих путях, надо перенести на сами
+        # разделы -- иначе пустой раздел накрывает содержимое образа.
+        #
+        # Те же грабли, что были с раскладкой деревом, но с другой
+        # стороны. Там их обошли порядком: разделы подключали до
+        # копирования, и файлы ложились уже на них. Здесь порядок обратный
+        # по необходимости -- корня до сборки overlay не существует, -- и
+        # обойти нечем: ядро и initramfs лежат в образе, а раздел /boot
+        # приходит пустым и прячет их. Запись на настоящую флешку
+        # 09.09.2026 остановилась именно на этом: генератор меню не нашёл
+        # в /boot ни одного ядра.
+        run(["sh", "-c",
+             f"cp -a {overlay.LOWER_MOUNT}/var/log/. {layout.mount_root}/var/log/ 2>/dev/null || true"],
+            timeout=BOOTSTRAP_TIMEOUT)
+        # Раздел загрузки (v3): ядро и общий initramfs -- в каталог слота;
+        # остальное /boot образа (каталоги загрузчика) -- в корень раздела,
+        # где их ждут grub-install и опись.
+        slot_boot = f"{layout.mount_root}/boot/slot-{layout.slot}"
+        run(["mkdir", "-p", slot_boot])
+        run(["sh", "-c",
+             f"cd {overlay.LOWER_MOUNT}/boot && for f in vmlinuz-* initrd.img-* initramfs-*.img "
+             f"config-* System.map-* symvers-*; do [ -e \"$f\" ] && cp -a \"$f\" {slot_boot}/; done; "
+             f"for d in */; do [ -d \"$d\" ] && cp -a \"$d\" {layout.mount_root}/boot/; done; true"],
+            timeout=BOOTSTRAP_TIMEOUT)
 
         # Часть того же шага, а не отдельный: копирование не закончено, пока
         # данные не на носителе, а не в кэше страниц. Без этого следующая же
@@ -1044,10 +1058,9 @@ class OSInstaller:
         # создаётся позже, в chroot, и её uid здесь ещё не известен. Том
         # зашифрован, а внутри переносной системы пользователь ровно один,
         # поэтому вольный режим ничего не стоит.
+        # Раздела обмена нет (разметка v3): файлы администратора ложатся в слой
+        # носителя на прежний путь, а fstab подключает его только для чтения.
         run(["mkdir", "-p", f"{layout.mount_root}{EXCHANGE_MOUNTPOINT}"])
-        run(["mount", layout.exchange_mapper_path, f"{layout.mount_root}{EXCHANGE_MOUNTPOINT}"])
-        state.mounts.append(f"{layout.mount_root}{EXCHANGE_MOUNTPOINT}")
-        run(["chmod", "1777", f"{layout.mount_root}{EXCHANGE_MOUNTPOINT}"])
         self._exchange_problems = self._fill_exchange(
             run, layout, getattr(self, "_exchange_files", ())
         )
@@ -1535,13 +1548,10 @@ class OSInstaller:
         # It is deliberately not proof against the medium's own user, who holds
         # the LUKS passphrase -- that was the chosen threat model, and claiming
         # more would be false.
-        self._progress.step("Шифрование разделов журналов и обмена")
+        self._progress.step("Шифрование раздела журналов")
         service_key = identity.service_key = crypto.new_volume_key()
         boot_key = identity.boot_key = crypto.new_volume_key()
-        for partition, mapper in (
-            (layout.logs_partition, layout.logs_mapper_name),
-            (layout.exchange_partition, layout.exchange_mapper_name),
-        ):
+        for partition, mapper in ((layout.logs_partition, layout.logs_mapper_name),):
             self.luks_manager.format(
                 partition,
                 boot_key,
@@ -1577,7 +1587,7 @@ class OSInstaller:
         run(["mkfs.vfat", "-F", "32", "-n", "POA_ESP", layout.esp_partition])
         run(["mkfs.ext4", "-F", "-O", CONSERVATIVE_EXT4_FEATURES, "-L", "POA_BOOT", layout.boot_partition])
         run(["mkfs.ext4", "-F", "-O", CONSERVATIVE_EXT4_FEATURES, "-L", "POA_LOGS", layout.logs_mapper_path])
-        run(["mkfs.ext4", "-F", "-O", CONSERVATIVE_EXT4_FEATURES, "-L", "POA_EXCHANGE", layout.exchange_mapper_path])
+        run(["mkfs.ext4", "-F", "-O", CONSERVATIVE_EXT4_FEATURES, "-L", "POA_IMAGES", layout.images_partition])
 
         self._progress.step("Монтирование носителя")
         # Mount the target tree, outermost first.
@@ -1604,39 +1614,42 @@ class OSInstaller:
         state.mounts.append(volume_mount)
 
     def _deploy_system_image(
-        self, archive, layout, state, plan, dry_run, confirm_device
+        self, archive, layout, state, plan, dry_run, confirm_device, *, verity: str
     ) -> str:
-        """Кладёт образ в контейнер и собирает поверх него корень.
+        """Кладёт образ в слот A раздела образов и собирает поверх него корень.
 
-        Возвращает точку, где смонтирован сам образ: файлы загрузчика для ESP
-        берутся оттуда же, откуда брались из смонтированного эталона раньше.
+        Разметка v3 (Э3b): образ и дерево dm-verity -- файлами в `slot-a/` на
+        незашифрованном разделе образов (секретов в образе нет), слой носителя
+        и состояние -- на зашифрованном томе. Возвращает точку, где смонтирован
+        сам образ: файлы загрузчика для ESP берутся оттуда.
 
         Порядок размонтирования обратный порядку сборки, и он важен: overlay
-        держит нижний слой, нижний слой держит петлевое устройство, петля
-        держит файл в контейнере. Список `state.mounts` разбирается с конца,
-        поэтому здесь достаточно добавлять по мере сборки.
+        держит нижний слой, нижний слой держит петлю, петля -- файл на разделе
+        образов. Список `state.mounts` разбирается с конца.
         """
         run = lambda argv, **kw: self._run(argv, plan, dry_run, confirm_device, **kw)  # noqa: E731
 
         container = layout.container_root
-        # Один файл вместо миллиона: это и втрое меньше байт, и
-        # последовательная запись вместо разбросанной.
-        run(overlay.copy_image_command(archive, container), timeout=BOOTSTRAP_TIMEOUT)
+        images = layout.images_root
+        slot_dir = f"{images}/slot-a"
+        run(["mkdir", "-p", images])
+        run(["mount", "-o", "noatime", layout.images_partition, images])
+        state.mounts.append(images)
+        run(["mkdir", "-p", slot_dir])
+        run(["cp", "--no-preserve=mode", archive, f"{slot_dir}/{overlay.SLOT_IMAGE}"],
+            timeout=BOOTSTRAP_TIMEOUT)
+        run(["cp", "--no-preserve=mode", verity, f"{slot_dir}/{overlay.SLOT_VERITY}"],
+            timeout=BOOTSTRAP_TIMEOUT)
         for argv in overlay.prepare_commands(container):
             run(argv)
-        # sync до сборки overlay: дальше работа пойдёт поверх образа, и
-        # дописывать его в это время нельзя.
         run(["sync"], timeout=BOOTSTRAP_TIMEOUT)
-
         run(["mkdir", "-p", overlay.LOWER_MOUNT])
-        run(overlay.lower_mount_command(container))
+        run(["mount", "-t", "squashfs", "-o", "loop,ro", f"{slot_dir}/{overlay.SLOT_IMAGE}",
+             overlay.LOWER_MOUNT])
         state.mounts.append(overlay.LOWER_MOUNT)
-
         run(["mkdir", "-p", layout.mount_root])
         run(overlay.mount_command(container, layout.mount_root))
         state.mounts.append(layout.mount_root)
-        # Каталоги, поверх которых смонтируется состояние, должны существовать
-        # в системе (иначе нечему брать метку и некуда монтировать).
         for _name, path in overlay.STATE_BINDS:
             run(["mkdir", "-p", f"{layout.mount_root}/{path}"])
         for argv in overlay.state_label_commands(container, layout.mount_root):
@@ -1644,17 +1657,13 @@ class OSInstaller:
         return overlay.LOWER_MOUNT
 
     def _overlay_root(self, config, metadata) -> bool:
-        """Хранить ли систему сжатым образом со слоем изменений.
+        """Система на носителе -- всегда образ под overlay (LiveCD, разметка v3).
 
-        Два условия, и оба обязательны. Первое -- администратор этого не
-        запретил (`disk.system_image`). Второе -- есть что класть: образ
-        берётся из собранного дистрибутива. Установка прямо с установочного
-        DVD собирает дерево на месте, и там способ один -- обычный корень;
-        поэтому решение принимается только там, где метаданные дистрибутива
-        уже прочитаны, и передаётся дальше явно.
+        `disk.system_image = false` (распакованное дерево) больше не
+        поддерживается: в зашифрованном томе v3 нет места под систему, а дерево
+        нельзя проверять dm-verity. Поле читается у старых конфигураций и
+        ни на что не влияет; формат дистрибутива проверен раньше.
         """
-        if not getattr(config.disk, "system_image", True):
-            return False
         return distribution.is_squashfs(metadata.archive)
 
     def _run_bootstrap(self, backend, config, root, image_url, release, plan, dry_run, confirm_device) -> None:
@@ -1755,7 +1764,8 @@ class OSInstaller:
         from . import medium_initrd
 
         layout = identity.layout
-        env = recovery_env(config, identity.media_id, layout.luks_uuid, layout.mapper_name)
+        env = recovery_env(config, identity.media_id, layout.luks_uuid, layout.mapper_name,
+                           layout.images_uuid)
         requests = RecoveryRequest.table(identity.media_id, machine_binding.recovery_keyslots(config))
         crypttab = None
         if backend.initramfs_crypttab_path:
@@ -2157,20 +2167,18 @@ class OSInstaller:
             layout.boot_uuid = str(uuid.uuid4())
             layout.root_uuid = str(uuid.uuid4())
             layout.logs_uuid = str(uuid.uuid4())
-            layout.exchange_uuid = str(uuid.uuid4())
+            layout.images_uuid = str(uuid.uuid4())
             layout.luks_uuid = str(uuid.uuid4())
             layout.logs_luks_uuid = str(uuid.uuid4())
-            layout.exchange_luks_uuid = str(uuid.uuid4())
             return
 
         layout.esp_uuid = _blkid_uuid(layout.esp_partition)
         layout.boot_uuid = _blkid_uuid(layout.boot_partition)
         layout.root_uuid = _blkid_uuid(layout.mapper_path)
         layout.logs_uuid = _blkid_uuid(layout.logs_mapper_path)
-        layout.exchange_uuid = _blkid_uuid(layout.exchange_mapper_path)
+        layout.images_uuid = _blkid_uuid(layout.images_partition)
         layout.luks_uuid = _read_output(LuksManager.uuid_command(layout.system_partition))
         layout.logs_luks_uuid = _read_output(LuksManager.uuid_command(layout.logs_partition))
-        layout.exchange_luks_uuid = _read_output(LuksManager.uuid_command(layout.exchange_partition))
 
 
 @dataclass

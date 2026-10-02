@@ -89,7 +89,7 @@ def test_grub_loads_the_medium_initrd_when_it_is_there():
 
     layout = MediaLayout(
         device="/dev/sdz", esp_partition="/dev/sdz1", boot_partition="/dev/sdz2",
-        system_partition="/dev/sdz3", logs_partition="/dev/sdz4", exchange_partition="/dev/sdz5",
+        system_partition="/dev/sdz3", logs_partition="/dev/sdz4", images_partition="/dev/sdz5",
         mapper_name="poa-x", mapper_path="/dev/mapper/poa-x", mount_root="/mnt/x",
         esp_uuid="AAAA-BBBB", boot_uuid="b", luks_uuid="l",
         logs_luks_uuid="g", exchange_luks_uuid="e",

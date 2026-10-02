@@ -201,6 +201,10 @@ class DistributionMetadata:
     #: второй initrd с его данными (`install/medium_initrd.py`). У дистрибутивов,
     #: собранных раньше, поля нет -- они записываются по-старому.
     generic_initramfs: bool = False
+    #: Дерево dm-verity рядом с образом и корневой хеш (Э3b). Хеш -- то, что
+    #: доверяется: с Э4/Э5 он входит в подписанный выпуск.
+    verity: str = ""
+    verity_root_hash: str = ""
     #: Emulation note when the root was built for a foreign architecture, so
     #: it travels with the artefact instead of being forgotten.
     built_under_emulation: bool = False
@@ -592,6 +596,20 @@ def sanitise_commands(root: str) -> list[list[str]]:
             ["sh", "-c", f"find {root}/{relative} -mindepth 1 ! -type d -delete 2>/dev/null || true"]
         )
     return commands
+
+
+#: Имя файла дерева dm-verity рядом с образом.
+VERITY_NAME = "rootfs.verity"
+
+
+def parse_root_hash(veritysetup_output: str) -> str:
+    """Корневой хеш из вывода `veritysetup format`."""
+    for line in veritysetup_output.splitlines():
+        if line.strip().lower().startswith("root hash:"):
+            value = line.split(":", 1)[1].strip()
+            if len(value) == 64 and all(c in "0123456789abcdef" for c in value):
+                return value
+    raise ValueError("veritysetup не назвал корневой хеш")
 
 
 def is_squashfs(archive: str) -> bool:

@@ -474,7 +474,7 @@ def test_the_installer_hands_the_script_every_part_of_the_medium():
         boot_partition="/dev/sdz2",
         system_partition="/dev/sdz3",
         logs_partition="/dev/sdz4",
-        exchange_partition="/dev/sdz5",
+        images_partition="/dev/sdz5",
         mapper_name="poa-a1b2c3d4",
         mapper_path="/dev/mapper/poa-a1b2c3d4",
         mount_root="/mnt/poa",

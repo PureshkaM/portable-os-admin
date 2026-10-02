@@ -5,11 +5,14 @@ from portable_os_admin.install.luks import LuksManager
 
 def test_plan_partitions_layout_order_and_sizes():
     layout = DiskLayoutConfig(
-        esp_partition_mb=512, boot_partition_mb=1024, log_partition_mb=256, exchange_partition_mb=1024
+        esp_partition_mb=512, boot_partition_mb=1024, state_partition_mb=1024, log_partition_mb=256
     )
     plan = plan_partitions("/dev/sdb", layout)
     labels = [p.label for p in plan.partitions]
-    assert labels == ["POA_ESP", "POA_BOOT", "POA_SYSTEM", "POA_LOGS", "POA_EXCHANGE"]
+    assert labels == ["POA_ESP", "POA_BOOT", "POA_SYSTEM", "POA_LOGS", "POA_IMAGES"]
+    # разметка v3: том LUKS фиксированный, образы -- остаток диска
+    assert (plan.partitions[2].start_mib, plan.partitions[2].end_mib) == (1536, 2560)
+    assert plan.partitions[4].end_mib is None
     assert plan.partitions[0].start_mib == 1
     assert plan.partitions[0].end_mib == 512
     # /boot is its own unencrypted partition after the ESP -- GRUB cannot read

@@ -117,8 +117,8 @@ class BuiltinConfigValidator:
             errors.append("размер раздела /boot должен быть не менее 512 МБ")
         if disk.log_partition_mb < 64:
             errors.append("размер раздела логов должен быть не менее 64 МБ")
-        if disk.exchange_partition_mb < 64:
-            errors.append("размер раздела обмена должен быть не менее 64 МБ")
+        if disk.state_partition_mb < 512:
+            errors.append("размер зашифрованного тома должен быть не менее 512 МБ")
 
         if config.arch and config.arch not in SUPPORTED_ARCH:
             errors.append(

@@ -24,9 +24,6 @@ def fstab(layout: MediaLayout, config: InstallConfig) -> str:
     # put a file of their own, so in kiosk mode it is also the one place a
     # brought-in binary would be run from.
     wait = f"nofail,x-systemd.device-timeout={SERVICE_DEVICE_TIMEOUT}"
-    exchange_options = (
-        f"{kiosk_mode.HARDENED_OPTS},{wait}" if kiosk else f"defaults,{wait}"
-    )
     # Nothing in /var/log is ever meant to be executed, on any profile, but
     # it is only hardened in kiosk mode -- a console system's administrator
     # may legitimately want to run something from there while debugging.
@@ -44,7 +41,10 @@ def fstab(layout: MediaLayout, config: InstallConfig) -> str:
         # must still boot, not drop to an emergency shell the user has no
         # password for.
         (layout.logs_mapper_path, LOG_MOUNTPOINT, "ext4", log_options, "0", "2"),
-        (layout.exchange_mapper_path, EXCHANGE_MOUNTPOINT, "ext4", exchange_options, "0", "2"),
+        # Раздела обмена нет (разметка v3): файлы администратора лежат в слое
+        # носителя на прежнем пути и подключаются сами на себя -- только
+        # чтение, без запуска (настройки программ, а не программы).
+        (EXCHANGE_MOUNTPOINT, EXCHANGE_MOUNTPOINT, "none", f"bind,ro,{kiosk_mode.HARDENED_OPTS}", "0", "0"),
     ]
     # The kiosk takes execution away from everything the user can write to.
     # This is the one restriction of the mode that no desktop setting can
@@ -110,5 +110,4 @@ def crypttab(layout: MediaLayout, config: InstallConfig, *, keyscript: bool) -> 
         "# <target name> <source device> <key file> <options>\n"
         f"{layout.mapper_name}\tUUID={layout.luks_uuid}\tnone\t{root_options}\n"
         f"{layout.logs_mapper_name}\tUUID={layout.logs_luks_uuid}\t{key}\t{service_options}\n"
-        f"{layout.exchange_mapper_name}\tUUID={layout.exchange_luks_uuid}\t{key}\t{service_options}\n"
     )

@@ -2323,6 +2323,11 @@ def test_numbers_are_aligned_right(gui_app, tmp_path):
     # по строке — так, как до него доходит человек.
     from portable_os_admin.gui.screens.media_properties import open_media_properties
 
+    # Вкладка «Обмен» есть только у носителей прежней разметки (с томом
+    # обмена); разметка v3 его не имеет. Таблица с размерами -- там.
+    for record in app.session.container.data.media_records:
+        if record.media_id.endswith("46aed677"):
+            record.exchange_luks_uuid = "legacy-exchange"
     window = open_media_properties(dashboard, app, "46aed677")
     app.update()
     table = window.files_table

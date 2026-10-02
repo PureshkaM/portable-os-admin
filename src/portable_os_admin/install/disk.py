@@ -60,7 +60,8 @@ class MediaLayout:
     boot_partition: str
     system_partition: str  # the raw partition holding the LUKS container
     logs_partition: str
-    exchange_partition: str
+    #: Раздел образов слотов (разметка v3): squashfs и дерево dm-verity.
+    images_partition: str
     mapper_name: str
     mapper_path: str
     mount_root: str
@@ -76,12 +77,19 @@ class MediaLayout:
     luks_uuid: str = ""
     #: filesystem UUIDs *inside* the opened mappings
     logs_uuid: str = ""
-    exchange_uuid: str = ""
+    #: ФС раздела образов -- по нему initramfs находит образ слота.
+    images_uuid: str = ""
     #: LUKS container UUIDs of the two service partitions. Separate from the
     #: filesystem UUIDs above because crypttab addresses the container and
     #: fstab addresses what is inside it.
     logs_luks_uuid: str = ""
+    #: Раздела обмена в разметке v3 нет (упразднён 01.10.2026). Поле остаётся
+    #: пустым: его читают отзыв и записи контейнера, где пусто -- «нет тома».
     exchange_luks_uuid: str = ""
+    #: Слот, в который пишется образ, и корневой хеш его дерева dm-verity --
+    #: их называет командная строка ядра в grub.cfg (до Э4).
+    slot: str = "a"
+    root_hash: str = ""
 
     @property
     def container_root(self) -> str:
@@ -95,20 +103,18 @@ class MediaLayout:
         return f"{self.mount_root}-container"
 
     @property
-    def logs_mapper_name(self) -> str:
-        return f"{self.mapper_name}-logs"
+    def images_root(self) -> str:
+        """Куда монтируется раздел образов на время записи."""
+        return f"{self.mount_root}-images"
 
     @property
-    def exchange_mapper_name(self) -> str:
-        return f"{self.mapper_name}-exch"
+    def logs_mapper_name(self) -> str:
+        return f"{self.mapper_name}-logs"
 
     @property
     def logs_mapper_path(self) -> str:
         return f"/dev/mapper/{self.logs_mapper_name}"
 
-    @property
-    def exchange_mapper_path(self) -> str:
-        return f"/dev/mapper/{self.exchange_mapper_name}"
 
 
 @dataclass
@@ -159,24 +165,27 @@ class MediaIdentity:
     boot_manifest: dict[str, str] = field(default_factory=dict)
 
 
+#: Версия разметки носителя. 3 -- LIVE-2.0 (Э3b/Э19, 02.10.2026): образы
+#: слотов A/B файлами на отдельном разделе, LUKS -- только слой носителя и
+#: состояние, раздела обмена нет. Решение -- `docs/LIVE-2.0.md`, «Э3b/Э19».
+LAYOUT_VERSION = 3
+
+
 def plan_partitions(device: str, layout: DiskLayoutConfig) -> PartitionPlan:
+    """ESP, ядра слотов, LUKS-хранилище и журналы -- фиксированного размера;
+    образы слотов -- всё остальное. Метки `POA_BOOT` и `POA_SYSTEM` прежние:
+    смысл тот же -- раздел загрузки (теперь с ядрами слотов) и зашифрованный
+    том носителя (теперь без системы: она в образе на `POA_IMAGES`)."""
     esp_end = layout.esp_partition_mb
     boot_end = esp_end + layout.boot_partition_mb
-    log_size = layout.log_partition_mb
-    exchange_size = layout.exchange_partition_mb
-
-    # The LUKS/system partition eats everything between /boot and the two
-    # trailing service partitions, whose sizes are fixed by the config -- so
-    # they are carved out from the *end* of the disk first and the system
-    # partition's end is expressed as a negative offset.
-    trailing_reserved_mib = log_size + exchange_size
-
+    state_end = boot_end + layout.state_partition_mb
+    logs_end = state_end + layout.log_partition_mb
     partitions = (
         PartitionSpec(1, "POA_ESP", "fat32", 1, esp_end),
         PartitionSpec(2, "POA_BOOT", "ext4", esp_end, boot_end),
-        PartitionSpec(3, "POA_SYSTEM", "", boot_end, NegativeOffset(trailing_reserved_mib)),
-        PartitionSpec(4, "POA_LOGS", "ext4", NegativeOffset(trailing_reserved_mib), NegativeOffset(exchange_size)),
-        PartitionSpec(5, "POA_EXCHANGE", "ext4", NegativeOffset(exchange_size), None),
+        PartitionSpec(3, "POA_SYSTEM", "", boot_end, state_end),
+        PartitionSpec(4, "POA_LOGS", "ext4", state_end, logs_end),
+        PartitionSpec(5, "POA_IMAGES", "ext4", logs_end, None),
     )
     return PartitionPlan(device=device, partitions=partitions)
 
@@ -184,14 +193,14 @@ def plan_partitions(device: str, layout: DiskLayoutConfig) -> PartitionPlan:
 def build_media_layout(
     plan: PartitionPlan, mapper_name: str, mount_root: str, media_id: str = ""
 ) -> MediaLayout:
-    esp, boot, system, logs, exchange = (plan.partition_path(spec) for spec in plan.partitions)
+    esp, boot, system, logs, images = (plan.partition_path(spec) for spec in plan.partitions)
     return MediaLayout(
         device=plan.device,
         esp_partition=esp,
         boot_partition=boot,
         system_partition=system,
         logs_partition=logs,
-        exchange_partition=exchange,
+        images_partition=images,
         mapper_name=mapper_name,
         mapper_path=f"/dev/mapper/{mapper_name}",
         mount_root=mount_root,

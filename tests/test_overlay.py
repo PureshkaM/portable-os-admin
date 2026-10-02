@@ -251,6 +251,8 @@ def _deployed_commands(session, config, device, tmp_path):
         config, release="trixie", arch="amd64", rootfs_bytes=1024, emulated=False
     )
     metadata.sha256 = distribution.sha256_of(str(archive))
+    metadata.generic_initramfs, metadata.verity, metadata.verity_root_hash = (
+        True, distribution.VERITY_NAME, "ab" * 32)
     distribution.write_metadata(str(directory), metadata)
 
     result = OSInstaller(session).deploy_distribution(
@@ -269,8 +271,12 @@ def test_the_system_reaches_the_medium_as_one_file(session, kiosk_config, big_de
     """
     commands = _deployed_commands(session, kiosk_config, big_device, tmp_path)
 
-    assert any(c.startswith("cp ") and c.endswith("system.squashfs") for c in commands), (
-        "образ системы не кладётся в контейнер"
+    # Разметка v3: образ и дерево dm-verity -- в слот A раздела образов.
+    assert any(c.startswith("cp ") and c.endswith("-images/slot-a/rootfs.squashfs") for c in commands), (
+        "образ системы не кладётся в слот"
+    )
+    assert any(c.startswith("cp ") and c.endswith("-images/slot-a/rootfs.verity") for c in commands), (
+        "дерево dm-verity не кладётся рядом с образом"
     )
     assert not any(c.startswith("cp -a") for c in commands), (
         "система всё ещё раскладывается деревом"
@@ -317,20 +323,14 @@ def test_the_medium_learns_to_assemble_that_root_at_boot(kiosk_config, layout):
     )
 
 
-def test_the_administrator_can_turn_the_image_off(session, kiosk_config, big_device, tmp_path):
-    """Прежний способ остаётся -- на случай сравнения или отказа overlay.
-
-    Тогда система раскладывается деревом, как раньше, и никакого overlay на
-    носителе нет: иначе выключатель обещал бы больше, чем делает.
-    """
+def test_the_image_cannot_be_turned_off_any_more(session, kiosk_config, big_device, tmp_path):
+    """Разметка v3 (Э3b): система -- только образ под dm-verity. Прежний
+    выключатель `disk.system_image` читается у старых конфигураций и ни на что
+    не влияет: дерево не поместилось бы в зашифрованный том и не проверялось
+    бы verity."""
     kiosk_config.disk.system_image = False
     commands = _deployed_commands(session, kiosk_config, big_device, tmp_path)
-
-    assert any(c.startswith("cp -a") for c in commands), "система не разложена деревом"
-    assert not any(c.startswith("mount -t overlay") for c in commands), (
-        "overlay собирается вопреки настройке"
-    )
-
+    assert any(c.startswith("mount -t overlay") for c in commands)
 
 def test_the_boot_menu_is_written_by_us_when_the_root_is_an_image(layout):
     """Генератор дистрибутива на overlay-корне не работает, и это не мелочь.
@@ -417,7 +417,8 @@ def test_the_menu_finds_the_kernel_by_name_on_the_medium(layout):
     config = InstallConfig.create_default("stick", "debian")
     script = get_backend("debian").grub_config_script(layout, config, "/boot/grub/grub.cfg")
 
-    assert "ls -1 /boot/vmlinuz-*" in script
+    # Разметка v3: ядро -- в каталоге слота.
+    assert "ls -1 /boot/slot-a/vmlinuz-*" in script
     assert "sort -V | tail -1" in script, "берётся не последняя версия ядра"
     assert "initrd.img-" in script and "initramfs-" in script, "учтено имя только одного семейства"
     assert "exit 1" in script, "при отсутствии ядра меню всё равно пишется"
@@ -448,12 +449,13 @@ def test_what_the_image_keeps_on_the_service_volumes_is_carried_onto_them(
     assert min(copied) > mounted_boot, "перенос идёт до подключения разделов"
 
     joined = "\n".join(commands[i] for i in copied)
-    assert "/boot/." in joined, "ядро остаётся спрятанным под пустым /boot"
+    assert "slot-a" in joined, "ядро остаётся спрятанным под пустым /boot"
     assert "/var/log/." in joined, "каталоги служб остаются в образе"
 
-    # И всё это -- до сборки initramfs и меню, которым эти файлы нужны.
-    built = next(i for i, c in enumerate(commands) if "initramfs" in c or "dracut" in c)
-    assert max(copied) < built, "образ переносится после того, как его содержимое уже понадобилось"
+    # И всё это -- до меню загрузчика, которому эти файлы нужны (initramfs с
+    # Э2 общий и на записи не собирается).
+    menu = next(i for i, c in enumerate(commands) if "grub.cfg" in c and "/run/poa/lower" not in c)
+    assert max(copied) < menu, "образ переносится после того, как его содержимое уже понадобилось"
 
 
 def test_the_encrypted_root_is_named_in_the_initramfs_explicitly(layout):
@@ -507,6 +509,8 @@ def test_the_medium_gets_the_scripts_that_could_not_be_in_the_image(
         kiosk_config, release="trixie", arch="amd64", rootfs_bytes=1024, emulated=False
     )
     metadata.sha256 = distribution.sha256_of(str(archive))
+    metadata.generic_initramfs, metadata.verity, metadata.verity_root_hash = (
+        True, distribution.VERITY_NAME, "ab" * 32)
     distribution.write_metadata(str(directory), metadata)
 
     result = OSInstaller(session).deploy_distribution(
@@ -514,8 +518,13 @@ def test_the_medium_gets_the_scripts_that_could_not_be_in_the_image(
     )
     written = [" ".join(r.argv) for r in result.plan.results]
 
-    assert any("local-bottom" in c for c in written), (
-        "хук, собирающий корень из образа, не доезжает до носителя"
+    # С Э2 хуки, собирающие корень, -- в образе (общий initramfs); носителю
+    # пишется только его второй initrd с данными носителя.
+    assert any(c.endswith("/boot/poa-medium.img") for c in written), (
+        "второй initrd носителя не пишется"
+    )
+    assert not any("local-bottom" in c for c in written), (
+        "хуки с данными носителя заслонили бы общие из образа"
     )
     # А то, что и так лежит в образе, второй раз не пишется.
     assert not any("poa-kiosk-apply" in c for c in written), (
@@ -657,7 +666,7 @@ def test_the_script_looks_for_the_image_before_it_moves_the_root():
         "etc/initramfs-tools/scripts/local-bottom/poa-overlay"
     ][0]
 
-    assert script.index('[ -f "$rootmnt/') < script.index('mount -o move "$rootmnt"')
+    assert script.index('[ -d "$rootmnt/') < script.index('mount -o move "$rootmnt"')
 
 
 # -- LIVE-2.0, этап Э3: корень в оперативной памяти ---------------------------

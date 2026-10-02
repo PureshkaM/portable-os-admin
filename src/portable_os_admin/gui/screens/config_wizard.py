@@ -530,11 +530,10 @@ class ConfigWizardFrame(WizardFrame):
             _, row = add_field(
                 form, row, "Раздел логов (МБ):", self.log_mb_var, hint="не менее 64 МБ", width=10
             )
-        self.exchange_mb_var = tk.StringVar(value=str(disk.exchange_partition_mb))
+        self.state_mb_var = tk.StringVar(value=str(disk.state_partition_mb))
         _, row = add_field(
-            form, row, "Раздел обмена (МБ):", self.exchange_mb_var,
-            hint="через него администратор передаёт пользователю файлы и настройки "
-            "доустановленных программ; не менее 64 МБ",
+            form, row, "Зашифрованный том (МБ):", self.state_mb_var,
+            hint="настройки носителя и сохраняемое между сеансами; не менее 512 МБ",
             width=10,
         )
         self.cipher_var = tk.StringVar(value=luks.cipher)
@@ -620,7 +619,7 @@ class ConfigWizardFrame(WizardFrame):
             (self.esp_mb_var, "esp_partition_mb", 0),
             (self.boot_mb_var, "boot_partition_mb", 0),
             (self.log_mb_var, "log_partition_mb", 0),
-            (self.exchange_mb_var, "exchange_partition_mb", 0),
+            (self.state_mb_var, "state_partition_mb", 0),
         ):
             try:
                 setattr(disk, attr, int(var.get().strip()))
@@ -656,8 +655,8 @@ class ConfigWizardFrame(WizardFrame):
         if disk.log_partition_mb < 64:
             self.message_bar.error("Размер раздела логов должен быть не менее 64 МБ.")
             return False
-        if disk.exchange_partition_mb < 64:
-            self.message_bar.error("Размер раздела обмена должен быть не менее 64 МБ.")
+        if disk.state_partition_mb < 512:
+            self.message_bar.error("Размер зашифрованного тома должен быть не менее 512 МБ.")
             return False
         if luks.cipher not in LUKS_CIPHERS:
             self.message_bar.error(

@@ -674,7 +674,8 @@ def test_service_volumes_get_more_than_the_default_wait():
         option = f"x-systemd.device-timeout={SERVICE_DEVICE_TIMEOUT}"
 
         for line in files["etc/fstab"].splitlines():
-            if "/var/log" in line or "/mnt/exchange" in line:
+            # /mnt/exchange в разметке v3 -- привязка каталога, а не том.
+            if "/var/log" in line:
                 assert option in line, f"{family}: том службы в fstab ждёт по умолчанию: {line}"
 
         for line in files["etc/crypttab"].splitlines():

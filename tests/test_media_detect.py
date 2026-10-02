@@ -278,8 +278,8 @@ def test_both_ways_of_writing_a_medium_go_through_one_helper():
     from portable_os_admin.install import installer as installer_module
 
     source = inspect.getsource(installer_module)
-    mounts = source.count('run(["mount", layout.exchange_mapper_path')
-    assert mounts == 1, "раздел обмена монтируется больше чем в одном месте -- пути разъехались"
+    # Раздела обмена больше нет (разметка v3) -- и его монтирования тоже.
+    assert "exchange_mapper_path" not in source, "вернулся том обмена"
 
     assert "def _write_medium_files(" in source, "общего помощника нет"
     # С Э10 (02.10.2026) путь записи один: установка с образа -- это сборка и
