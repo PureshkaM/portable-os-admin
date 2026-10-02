@@ -156,37 +156,73 @@ def test_probe_tells_refused_from_up():
     assert accessd.probe("127.0.0.1", port) == "refused"
 
 
-def _descriptor(root, working, config, serial):
-    trust = sys.modules.get("poa_trust") or _load("poa_trust", RUNTIME / "poa_trust.py")
+def _trust():
+    return sys.modules.get("poa_trust") or _load("poa_trust", RUNTIME / "poa_trust.py")
+
+
+def _gost_root(role):
+    trust = _trust()
+    gost = sys.modules["poa_gost"]
+    return trust.GostSigner(gost.new_private_key(gost.TC26_256_A), role)
+
+
+def _descriptor(root, working, config, serial, root_updates=None):
+    trust = _trust()
     cert = trust.certify(root, trust.raw_public(working), 2**40, 1)
     payload = {"serial": serial, "endpoints": [config["endpoint"]], "tls_spki": [],
                "server_sign_keys": config["server_sign_keys"], "fallback": []}
-    return trust.sign_document(working, cert, "descriptor", payload)
+    document = trust.sign_document(working, cert, "descriptor", payload)
+    if root_updates:
+        document["root_updates"] = root_updates
+    return document
 
 
 def test_descriptor_is_taken_only_if_signed_by_the_org_root_and_newer(world):
     from cryptography.hazmat.primitives.asymmetric import ed25519
 
     server, service, _sock, _runner, tmp_path = world
-    trust = _load("poa_trust", RUNTIME / "poa_trust.py")
-    root, working = ed25519.Ed25519PrivateKey.generate(), ed25519.Ed25519PrivateKey.generate()
-    service.config["root_public"] = trust.b64(trust.raw_public(root))
+    main, reserve = _gost_root("main"), _gost_root("reserve")
+    working = ed25519.Ed25519PrivateKey.generate()
+    service.config["roots"] = [main.entry, reserve.entry]
+    service.config["roots_state"] = str(tmp_path / "roots.json")
     service.config["descriptor"] = str(tmp_path / "descriptor.json")
     assert service.refresh_descriptor() is False          # сервер ещё не публиковал
 
-    server.admin_cmd("descriptor", document=_descriptor(root, working, service.config, 5))
+    server.admin_cmd("descriptor", document=_descriptor(main, working, service.config, 5))
     assert service.refresh_descriptor() is True
     assert service.descriptor()["serial"] == 5
     assert service.server()["endpoint"] == service.config["endpoint"]
 
     # Подлинный, но старый -- откат на перехваченный адрес -- не принимается.
-    server.admin_cmd("descriptor", document=_descriptor(root, working, service.config, 4))
+    server.admin_cmd("descriptor", document=_descriptor(main, working, service.config, 4))
     assert service.refresh_descriptor() is False
     # Подписанный чужим корнем -- тоже.
-    stranger = ed25519.Ed25519PrivateKey.generate()
-    server.admin_cmd("descriptor", document=_descriptor(stranger, working, service.config, 9))
+    server.admin_cmd("descriptor", document=_descriptor(_gost_root("main"), working, service.config, 9))
     assert service.refresh_descriptor() is False
     assert service.descriptor()["serial"] == 5
+
+
+def test_a_root_replacement_rides_with_the_descriptor_and_persists(world):
+    """Основной корень утерян: резервный заменяет его, замена едет с описателем,
+    носитель её принимает, запоминает -- и дальше верит новому корню."""
+    from cryptography.hazmat.primitives.asymmetric import ed25519
+
+    server, service, _sock, _runner, tmp_path = world
+    trust = _trust()
+    main, reserve, new_main = _gost_root("main"), _gost_root("reserve"), _gost_root("main")
+    working = ed25519.Ed25519PrivateKey.generate()
+    service.config["roots"] = [main.entry, reserve.entry]
+    service.config["roots_state"] = str(tmp_path / "roots.json")
+    service.config["descriptor"] = str(tmp_path / "descriptor.json")
+    replacement = trust.root_replacement(reserve, main.entry, new_main.entry, 1)
+    server.admin_cmd("descriptor", document=_descriptor(new_main, working, service.config, 7,
+                                                         [replacement]))
+    assert service.refresh_descriptor() is True
+    ids = {trust.key_id(a) for a in service.anchors()}
+    assert trust.key_id(new_main.entry) in ids and trust.key_id(main.entry) not in ids
+    # Старый основной корень больше не принимается.
+    server.admin_cmd("descriptor", document=_descriptor(main, working, service.config, 8))
+    assert service.refresh_descriptor() is False
 
 
 def test_without_org_root_descriptors_are_ignored(world):
@@ -236,3 +272,24 @@ def test_vpn_is_up_only_once_the_route_to_the_target_goes_through_the_tunnel(wor
     assert ask(sock, {"cmd": "status"})["vpn"] == "connecting"
     runner.tunnel = True
     assert ask(sock, {"cmd": "status"})["vpn"] == "up"
+
+
+def test_a_revocation_list_is_remembered_even_if_the_next_descriptor_omits_it(world):
+    from cryptography.hazmat.primitives.asymmetric import ed25519
+
+    server, service, _sock, _runner, tmp_path = world
+    trust = _trust()
+    main, reserve = _gost_root("main"), _gost_root("reserve")
+    good, bad = ed25519.Ed25519PrivateKey.generate(), ed25519.Ed25519PrivateKey.generate()
+    service.config.update(roots=[main.entry, reserve.entry], roots_state=str(tmp_path / "r.json"),
+                          revoked_state=str(tmp_path / "rev.json"),
+                          descriptor=str(tmp_path / "d.json"))
+    document = _descriptor(main, good, service.config, 5)
+    document["revoked"] = trust.revocation_list(reserve, [trust.raw_public(bad)], 1)
+    server.admin_cmd("descriptor", document=document)
+    assert service.refresh_descriptor() is True
+    # Отозванный ключ выпускает описатель без списка отзыва -- не проходит.
+    server.admin_cmd("descriptor", document=_descriptor(main, bad, service.config, 6))
+    assert service.refresh_descriptor() is False
+    assert service.descriptor()["serial"] == 5
+

@@ -48,6 +48,10 @@ VPN_RUN = "/run/openvpn/poa"
 #: Принятый описатель сервера -- в постоянном состоянии (state/poa).
 DESCRIPTOR = "/var/lib/poa/descriptor.json"
 TLS_PIN = "/var/lib/poa/tls-pin"
+#: Якоря после замены корня (Э18) -- постоянное состояние.
+ROOTS = "/var/lib/poa/roots.json"
+#: Последний подлинный список отзыва рабочих ключей (Э18).
+REVOKED = "/var/lib/poa/revoked.json"
 #: Поправлять часы, если расходятся с сервером больше чем на столько секунд:
 #: OpenVPN-клиент проверяет сроки сертификата шлюза.
 CLOCK_SKEW = 300
@@ -86,17 +90,63 @@ class Service:
         except (OSError, ValueError, KeyError):
             return None
 
+    def anchors(self) -> list[dict]:
+        """Якоря -- корни организации: с записи носителя (`roots` в access.json,
+        хранилище LUKS), а после замены корня -- из постоянного состояния."""
+        try:
+            with open(self.config.get("roots_state", ROOTS), encoding="utf-8") as handle:
+                return json.load(handle)["roots"]
+        except (OSError, ValueError, KeyError):
+            return list(self.config.get("roots") or [])
+
+    def _apply_root_updates(self, updates) -> list[dict]:
+        """Замены корня, приехавшие с описателем. Каждую подписывает другой
+        корень; принятые ложатся в состояние -- и переживают перезагрузку."""
+        anchors = self.anchors()
+        changed = False
+        for update in updates if isinstance(updates, list) else []:
+            try:
+                anchors = poa_trust.apply_root_replacement(anchors, update)
+                changed = True
+            except (poa_trust.TrustError, KeyError, TypeError):
+                continue
+        if changed:
+            poa_client.atomic_write(self.config.get("roots_state", ROOTS),
+                                    poa_client.canonical({"roots": anchors}))
+        return anchors
+
+    def _revocation(self, anchors, incoming) -> dict | None:
+        """Самый свежий подлинный список отзыва: сохранённый или пришедший.
+        Запомненный не «забывается», если следующий описатель придёт без него."""
+        path = self.config.get("revoked_state", REVOKED)
+        try:
+            with open(path, encoding="utf-8") as handle:
+                stored = json.load(handle)
+        except (OSError, ValueError):
+            stored = None
+        best = stored
+        if isinstance(incoming, dict):
+            try:
+                body = poa_trust.check_revocation_list(anchors, incoming)
+                if stored is None or body["serial"] > stored["list"]["serial"]:
+                    best = incoming
+                    poa_client.atomic_write(path, poa_client.canonical(incoming))
+            except (poa_trust.TrustError, KeyError, TypeError):
+                pass
+        return best
+
     def refresh_descriptor(self) -> bool:
         """Забирает описатель у сервера; принимает подлинный и более новый (Э18)."""
-        root = self.config.get("root_public")
-        if not root:
+        if not self.anchors():
             return False
         try:
             status, data = self.client().endpoint.request("GET", "/v3/descriptor")
             if status != 200:
                 return False
             document = json.loads(data)
-            accepted = poa_trust.newer_descriptor(root, document, self.descriptor())
+            anchors = self._apply_root_updates(document.get("root_updates"))
+            revoked = self._revocation(anchors, document.get("revoked"))
+            accepted = poa_trust.newer_descriptor(anchors, document, self.descriptor(), revoked)
         except (poa_client.AccessError, poa_trust.TrustError, ValueError):
             return False
         if accepted is None:

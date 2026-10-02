@@ -950,6 +950,7 @@ class OSInstaller:
         администратора, по обычной проверке УЦ; http-адрес (стенд) остаётся
         без отпечатка -- клиент носителя такой адрес не примет, кроме петли.
         """
+        from ..admin import org_root
         from .access import files as access_files
 
         if not access_files.is_enabled(config):
@@ -962,7 +963,7 @@ class OSInstaller:
         self._write_file(
             f"{layout.mount_root}/{access_files.CONFIG_PATH}",
             access_files.medium_config(config, identity.media_id, key_pem, pins,
-                                       self.session.container.data.org_root_public_b64),
+                                       org_root.anchors(self.session.container)),
             plan, dry_run, confirm_device, mode=0o600,
         )
         if pins:

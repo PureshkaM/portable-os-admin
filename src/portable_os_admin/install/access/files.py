@@ -28,7 +28,7 @@ VPN_UNIT_PATH = "etc/systemd/system/poa-vpn@.service"
 AUTOSTART_PATH = "etc/xdg/autostart/poa-connect.desktop"
 RUNTIME_FILES = ("poa_client.py", "poa_accessd.py", "poa_launch.py", "poa_connect.py",
                  "poa_qr.py", "poa_ssh.py", "poa_vnc.py", "poa_events.py", "poa_firewall.py",
-                 "poa_trust.py")
+                 "poa_trust.py", "poa_gost.py")
 FIREWALL_SERVICE_NAME = "poa-firewall.service"
 FIREWALL_SERVICE_PATH = f"etc/systemd/system/{FIREWALL_SERVICE_NAME}"
 SYSUSERS_PATH = "usr/lib/sysusers.d/poa-access.conf"
@@ -152,7 +152,7 @@ def curl_pins(spki_hex) -> str:
 
 
 def medium_config(config: InstallConfig, media_id: str, server_key_pem: str,
-                  tls_spki: tuple[str, ...] = (), root_public: str = "") -> str:
+                  tls_spki: tuple[str, ...] = (), roots: list | None = None) -> str:
     """`/etc/poa/access.json` этого носителя."""
     from cryptography.hazmat.primitives import serialization
 
@@ -167,6 +167,7 @@ def medium_config(config: InstallConfig, media_id: str, server_key_pem: str,
         "state": STATE_PATH,
         "kiosk_user": config.account.username,
         "label": media_id,
-        # Корень организации (Э18): по нему носитель проверяет описатели сервера.
-        "root_public": root_public,
+        # Корни организации (Э18): по ним носитель проверяет описатели сервера.
+        # Хранилище LUKS -- не образ: образ не может нести собственный якорь.
+        "roots": list(roots or []),
     }, ensure_ascii=False, indent=2) + "\n"
