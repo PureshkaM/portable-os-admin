@@ -86,32 +86,35 @@ def test_target_system_is_actually_written_onto_the_medium(session, make_config)
     The original pipeline formatted the LUKS container and then bootstrapped
     the OS into `/mnt/poa-install-<id>` without ever opening that container or
     mounting anything there -- so the base system landed in a directory on the
-    administrator's own machine and the medium stayed empty. Every assertion
-    here is a link in the chain that was missing.
+    administrator's own machine and the medium stayed empty.
+
+    С Э10 (02.10.2026) установка с образа -- сборка дистрибутива и запись: система
+    ставится пакетами в корень сборки, упаковывается в образ, и уже образ
+    ложится на открытый и смонтированный том носителя. Цепочка та же по смыслу:
+    открыть -> создать ФС -> смонтировать -> только потом класть систему.
     """
     argvs, _ = _plan_argvs(session, make_config)
     flat = [" ".join(a) for a in argvs]
 
+    bootstrap_idx = next(i for i, a in enumerate(argvs) if "debootstrap" in a)
+    squash_idx = next(i for i, a in enumerate(argvs) if a[0] == "mksquashfs")
     open_idx = next(i for i, a in enumerate(argvs) if a[0] == "cryptsetup" and "luksOpen" in a)
     mapper = argvs[open_idx][3]
     mkfs_idx = next(i for i, a in enumerate(argvs) if a[0] == "mkfs.ext4" and a[-1].endswith(mapper))
-    # Путь к устройству — последний аргумент минус точка монтирования: между
-    # `mount` и им теперь стоят параметры записи (noatime и прочее).
     mount_idx = next(
         i for i, a in enumerate(argvs)
         if a[0] == "mount" and any(part.endswith(mapper) for part in a[1:])
     )
-    # "debootstrap" is not necessarily argv[0] -- it may be wrapped in eatmydata
-    bootstrap_idx = next(i for i, a in enumerate(argvs) if "debootstrap" in a)
-
-    # unlock -> make a filesystem -> mount it -> only then install into it
-    assert open_idx < mkfs_idx < mount_idx < bootstrap_idx
-    mount_root = argvs[mount_idx][-1]
-    assert mount_root in argvs[bootstrap_idx], "bootstrap does not target the mounted medium"
+    image_idx = next(i for i, a in enumerate(argvs)
+                     if i > mount_idx and any("squashfs" in part for part in a) and a[0] in ("cp", "dd", "sh"))
+    # собрать -> упаковать -> открыть том -> ФС -> смонтировать -> положить образ
+    assert bootstrap_idx < squash_idx < open_idx < mkfs_idx < mount_idx < image_idx
 
     # the medium is unmounted first: a stick is automounted by the desktop the
     # moment it is plugged in, and partitioning under a live filesystem corrupts it
-    assert argvs[0] == ["umount", "/media/user/flash"]
+    umount_idx = flat.index("umount /media/user/flash")
+    parted_idx = next(i for i, a in enumerate(argvs) if a[0] in ("parted", "sgdisk", "wipefs"))
+    assert umount_idx < parted_idx
 
     # a bootable result needs a kernel, an initramfs that can unlock the root,
     # and a bootloader -- debootstrap/dnf install none of the three
@@ -120,9 +123,11 @@ def test_target_system_is_actually_written_onto_the_medium(session, make_config)
     assert any("update-initramfs" in f for f in flat)
     assert any("grub-install" in f for f in flat)
 
-    # and it needs to know what to mount at boot
-    assert f"<write-file> {mount_root}/etc/fstab" in flat
-    assert f"<write-file> {mount_root}/etc/crypttab" in flat
+    # and it needs to know what to mount at boot -- written onto the medium
+    mount_root = argvs[mount_idx][-1]
+    assert any(f.startswith("<write-file>") and f.endswith("/etc/fstab") for f in flat[mount_idx:])
+    assert any(f.startswith("<write-file>") and f.endswith("/etc/crypttab") for f in flat[mount_idx:])
+    assert mount_root
 
 
 def test_dangling_resolver_symlink_is_removed_before_it_is_written(session, make_config):
@@ -295,7 +300,10 @@ def test_the_boot_key_file_lands_on_the_encrypted_root(session, make_config):
     key_writes = [line for line in flat if line.startswith("<write-file>") and "etc/poa/service.key" in line]
     assert key_writes, "no key file written; the medium could not open its own volumes at boot"
 
-    entry = next(r for r in result.plan.results if "etc/poa/service.key" in " ".join(r.argv))
+    # Первой строкой с этим путём стоит удаление ключа из корня сборки
+    # (дистрибутив не несёт ключей) -- нужна именно запись на носитель.
+    entry = next(r for r in result.plan.results
+                 if r.argv[0] == "<write-file>" and "etc/poa/service.key" in " ".join(r.argv))
     assert entry.argv[1].endswith("/etc/poa/service.key")
 
 

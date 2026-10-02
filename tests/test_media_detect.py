@@ -282,8 +282,11 @@ def test_both_ways_of_writing_a_medium_go_through_one_helper():
     assert mounts == 1, "раздел обмена монтируется больше чем в одном месте -- пути разъехались"
 
     assert "def _write_medium_files(" in source, "общего помощника нет"
+    # С Э10 (02.10.2026) путь записи один: установка с образа -- это сборка и
+    # то же развёртывание. Второго вызова не должно появиться снова.
     calls = source.count("self._write_medium_files(")
-    assert calls == 2, "помощник вызван не из обоих путей записи носителя"
+    assert calls == 1, "у носителя снова два пути записи"
+    assert "def _install(" not in source, "вернулась установка деревом мимо развёртывания"
 
     installer_source = inspect.getsource(installer_module.OSInstaller._write_medium_files)
     for needed in ("config_files", "scripted_files", "_write_revocation_key", "_fill_exchange"):

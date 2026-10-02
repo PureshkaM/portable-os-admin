@@ -14,6 +14,7 @@ from __future__ import annotations
 import base64
 import importlib.resources
 import os
+import tempfile
 import subprocess
 import time
 import uuid
@@ -56,6 +57,32 @@ MIN_SYSTEM_PARTITION_MB = 4096
 #: Keyslot the day-to-day user password lives in. cryptsetup puts the first
 #: passphrase in slot 0; recovery needs to name it to replace it.
 USER_KEYSLOT = 0
+
+
+#: Где установка с образа собирает дистрибутив (Э10): постоянный временный
+#: каталог -- в /tmp он мог бы оказаться в RAM.
+BUILD_WORK_ROOT = "/var/tmp"
+
+
+def _remove_build_dir(path: str) -> None:
+    """Убирает временную сборку -- но не поверх смонтированного.
+
+    `rm -rf` по каталогу, где остался bind-монтаж (/dev, /proc, образ), снёс бы
+    настоящий /dev машины администратора. Уборка сборки размонтирует всё сама;
+    если что-то осталось, каталог не трогается, а причина -- в исключении.
+    """
+    import shutil
+
+    real = os.path.realpath(path)
+    try:
+        with open("/proc/self/mounts", encoding="utf-8") as handle:
+            busy = [line.split()[1] for line in handle
+                    if line.split()[1] == real or line.split()[1].startswith(real + "/")]
+    except OSError:
+        busy = []
+    if busy:
+        raise InstallError(f"временная сборка {path} не удалена: под ней смонтировано {busy[0]}")
+    shutil.rmtree(path, ignore_errors=True)
 
 
 def recovery_env(config, media_id: str, luks_uuid: str, mapper_name: str = "") -> str:
@@ -333,93 +360,45 @@ class OSInstaller:
         media_name: str = "",
         media_owner: str = "",
     ) -> InstallResult:
-        """`image_path` is the installation image the system is taken from.
+        """Носитель прямо с установочного образа: сборка дистрибутива во
+        временный каталог и запись его на устройство (LIVE-2.0, Э10).
 
-        It is a parameter of the run rather than a field of the configuration:
-        the configuration describes *what* to install and is meant to be
-        reusable across admin machines, while the path of an ISO belongs to one
-        particular machine and would be a dead path anywhere else.
+        Раньше это был третий, самостоятельный путь: система ставилась пакетами
+        прямо на носитель, деревом. С LiveCD носитель -- это образ squashfs под
+        dm-verity, слоты A/B и общий initramfs выпуска; всё это делают сборка и
+        запись, и собирать то же самое третьим способом значило бы держать две
+        разметки и два набора дефектов. Цена -- место под сборку на диске
+        администратора, то же, что у сборки дистрибутива.
 
-        `on_step(index, total, text)` is called before each stage.
-
-        Installing takes the better part of an hour, most of it inside one
-        command, so a caller that shows nothing until the end leaves a person
-        watching a still window with no idea whether anything is happening.
+        Носитель проверяется **до** сборки: узнать про занятое устройство
+        через час было бы хуже, чем сразу.
         """
         self.session.require_open()
-        self._progress = _Progress(on_step)
-
-        # "Конфигурация.Использование.Запрет" / "Установка.Конфигурация.Запрет"
         if config.validation_status != "valid":
             raise ConfigValidationError(
                 ["установка запрещена: файл конфигурации не прошёл проверку"]
             )
-
-        backend = get_backend(config.target_os)
-        self._source_components: tuple[str, ...] = ("main",)
-        self._source_core_packages: tuple[str, ...] = ()
-        warnings = self._check_arch(backend, config)
-        if not dry_run:
-            check_tools_available(backend.required_tools())
-
-        # The installer unmounts the medium itself as an explicit, logged step,
-        # so an automounted stick is not a hard stop -- the user has already
-        # confirmed the device is about to be erased.
-        # Проверки «дистрибутив без загрузчика» здесь нет и быть не может:
-        # дистрибутива здесь нет вовсе. Этот путь ставит систему прямо с
-        # установочного образа, и пакеты с shim и grub приходят в носитель
-        # вместе с остальными. Проверка нужна на пути развёртывания готового
-        # дистрибутива, и она там есть -- см. deploy_distribution.
         self.check_possible(device, config, require_unmounted=False)
-
-        identity = self._new_identity(device, config)
-        media_id = identity.media_id
-        layout = identity.layout
-
-        plan = CommandPlan(device=device.path)
-        state = _TeardownState()
-        image = MountedImage(image_path, mountpoint=f"/mnt/poa-image-{media_id}")
-        state.image = image
-
+        work = tempfile.mkdtemp(prefix="poa-build-", dir=BUILD_WORK_ROOT)
         try:
-            release, source_url = self._prepare_source(image, image_path, config, backend, dry_run=dry_run)
-            # Every later package command draws from this same repository, not
-            # from whatever the administrator's own machine has configured.
-            backend.bind_install_source(
-                source_url, release, self._source_core_packages,
-                backend.normalize_arch(config.arch),
+            built = self.build_distribution(
+                config, work, image_path=image_path, dry_run=dry_run, on_step=on_step
             )
-            self._install(
-                device, config, backend, identity, user_passphrase, plan, state,
-                image_url=source_url, release=release, dry_run=dry_run, confirm_device=confirm_device,
+            result = self.deploy_distribution(
+                device, work, user_passphrase, dry_run=dry_run, confirm_device=confirm_device,
+                on_step=on_step, media_name=media_name, media_owner=media_owner,
+                _metadata=built.metadata if dry_run else None,
             )
-        except Exception as exc:
-            # "Установка.Ошибка.Сохранение": nothing below this point runs, so
-            # no MediaRecord/RecoveryRecord is ever added to the container.
-            self._teardown(layout, state, plan, dry_run=dry_run, confirm_device=confirm_device)
-            if isinstance(exc, InstallError):
-                raise
-            raise InstallError(f"установка прервана: {exc}") from exc
-        else:
-            # Teardown on the success path too: leaving the medium mounted and
-            # the LUKS mapping open would mean the stick cannot be safely pulled
-            # and the next install would collide with a stale mapper name.
-            self._teardown(layout, state, plan, dry_run=dry_run, confirm_device=confirm_device)
-
-        media_record, recovery_records = self._save_records(
-            identity, device, config, media_name, media_owner
-        )
-
+        finally:
+            _remove_build_dir(work)
+        plan = CommandPlan(device=device.path, results=[*built.plan.results, *result.plan.results])
         return InstallResult(
-            media_record=media_record,
-            recovery_record=recovery_records[0],
+            media_record=result.media_record,
+            recovery_record=result.recovery_record,
             plan=plan,
-            warnings=warnings,
+            warnings=(*built.warnings, *result.warnings),
         )
 
-    # ------------------------------------------------------------------
-    # Building a distribution once, deploying it many times
-    # ------------------------------------------------------------------
     def build_distribution(
         self,
         config: InstallConfig,
@@ -617,6 +596,7 @@ class OSInstaller:
         media_owner: str = "",
         exchange_files: "list[str] | tuple[str, ...]" = (),
         accepted_signature: "distribution.SignatureVerdict | None" = None,
+        _metadata: "distribution.DistributionMetadata | None" = None,
     ) -> InstallResult:
         """Writes a built distribution onto one medium, with its own encryption.
 
@@ -660,18 +640,21 @@ class OSInstaller:
         self._exchange_problems: list[str] = []
 
         self._progress.step("Проверка дистрибутива")
-        verdict = distribution.verify_distribution(directory, self.session.container.admin_secret)
-        if verdict.status == distribution.INVALID:
+        # `_metadata` -- только пробный прогон установки с образа (Э10): сборка
+        # там ничего не пишет, и читать подпись и описание неоткуда.
+        verdict = (distribution.verify_distribution(directory, self.session.container.admin_secret)
+                   if _metadata is None else None)
+        if verdict is not None and verdict.status == distribution.INVALID:
             raise InstallError(
                 f"подпись дистрибутива не прошла проверку: {verdict.reason}.\n"
                 "Носитель не изменён."
             )
-        if accepted_signature is not None and verdict != accepted_signature:
+        if accepted_signature is not None and verdict is not None and verdict != accepted_signature:
             raise InstallError(
                 "подпись дистрибутива изменилась после того, как запись была "
                 "подтверждена.\nНоситель не изменён."
             )
-        metadata = distribution.read_metadata(directory)
+        metadata = _metadata or distribution.read_metadata(directory)
         config = InstallConfig.from_dict(metadata.config)
         backend = get_backend(config.target_os)
         # Версии оболочек приехали вместе с дистрибутивом: образа здесь уже нет.
@@ -1429,251 +1412,6 @@ class OSInstaller:
     # ------------------------------------------------------------------
     # The pipeline itself
     # ------------------------------------------------------------------
-    def _install(
-        self,
-        device: BlockDevice,
-        config: InstallConfig,
-        backend,
-        identity: MediaIdentity,
-        user_passphrase: bytes,
-        plan: CommandPlan,
-        state: "_TeardownState",
-        *,
-        image_url: str,
-        release: str,
-        dry_run: bool,
-        confirm_device: str | None,
-    ) -> None:
-        run = lambda argv, **kw: self._run(argv, plan, dry_run, confirm_device, **kw)  # noqa: E731
-        layout = identity.layout
-
-        self._prepare_medium(
-            device, config, identity, user_passphrase, plan, state, dry_run, confirm_device
-        )
-
-        # Разделы подключаются ДО установки системы, а не после. Правило то же,
-        # что и в развёртывании (см. `_mount_logs_volume` и порядок шагов в
-        # `deploy_distribution`), и причина та же -- здесь её просто не
-        # применили.
-        #
-        # Прогон 12.09.2026 показал цену: в RHEL 9 ядро приезжает как
-        # /lib/modules/<версия>/vmlinuz, а в /boot его переносит
-        # kernel-install -- при установке базовой системы, то есть до того, как
-        # раздел POA_BOOT был смонтирован. Ядро, initramfs и запись загрузчика
-        # легли на корневой раздел, сверху встал пустой /boot и закрыл их
-        # собой. По содержимому корня этого не видно: файлы на месте, просто не
-        # на том разделе, а GRUB читает раздел и не находит ни одного ядра.
-        #
-        # Том журналов -- то же самое этажом ниже: пакеты создают свои каталоги
-        # в /var/log при установке (auditd, sssd, cups), каждый со своим
-        # владельцем и меткой SELinux, и служба, не нашедшая своего каталога,
-        # не стартует. Путь установки не монтировал этот том вовсе.
-        self._progress.step("Подключение служебных разделов")
-        self._mount_boot_partition(layout, state, plan, dry_run, confirm_device)
-        self._mount_logs_volume(layout, state, plan, dry_run, confirm_device)
-
-        self._progress.step("Развёртывание базовой системы с образа")
-        self._run_bootstrap(
-            backend, config, layout.mount_root, image_url, release, plan, dry_run, confirm_device
-        )
-
-        # ESP -- отдельным шагом и после установки системы. Дальше он нужен:
-        # пакеты shim и grub кладут файлы именно на него. Но раскладку внутри
-        # /boot выбирают kernel-install и dracut, а они смотрят на то, что
-        # смонтировано, и на прогоне 12.09.2026 dracut выбрал каталог внутри
-        # ESP (/boot/efi/<machine-id>/<версия>/), которого никто не создавал.
-        self._mount_esp(layout, state, plan, dry_run, confirm_device)
-        self._mount_pseudo_filesystems(layout.mount_root, state, plan, dry_run, confirm_device)
-
-        # The image, visible from inside the chroot at the same path it has
-        # outside it.
-        #
-        # debootstrap writes the target's /etc/apt/sources.list pointing at the
-        # URL it was given -- file:///mnt/poa-image-<id> -- and that path exists
-        # only on this machine. Without this bind mount `apt-get update` inside
-        # the chroot finds nothing and every package install fails with
-        # "Unable to locate package linux-image-amd64", which is to say the
-        # medium gets no kernel, no bootloader and no way to unlock itself.
-        # Found by running an install from a local image to the end for the
-        # first time; the earlier successful run had used a network mirror,
-        # where the URL means the same thing on both sides.
-        if image_url.startswith("file://"):
-            image_inside = image_url[len("file://"):]
-            target = f"{layout.mount_root}{image_inside}"
-            run(["mkdir", "-p", target])
-            run(["mount", "--bind", image_inside, target])
-            state.mounts.append(target)
-
-        # Репозиторий на время установки и резолвер -- тем же вызовом, что и в
-        # сборке дистрибутива.
-        #
-        # Здесь стояла копия этого кода, и она разошлась с оригиналом: в ней не
-        # было `rm -f` перед записью resolv.conf. На РЕД ОС файл -- висячая
-        # ссылка на /run/systemd/resolve/stub-resolv.conf, и запись падала с
-        # «No such file or directory». Прогон 12.09.2026 дошёл до шага 11 из 19
-        # (полчаса под эмуляцией, носитель уже стёрт) и умер именно на этом,
-        # хотя в соседнем пути та же беда была разобрана и закрыта 27.08.
-        self._write_install_time_sources(
-            layout.mount_root, backend, release, image_url, plan, dry_run, confirm_device
-        )
-
-        temporary_paths = []
-        for relative, (content, mode) in backend.temporary_files().items():
-            target = f"{layout.mount_root}/{relative}"
-            run(["mkdir", "-p", target.rsplit("/", 1)[0]])
-            self._write_file(target, content, plan, dry_run, confirm_device, mode=mode)
-            temporary_paths.append(target)
-
-        self._progress.step("Настройка устанавливаемой системы")
-        # Тот же помощник, что и на пути развёртывания. Здесь корень собран
-        # пакетами, а не развёрнут из образа, поэтому пишется весь набор.
-        self._write_medium_files(
-            config, backend, identity, plan, state, dry_run, confirm_device,
-        )
-
-        refresh = backend.package_refresh_command(layout.mount_root)
-        if refresh is not None:
-            run(refresh, timeout=BOOTSTRAP_TIMEOUT)
-
-        self._progress.step("Установка ядра и загрузчика")
-        boot_pkg_cmd = backend.package_install_command(layout.mount_root, backend.boot_packages(config))
-        if boot_pkg_cmd is not None:
-            run(boot_pkg_cmd, timeout=BOOTSTRAP_TIMEOUT)
-
-        # A step of its own, and named as a long one, because it is: X, its
-        # driver metapackages and MATE are several hundred megabytes on top of
-        # the base system. Folded into the account/services step below it would
-        # be tens of minutes during which the interface names the wrong thing.
-        desktop_packages = backend.desktop_packages(config)
-        if desktop_packages:
-            self._progress.step("Установка графического окружения")
-            desktop_cmd = backend.package_install_command(layout.mount_root, desktop_packages)
-            if desktop_cmd is not None:
-                run(desktop_cmd, timeout=BOOTSTRAP_TIMEOUT)
-            # firejail is an extra layer, not a requirement: it is present in
-            # the RED OS image and absent from the Debian DVD. Installed by a
-            # command that is allowed to fail, so asking for the sandbox on an
-            # image that has no such package costs a line in the log rather
-            # than an install that dies with the medium half-written.
-            if config.kiosk.firejail:
-                optional = backend.optional_package_command(layout.mount_root, ["firejail"])
-                if optional is not None:
-                    run(optional, timeout=BOOTSTRAP_TIMEOUT)
-
-        # То же, что и на пути сборки дистрибутива, и по той же причине: без
-        # systemd-cryptsetup служебные тома носителя не открываются, а без
-        # журналов и раздела обмена носитель работает наполовину.
-        extra_packages = backend.optional_packages(config)
-        if extra_packages:
-            optional = backend.optional_package_command(layout.mount_root, extra_packages)
-            if optional is not None:
-                run(optional, timeout=BOOTSTRAP_TIMEOUT)
-
-            # Device firmware the image carries outside its package index.
-            # Without it a medium built from a Debian image reaches unfamiliar
-            # hardware with no wireless and no graphics acceleration -- which
-            # for a system whose whole point is being carried elsewhere is the
-            # difference between working and not.
-            image_dir = image_url[len("file://"):] if image_url.startswith("file://") else ""
-            firmware_cmd = backend.firmware_install_command(layout.mount_root, image_dir)
-            if firmware_cmd is not None:
-                self._progress.step("Установка прошивок устройств")
-                run(firmware_cmd, timeout=BOOTSTRAP_TIMEOUT)
-
-        self._progress.step("Создание учётной записи и служб")
-        # media_id здесь есть -- значит файлы носителя уже написаны, и службы,
-        # которые на них опираются, можно включать. На пути сборки
-        # дистрибутива его нет, и включение пропускается.
-        for argv in backend.chroot_setup_commands(layout.mount_root, config, identity.media_id):
-            run(argv, timeout=BOOTSTRAP_TIMEOUT)
-
-        # Метки мандатного контроля по всему дереву -- тем же вызовом и на том
-        # же месте, что и в сборке дистрибутива.
-        #
-        # Путь установки их не расставлял вовсе: метилось только то, что
-        # дописывается поверх готовой системы (`/usr/local/sbin`, `/etc`,
-        # `/var/lib` в самопроверке). Дистрибутив разворачивается с машины
-        # администратора, где мандатного контроля нет, поэтому файлы приезжают
-        # без меток -- и это видно на собранном носителе: у `/etc/passwd` метка
-        # есть, у `/usr/lib/systemd/systemd` и `/bin/bash` её нет ни одной.
-        # Загрузка 12.09.2026 дошла до регистрации машины и остановилась
-        # чёрным экраном: systemd с непомеченным `/usr` не стартует.
-        relabel = backend.relabel_commands(layout.mount_root)
-        if relabel:
-            self._progress.step("Расстановка меток безопасности")
-            for argv in relabel:
-                run(argv, timeout=BOOTSTRAP_TIMEOUT)
-
-        # Before the initramfs is built, never after: the hooks below are what
-        # copy the recovery flow *into* that image, so writing them afterwards
-        # would leave a medium that boots without any recovery at all.
-        self._progress.step("Подключение модуля восстановления к загрузке")
-        self._install_recovery_boot(
-            backend, identity, config, plan, dry_run=dry_run, confirm_device=confirm_device
-        )
-
-        self._progress.step("Сборка initramfs с разблокировкой диска")
-        # crypttab/fstab are in place by now, so the initramfs built here is the
-        # one that knows how to unlock the root volume at boot.
-        run(backend.initramfs_command(layout.mount_root), timeout=BOOTSTRAP_TIMEOUT)
-
-        self._progress.step("Установка загрузчика на носитель")
-        for argv in backend.bootloader_commands(layout, config):
-            run(argv, timeout=BOOTSTRAP_TIMEOUT)
-
-        self._progress.step("Запись модуля восстановления")
-        self._install_recovery_module(
-            identity, plan, dry_run=dry_run, confirm_device=confirm_device
-        )
-
-        # The image is mounted here, on this machine, and will not exist once the
-        # medium is unplugged. Leaving it in the installed system's sources means
-        # every apt command there fails on a dead file:// path.
-        # The image is still mounted at this point, so a backend can read its
-        # own repository settings off it rather than this project writing down
-        # values that are right for one release and wrong for the next.
-        image_mountpoint = image_url[len("file://"):] if image_url.startswith("file://") else ""
-        sources = backend.sources_list(config, release, image_mountpoint)
-        if sources is not None:
-            target = f"{layout.mount_root}/{backend.sources_path}"
-            run(["mkdir", "-p", target.rsplit("/", 1)[0]])
-            self._write_file(target, sources, plan, dry_run, confirm_device)
-
-        self._progress.step("Опись загрузчика и initramfs")
-        identity.boot_manifest = self._collect_boot_manifest(layout, dry_run)
-        self._install_self_check(identity, backend, plan, dry_run, confirm_device)
-
-        self._progress.step("Завершение записи и отключение носителя")
-        if temporary_paths:
-            run(["rm", "-f", *temporary_paths])
-
-        # Last, after every package command has run: the download cache is
-        # otherwise carried on the medium for the rest of its life. Allowed to
-        # fail -- a medium with a full cache works, it is just needlessly
-        # smaller, and nothing here is worth failing a finished install over.
-        cleanup = backend.package_cleanup_command(layout.mount_root)
-        if cleanup is not None:
-            try:
-                run(cleanup, timeout=BOOTSTRAP_TIMEOUT)
-            except Exception:  # noqa: BLE001 - see above
-                pass
-
-        # The resolver configuration was copied from this machine so the chroot
-        # could resolve names while being built. On the medium it points at
-        # whatever DNS this administrator's network uses, which is neither
-        # correct nor anyone else's business.
-        self._write_file(
-            f"{layout.mount_root}/etc/resolv.conf",
-            "# generated by portable-os-admin\n"
-            "# Адрес сервера имён на носителе не фиксируется: его выдаёт сеть,\n"
-            "# в которую систему принесут (через NetworkManager/systemd-resolved).\n",
-            plan,
-            dry_run,
-            confirm_device,
-        )
-        run(["sync"])
-
-
     def _prepare_medium(
         self, device, config, identity, user_passphrase, plan, state, dry_run,
         confirm_device, overlay_root: bool = False,

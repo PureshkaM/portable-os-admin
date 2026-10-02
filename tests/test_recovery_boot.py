@@ -91,7 +91,11 @@ def test_redos_module_is_actually_enabled_not_merely_present():
 
 def test_recovery_files_are_written_before_the_initramfs_is_built(session, make_config):
     """The hooks are what copy the flow into the initramfs, so writing them
-    afterwards leaves a medium that boots with no recovery at all."""
+    afterwards leaves a medium that boots with no recovery at all.
+
+    С Э2 initramfs общий и собирается при сборке дистрибутива, а данные этого
+    носителя (env, соль, запросы) едут вторым initrd `poa-medium.img`, который
+    пишется при записи -- до установки загрузчика, который его называет."""
     from portable_os_admin.config import ConfigManager
     from portable_os_admin.install import BlockDevice, OSInstaller
 
@@ -105,11 +109,16 @@ def test_recovery_files_are_written_before_the_initramfs_is_built(session, make_
     flat = [" ".join(entry.argv) for entry in result.plan.results]
 
     hook_idx = next(i for i, line in enumerate(flat) if "hooks/poa-recovery" in line)
-    env_idx = next(i for i, line in enumerate(flat) if line.endswith(f"{RECOVERY_DIR}/env"))
+    module_idx = next(i for i, line in enumerate(flat) if line.endswith(f"{RECOVERY_DIR}/recovery_module.sh"))
     initramfs_idx = next(i for i, line in enumerate(flat) if "update-initramfs" in line)
+    medium_idx = next(i for i, line in enumerate(flat) if line.endswith("/boot/poa-medium.img"))
+    grub_idx = next(i for i, line in enumerate(flat) if "grub-install" in line)
 
     assert hook_idx < initramfs_idx, "hook written after the initramfs was built"
-    assert env_idx < initramfs_idx, "recovery settings written after the initramfs was built"
+    assert module_idx < initramfs_idx, "recovery module written after the initramfs was built"
+    assert initramfs_idx < medium_idx < grub_idx
+    # Данные носителя -- только во втором initrd, не в корне.
+    assert not any(line.endswith(f"{RECOVERY_DIR}/env") for line in flat)
 
 
 def test_the_env_names_the_slot_the_code_was_actually_issued_from(make_config):
