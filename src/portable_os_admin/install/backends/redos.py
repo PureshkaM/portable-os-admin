@@ -562,6 +562,10 @@ class RedOSInstallBackend(InstallBackend):
             arguments += [f"--repofrompath={repo_id},{url}", f"--repo={repo_id}"]
             if gpgkey:
                 arguments += [f"--setopt={repo_id}.gpgcheck=1", f"--setopt={repo_id}.gpgkey={gpgkey}"]
+            if self._repo_ca_bundle:
+                # УЦ машины + корни дистрибутива с ISO + проверенные ими
+                # промежуточные (install/repo_trust.py).
+                arguments += [f"--setopt={repo_id}.sslcacert={self._repo_ca_bundle}"]
         return arguments
 
     #: Пакеты доступа (Э8), имена сверены по образам (Э0).
@@ -582,6 +586,7 @@ class RedOSInstallBackend(InstallBackend):
         'sha1.collision_resistance = "always"\n'
     )
     _sequoia_policy_path: str = ""
+    _repo_ca_bundle: str = ""
 
     def _dnf(self, mount_root: str, *command: str) -> list[str]:
         argv = ["dnf", "--installroot", mount_root, "-y", *self._repo_arguments(), *command]
@@ -624,10 +629,19 @@ class RedOSInstallBackend(InstallBackend):
             if mirror.endswith("/os"):
                 repos.append(("poa-mirror-updates", mirror[:-len("/os")] + "/updates", key))
             self.network_repos = tuple(repos)
+            self._bind_repo_trust(image_mountpoint)
             return
         self.network_repos = tuple(
             (f"poa-net-{repo.repo_id}", repo.baseurl, rooted(repo.gpgkey)) for repo in official
         )
+        self._bind_repo_trust(image_mountpoint)
+
+    def _bind_repo_trust(self, image_mountpoint: str) -> None:
+        """Набор УЦ для TLS сетевых репозиториев -- см. `install/repo_trust.py`."""
+        from .. import repo_trust
+
+        urls = [f"{url.rstrip('/')}/repodata/repomd.xml" for _id, url, _key in self.network_repos]
+        self._repo_ca_bundle = repo_trust.build_bundle(urls, image_mountpoint) if urls else ""
 
     def system_upgrade_command(self, mount_root: str) -> list[str] | None:
         if not self.network_repos:
