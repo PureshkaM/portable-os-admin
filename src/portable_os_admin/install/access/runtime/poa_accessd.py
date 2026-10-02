@@ -22,6 +22,7 @@
 """
 from __future__ import annotations
 
+import base64
 import json
 import os
 import pwd
@@ -43,6 +44,7 @@ SOCKET = os.environ.get("POA_ACCESS_SOCKET", "/run/poa/access.sock")
 VPN_RUN = "/run/poa/vpn"
 #: Принятый описатель сервера -- в постоянном состоянии (state/poa).
 DESCRIPTOR = "/var/lib/poa/descriptor.json"
+TLS_PIN = "/var/lib/poa/tls-pin"
 #: Поправлять часы, если расходятся с сервером больше чем на столько секунд:
 #: OpenVPN-клиент проверяет сроки сертификата шлюза.
 CLOCK_SKEW = 300
@@ -98,6 +100,11 @@ class Service:
             return False
         poa_client.atomic_write(self.config.get("descriptor", DESCRIPTOR),
                                 poa_client.canonical(document))
+        # Проверка отзыва (curl) узнаёт сервер по тем же отпечаткам.
+        pins = ";".join("sha256//" + base64.b64encode(bytes.fromhex(h)).decode("ascii")
+                        for h in accepted.get("tls_spki", []))
+        if pins:
+            poa_client.atomic_write(self.config.get("tls_pin", TLS_PIN), (pins + "\n").encode(), 0o644)
         return True
 
     def client(self) -> poa_client.Client:
@@ -140,6 +147,10 @@ class Service:
             self.state.save({**data, "activated": True})
         self._fix_clock(grant.get("server_time"))
         self.grant = grant
+        # Прежний сеанс закрывается до открытия экрана: закрытие очищает
+        # наборы шлюзов и целей. Наоборот (как было до 02.10.2026) экран
+        # открывался и тут же запирался -- openvpn получал EPERM на каждый пакет.
+        self.disconnect()
         if self.firewall is not None:
             # Стадия «выдан доступ»: открываются шлюзы, потом -- цели в туннеле.
             self.firewall.allow_gateways(grant["vpn"].get("remotes", []))
@@ -206,7 +217,6 @@ class Service:
     def _vpn_up(self, vpn: dict, key_pem: bytes) -> None:
         if vpn.get("provider") != "openvpn":
             raise poa_client.AccessError(0, "provider_not_supported")
-        self.disconnect()
         self.session_id = os.urandom(8).hex()
         directory = os.path.join(VPN_RUN, self.session_id)
         os.makedirs(directory, mode=0o700)

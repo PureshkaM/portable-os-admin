@@ -68,7 +68,8 @@ class ConnectWindow(Gtk.Window):
         self.wait_label = self._label("Подключитесь к сети значком в панели.", big=True)
         self._page("wait", self.wait_label)
 
-        self.code_entry = Gtk.Entry(placeholder_text="XXXXX-XXXXX", activates_default=True)
+        self.code_entry = Gtk.Entry(placeholder_text="XXXXX-XXXXX")
+        self.code_entry.connect("activate", self._on_activate)
         activate_button = Gtk.Button(label="Активировать")
         activate_button.connect("clicked", self._on_activate)
         self.activate_error = self._label()
@@ -85,6 +86,7 @@ class ConnectWindow(Gtk.Window):
                    self.qr_area, qr_done)
 
         self.totp_entry = Gtk.Entry(placeholder_text="123456", max_length=6)
+        self.totp_entry.connect("activate", self._on_login)
         self.totp_entry.connect("activate", self._on_login)
         login_button = Gtk.Button(label="Войти")
         login_button.connect("clicked", self._on_login)

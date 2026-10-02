@@ -234,8 +234,12 @@ class DebianInstallBackend(InstallBackend):
     OFFICIAL_MIRROR = "http://deb.debian.org/debian"
     OFFICIAL_SECURITY = "http://security.debian.org/debian-security"
 
-    #: Пакеты доступа (Э8), имена сверены по образам (Э0).
-    ACCESS_PACKAGES = ("openvpn", "freerdp3-x11", "python3-gi", "gir1.2-gtk-3.0", "gir1.2-vte-2.91", "gir1.2-gtk-vnc-2.0", "python3-cryptography", "openssh-client")
+    #: Пакеты доступа (Э8), имена сверены по образам (Э0). `python3-gi-cairo`
+    #: -- мост PyGObject к cairo: без него рисование в Gtk.DrawingArea падает
+    #: («foreign struct converter for 'cairo.Context'»), и QR активации не
+    #: виден (живая загрузка 02.10.2026). В РЕД ОС мост входит в python3-gobject.
+    ACCESS_PACKAGES = ("openvpn", "freerdp3-x11", "python3-gi", "python3-gi-cairo", "gir1.2-gtk-3.0",
+                       "gir1.2-vte-2.91", "gir1.2-gtk-vnc-2.0", "python3-cryptography", "openssh-client")
 
     def bind_network(self, config: InstallConfig, image_mountpoint: str, mount_root: str = "") -> None:
         if not config.network_packages:

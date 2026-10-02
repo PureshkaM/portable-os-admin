@@ -20,6 +20,8 @@ RUNTIME_SOURCE = Path(__file__).with_name("runtime")
 RUNTIME_DIR = "usr/lib/poa-access"
 CONFIG_PATH = "etc/poa/access.json"
 STATE_PATH = "/var/lib/poa/access.json"
+#: Отпечатки TLS сервера в формате curl -- для проверки отзыва (v2).
+TLS_PIN_PATH = "etc/poa/tls-pin"
 SERVICE_NAME = "poa-accessd.service"
 SERVICE_PATH = f"etc/systemd/system/{SERVICE_NAME}"
 VPN_UNIT_PATH = "etc/systemd/system/poa-vpn@.service"
@@ -141,6 +143,12 @@ def image_files(config: InstallConfig) -> dict[str, tuple[str, int | None]]:
     files[SYSUSERS_PATH] = ('u poa-portal - "Окно портала" /nonexistent\n', 0o644)
     files[EVENT_CLI_PATH] = ("#!/bin/sh\nexec /usr/bin/python3 /usr/lib/poa-access/poa_events.py \"$@\"\n", 0o755)
     return files
+
+
+def curl_pins(spki_hex) -> str:
+    """Отпечатки SPKI (hex SHA-256) в виде `--pinnedpubkey` curl."""
+    return ";".join("sha256//" + base64.b64encode(bytes.fromhex(h)).decode("ascii")
+                    for h in spki_hex)
 
 
 def medium_config(config: InstallConfig, media_id: str, server_key_pem: str,

@@ -676,3 +676,17 @@ def test_a_device_key_is_an_ed25519_pair_in_the_shape_the_server_expects():
     )
 
     assert revocation.new_device_key()[1] != public_b64, "ключи носителей совпали"
+
+
+def test_server_is_recognised_by_the_pinned_tls_key_when_one_is_known():
+    """Проверка отзыва узнаёт сервер по отпечатку, как протокол v3, а не по УЦ:
+    иначе подменный сертификат любого УЦ проходил бы, а свой УЦ компании --
+    нет (найдено живой загрузкой 02.10.2026: «сервер недоступен»)."""
+    from portable_os_admin.install.access import files as access_files
+
+    script = _script()
+    assert '${PIN:+--insecure --pinnedpubkey "$PIN"}' in script
+    assert "/var/lib/poa/tls-pin /etc/poa/tls-pin" in script
+    assert access_files.curl_pins(["00" * 32, "ff" * 32]) == (
+        "sha256//AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=;"
+        "sha256//" + "/" * 42 + "8=")

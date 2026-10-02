@@ -955,6 +955,10 @@ class OSInstaller:
                                        self.session.container.data.org_root_public_b64),
             plan, dry_run, confirm_device, mode=0o600,
         )
+        if pins:
+            self._write_file(f"{layout.mount_root}/{access_files.TLS_PIN_PATH}",
+                             access_files.curl_pins(pins) + "\n", plan, dry_run, confirm_device,
+                             mode=0o644)
         wants = f"{layout.mount_root}/etc/systemd/system/multi-user.target.wants"
         self._run(["mkdir", "-p", wants], plan, dry_run, confirm_device)
         for path, name in ((access_files.SERVICE_PATH, access_files.SERVICE_NAME),

@@ -203,8 +203,18 @@ if ! openssl pkeyutl -sign -inkey "$DEVICE_KEY" -rawin \\
 fi
 ASK_SIGNATURE=$(base64 < "$WORK/ask.sig" | tr -d '\\n')
 
+# Сервер узнаётся по закреплённому ключу TLS, а не по УЦ -- как в протоколе
+# v3 (docs/ACCESS-PROTOCOL.md, 2): подменный сертификат от любого УЦ не пройдёт.
+# Свежий отпечаток (из принятого описателя) -- в постоянном состоянии, исходный
+# -- с записи. Без файла остаётся проверка УЦ: носители без доступа v3.
+PIN=
+for f in /var/lib/poa/tls-pin /etc/poa/tls-pin; do
+    [ -s "$f" ] && {{ PIN=$(cat "$f"); break; }}
+done
+
 # Всё в заголовках, а не в адресе: адрес оседает в журналах посредников.
 CODE=$(curl --silent --show-error --max-time "$TIMEOUT" \\
+        ${{PIN:+--insecure --pinnedpubkey "$PIN"}} \\
         --output "$WORK/answer" --write-out '%{{http_code}}' \\
         -H "X-POA-Media: $MEDIA_ID" \\
         -H "X-POA-Nonce: $NONCE" \\

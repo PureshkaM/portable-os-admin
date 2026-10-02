@@ -185,3 +185,34 @@ def test_descriptor_is_taken_only_if_signed_by_the_org_root_and_newer(world):
 def test_without_org_root_descriptors_are_ignored(world):
     _server, service, *_ = world
     assert service.refresh_descriptor() is False
+
+
+class FirewallLog:
+    """Помнит последнее содержимое наборов -- как оно будет в ядре."""
+
+    def __init__(self):
+        self.gateways, self.targets = None, None
+
+    def allow_gateways(self, remotes):
+        self.gateways = list(remotes)
+
+    def allow_targets(self, targets):
+        self.targets = list(targets)
+
+    def close_session(self):
+        self.gateways, self.targets = [], []
+
+
+def test_after_login_the_gateway_stays_open_while_the_vpn_starts(world):
+    """Живая загрузка 02.10.2026: экран открывался для шлюза и тут же
+    запирался закрытием «прежнего» сеанса -- openvpn получал EPERM."""
+    server, service, sock, runner, _tmp = world
+    service.firewall = FirewallLog()
+    answer = ask(sock, {"cmd": "activate", "code": server.issue_code(service.config["media"])})
+    secret = answer["otpauth"].split("secret=")[1].split("&")[0]
+    server.clock.now += 30
+    ask(sock, {"cmd": "login", "totp": harness.totp.code_at(secret, int(server.clock.now // 30))})
+    assert service.firewall.gateways == [{"host": "gw.test", "port": 1194, "proto": "udp"}]
+    assert service.firewall.targets and service.firewall.targets[0]["id"] == "ws1"
+    ask(sock, {"cmd": "disconnect"})
+    assert service.firewall.gateways == [] and service.firewall.targets == []
