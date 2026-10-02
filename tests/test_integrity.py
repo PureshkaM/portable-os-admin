@@ -128,3 +128,14 @@ def test_slot_files_and_the_slot_choice_are_not_in_the_manifest(tmp_path):
         path.write_bytes(b"x")
     manifest = integrity.collect({"boot": str(boot), "esp": str(esp)})
     assert set(manifest) == {"boot:poa-medium.img", "boot:grub/grub.cfg", "esp:EFI/BOOT/BOOTX64.EFI"}
+
+
+def test_an_old_manifest_with_slot_files_does_not_report_them_missing():
+    """Носитель записан до Э5: слоты и grubenv в его описи есть, но их законно
+    меняет обновление -- «пропало» о них было бы ложной тревогой."""
+    from portable_os_admin.install import integrity as module
+
+    expected = {"boot:slot-a/vmlinuz": "1", "esp:EFI/poa/grubenv": "2", "esp:EFI/BOOT/BOOTX64.EFI": "3"}
+    actual = {"esp:EFI/BOOT/BOOTX64.EFI": "3"}
+    assert module.is_intact(module.compare(expected, actual))
+    assert module.compare(expected, {})["removed"] == ["esp:EFI/BOOT/BOOTX64.EFI"]

@@ -154,7 +154,12 @@ def compare(expected: "dict[str, str]", actual: "dict[str, str]") -> "dict[str, 
     того, что исполняется при загрузке. Лишний -- принесённое со стороны.
     Пропавший чаще всего значит, что носитель обновляли не через эту
     программу, но выглядит так же, как изъятие, поэтому называется отдельно.
+
+    Изменяемое (`MUTABLE_PREFIXES`) отбрасывается и из описи: у носителей,
+    записанных до Э5, оно в ней есть, а слоты с тех пор законно обновлялись
+    (живая проверка 03.10.2026 -- «пропало» после ручного обновления).
     """
+    expected = {k: v for k, v in expected.items() if not k.startswith(MUTABLE_PREFIXES)}
     changed = sorted(
         path for path in expected.keys() & actual.keys() if expected[path] != actual[path]
     )

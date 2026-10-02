@@ -106,6 +106,7 @@ class MediaPropertiesWindow(PropertiesWindow):
         # разрушительное последним: отзыв уничтожает ключи безвозвратно.
         self._build_facts()
         self._build_integrity()
+        self._build_update()
         self._build_logs()
         self._build_exchange()
         from .media_access import build_access_tab
@@ -294,6 +295,101 @@ class MediaPropertiesWindow(PropertiesWindow):
         self.details.insert("1.0", "\n".join(lines) or "Расхождений нет.")
         self.details.configure(state="disabled")
 
+
+    # -- вкладка «Обновление» (Э9) -----------------------------------------
+    def _build_update(self) -> None:
+        """Выпуск из каталога дистрибутива -- в неактивный слот носителя.
+
+        Рабочий слот не трогается: прерванная запись оставляет носитель с
+        прежней системой, а новая, не подтвердившая загрузку, откатывается.
+        Поэтому подтверждения вводом, как у стирания, здесь нет.
+        """
+        page = self.tab("Обновление")
+        self.update_dir = ""
+        self.update_text = tk.StringVar(value="Каталог дистрибутива не выбран.")
+        ttk.Label(page, textvariable=self.update_text, style="Card.TLabel",
+                  wraplength=theme.TEXT_WRAP, justify="left").pack(anchor="w")
+        row = ttk.Frame(page, style="Card.TFrame")
+        row.pack(anchor="w", pady=(theme.SPACE_SM, theme.SPACE_SM))
+        ttk.Button(row, text="Выбрать дистрибутив…", command=self._choose_release).pack(side="left")
+        self.update_btn = ttk.Button(row, text="Записать в свободный слот",
+                                     command=self._write_release, state="disabled")
+        self.update_btn.pack(side="left", padx=(theme.SPACE_SM, 0))
+        self.update_progress = ttk.Progressbar(page, mode="determinate", length=420, maximum=100)
+        #: Поток записи кладёт сюда (сделано, всего); окно забирает по таймеру --
+        #: виджеты Tk из чужого потока трогать нельзя.
+        self._update_done = [0, 0]
+        self._writing = False
+
+    def _choose_release(self) -> None:
+        chosen = filedialog.askdirectory(parent=self, title="Каталог дистрибутива")
+        if not chosen:
+            return
+        from ...install import distribution
+
+        try:
+            metadata = distribution.read_metadata(chosen)
+        except Exception as exc:  # noqa: BLE001 - показать, почему каталог не подходит
+            self.message_bar.error(f"Это не каталог дистрибутива: {exc}")
+            return
+        if not metadata.release_serial:
+            self.message_bar.error("Дистрибутив собран до слотов A/B: выпуска в нём нет.")
+            return
+        self.update_dir = chosen
+        self.update_text.set(
+            f"Выпуск {metadata.name or chosen}, № {metadata.release_serial} "
+            f"({metadata.target_os}, {metadata.arch})"
+        )
+        self.update_btn.configure(state="normal")
+
+    def _write_release(self) -> None:
+        if self._writing or not self.update_dir:
+            return
+        if not is_root():
+            self.message_bar.error(NOT_ROOT_MESSAGE)
+            return
+        self._writing = True
+        self.update_btn.configure(state="disabled")
+        self._update_done[:] = [0, 0]
+        self.update_progress.configure(value=0)
+        self.update_progress.pack(fill="x", pady=(0, theme.SPACE_SM))
+        self.message_bar.info("Пишу выпуск на носитель. Не извлекайте его до конца записи.")
+
+        def progress(done: int, total: int) -> None:
+            self._update_done[:] = [done, total]
+
+        record, directory = self.record, self.update_dir
+        run_in_background(self, lambda: self._actions.write_release(record, directory, progress),
+                          on_success=self._release_written, on_error=self._release_failed)
+        self._poll_release()
+
+    def _poll_release(self) -> None:
+        if not widget_alive(self) or not self._writing:
+            return
+        done, total = self._update_done
+        if total:
+            self.update_progress.configure(value=int(done * 100 / total))
+        self.after(300, self._poll_release)
+
+    def _release_written(self, result: dict) -> None:
+        self._writing = False
+        if not widget_alive(self):
+            return
+        self.update_btn.configure(state="normal")
+        self.update_progress.configure(value=100)
+        self.message_bar.success(
+            f"Выпуск № {result['serial']} записан в слот {result['slot'].upper()}. "
+            "Носитель загрузит его при следующем включении; если система не "
+            f"подтвердит загрузку, вернётся к № {result['previous']}."
+        )
+
+    def _release_failed(self, exc: BaseException) -> None:
+        self._writing = False
+        if not widget_alive(self):
+            return
+        self.update_btn.configure(state="normal")
+        self.update_progress.pack_forget()
+        self.message_bar.error(f"Выпуск не записан: {exc} Рабочий слот носителя не тронут.")
 
     # -- вкладка «Журналы» --------------------------------------------------
     def _build_revoke(self) -> None:

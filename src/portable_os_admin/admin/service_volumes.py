@@ -193,8 +193,12 @@ class PlainVolume:
         *,
         mountpoint: str | None = None,
         runner: CommandRunner | None = None,
+        writable: bool = False,
     ):
         self.partition = partition
+        #: На запись -- только ручное обновление (Э9), которому нужно положить
+        #: выпуск в неактивный слот. Проверка целостности монтирует как прежде.
+        self.writable = writable
         self.mountpoint = mountpoint or tempfile.mkdtemp(prefix="poa-plain-")
         self._own_mountpoint = mountpoint is None
         self.runner = runner or CommandRunner()
@@ -207,7 +211,7 @@ class PlainVolume:
                 ["mkdir", "-p", self.mountpoint], plan, dry_run=False, confirm_device=self.partition
             )
             self.runner.run(
-                ["mount", "-o", "ro", self.partition, self.mountpoint],
+                ["mount", "-o", "rw" if self.writable else "ro", self.partition, self.mountpoint],
                 plan,
                 dry_run=False,
                 confirm_device=self.partition,
@@ -226,6 +230,8 @@ class PlainVolume:
     def close(self) -> None:
         plan = CommandPlan(device=self.partition)
         if self._mounted:
+            if self.writable:
+                self._try(["sync"], plan)
             self._try(["umount", self.mountpoint], plan)
             self._mounted = False
         if self._own_mountpoint:

@@ -1,4 +1,4 @@
-"""Действия над выданным носителем: список, поиск, имя, целостность, журналы.
+"""Действия над выданным носителем: список, поиск, имя, целостность, обновление, журналы.
 
 Вторая половина слоя служб. Первая -- `media_release.py` -- отвечает на вопрос
 «как выпустить носитель»; эта отвечает на вопрос «что с уже выпущенным делать».
@@ -130,6 +130,34 @@ class MediaActions:
         with PlainVolume(esp_partition) as esp, PlainVolume(boot_partition) as boot:
             actual = integrity.collect({"boot": boot.mountpoint, "esp": esp.mountpoint})
         return integrity.compare(expected, actual)
+
+    # -- ручное обновление (Э9) ---------------------------------------------
+    def write_release(self, record, directory: str, progress=lambda done, total: None) -> dict:
+        """Выпуск из каталога дистрибутива -- в неактивный слот носителя.
+
+        Проверка выпуска -- до поиска носителя: отказ по подписи или номеру не
+        должен стоить монтирования. Разделы монтируются на запись только на
+        время копирования.
+        """
+        from . import org_root
+        from .media_update import load_release, write_slot
+
+        payload = load_release(directory, org_root.anchors(self.container),
+                               self.container.admin_secret)
+        found = self.connected([record]).get(record.media_id)
+        if found is None:
+            raise PortableOSAdminError(
+                f"Носитель «{record.display_name}» не найден среди подключённых. "
+                "Вставьте его и повторите."
+            )
+        partitions = [partition_by_label(found.device_path, label)
+                      for label in ("POA_ESP", "POA_BOOT", "POA_IMAGES")]
+        esp_part, boot_part, images_part = partitions
+        with PlainVolume(esp_part, writable=True) as esp, \
+                PlainVolume(boot_part, writable=True) as boot, \
+                PlainVolume(images_part, writable=True) as images:
+            return write_slot(directory, payload, esp.mountpoint, boot.mountpoint,
+                              images.mountpoint, progress)
 
     # -- журналы ------------------------------------------------------------
     def read_logs(self, record, filter_text: "str | None" = None) -> "list[str]":
