@@ -32,12 +32,19 @@ accessd = _load("poa_accessd", RUNTIME / "poa_accessd.py")
 class FakeRun:
     def __init__(self):
         self.calls = []
+        self.tunnel = True
 
     def __call__(self, argv, check=False, capture_output=False, text=False):
         self.calls.append(argv)
+        if argv[0] == "systemd-detect-virt":
+            out = "none\n"
+        elif argv[0] == "ip":
+            out = f"{argv[-1]} dev {'tun0' if self.tunnel else 'eth0'} src 10.8.0.2\n"
+        else:
+            out = "active\n"
 
         class R:
-            returncode, stdout = 0, ("none\n" if argv[0] == "systemd-detect-virt" else "active\n")
+            returncode, stdout = 0, out
         return R()
 
 
@@ -216,3 +223,16 @@ def test_after_login_the_gateway_stays_open_while_the_vpn_starts(world):
     assert service.firewall.targets and service.firewall.targets[0]["id"] == "ws1"
     ask(sock, {"cmd": "disconnect"})
     assert service.firewall.gateways == [] and service.firewall.targets == []
+
+
+def test_vpn_is_up_only_once_the_route_to_the_target_goes_through_the_tunnel(world):
+    """Юнит openvpn активен задолго до туннеля -- окно не должно проверять цели раньше."""
+    server, service, sock, runner, _tmp = world
+    answer = ask(sock, {"cmd": "activate", "code": server.issue_code(service.config["media"])})
+    secret = answer["otpauth"].split("secret=")[1].split("&")[0]
+    server.clock.now += 30
+    runner.tunnel = False
+    ask(sock, {"cmd": "login", "totp": harness.totp.code_at(secret, int(server.clock.now // 30))})
+    assert ask(sock, {"cmd": "status"})["vpn"] == "connecting"
+    runner.tunnel = True
+    assert ask(sock, {"cmd": "status"})["vpn"] == "up"

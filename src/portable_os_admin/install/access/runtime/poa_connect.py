@@ -100,8 +100,12 @@ class ConnectWindow(Gtk.Window):
 
         self.targets_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         self.targets_error = self._label()
+        # Место могли включить позже, чем пользователь вошёл: перепроверка
+        # без нового TOTP, пока жив доступ к VPN.
+        recheck = Gtk.Button(label="Проверить снова")
+        recheck.connect("clicked", lambda *_: self._show_targets())
         self._page("targets", self._label("Рабочее место", big=True), self.targets_box,
-                   self.targets_error)
+                   self.targets_error, recheck)
 
         again = Gtk.Button(label="Подключиться снова")
         again.connect("clicked", lambda *_: self._show_targets())

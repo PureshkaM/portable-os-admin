@@ -231,7 +231,20 @@ class Service:
             return "down"
         result = self.run(["systemctl", "is-active", f"poa-vpn@{self.session_id}.service"],
                           check=False, capture_output=True, text=True)
-        return "up" if result.stdout.strip() == "active" else "down"
+        if result.stdout.strip() != "active":
+            return "down"
+        # Юнит активен сразу после запуска openvpn, задолго до туннеля; окно,
+        # поверив этому, проверяло цели в пустоту («не отвечает», живая
+        # загрузка 02.10.2026). Поднят -- когда путь к цели лежит через tun.
+        targets = (self.grant or {}).get("targets", [])
+        if not targets:
+            return "up"
+        addresses = poa_firewall.resolve4(targets[0]["host"])
+        if not addresses:
+            return "connecting"
+        route = self.run(["ip", "-o", "route", "get", addresses[0]],
+                         check=False, capture_output=True, text=True)
+        return "up" if " dev tun" in (route.stdout or "") else "connecting"
 
 
 def openvpn_config(vpn: dict, key_pem: str, gateway_name: str) -> str:
