@@ -951,7 +951,8 @@ class OSInstaller:
             pins = (fetch_tls_spki(config.revocation.url),)
         self._write_file(
             f"{layout.mount_root}/{access_files.CONFIG_PATH}",
-            access_files.medium_config(config, identity.media_id, key_pem, pins),
+            access_files.medium_config(config, identity.media_id, key_pem, pins,
+                                       self.session.container.data.org_root_public_b64),
             plan, dry_run, confirm_device, mode=0o600,
         )
         wants = f"{layout.mount_root}/etc/systemd/system/multi-user.target.wants"

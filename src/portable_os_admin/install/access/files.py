@@ -25,7 +25,8 @@ SERVICE_PATH = f"etc/systemd/system/{SERVICE_NAME}"
 VPN_UNIT_PATH = "etc/systemd/system/poa-vpn@.service"
 AUTOSTART_PATH = "etc/xdg/autostart/poa-connect.desktop"
 RUNTIME_FILES = ("poa_client.py", "poa_accessd.py", "poa_launch.py", "poa_connect.py",
-                 "poa_qr.py", "poa_ssh.py", "poa_vnc.py", "poa_events.py", "poa_firewall.py")
+                 "poa_qr.py", "poa_ssh.py", "poa_vnc.py", "poa_events.py", "poa_firewall.py",
+                 "poa_trust.py")
 FIREWALL_SERVICE_NAME = "poa-firewall.service"
 FIREWALL_SERVICE_PATH = f"etc/systemd/system/{FIREWALL_SERVICE_NAME}"
 SYSUSERS_PATH = "usr/lib/sysusers.d/poa-access.conf"
@@ -143,7 +144,7 @@ def image_files(config: InstallConfig) -> dict[str, tuple[str, int | None]]:
 
 
 def medium_config(config: InstallConfig, media_id: str, server_key_pem: str,
-                  tls_spki: tuple[str, ...] = ()) -> str:
+                  tls_spki: tuple[str, ...] = (), root_public: str = "") -> str:
     """`/etc/poa/access.json` этого носителя."""
     from cryptography.hazmat.primitives import serialization
 
@@ -158,4 +159,6 @@ def medium_config(config: InstallConfig, media_id: str, server_key_pem: str,
         "state": STATE_PATH,
         "kiosk_user": config.account.username,
         "label": media_id,
+        # Корень организации (Э18): по нему носитель проверяет описатели сервера.
+        "root_public": root_public,
     }, ensure_ascii=False, indent=2) + "\n"

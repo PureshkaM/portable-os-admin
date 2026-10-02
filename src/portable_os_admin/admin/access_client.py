@@ -201,5 +201,8 @@ class AccessClient:
         """Адреса шлюза и имя в его сертификате (носитель сверяет его)."""
         self.command("vpn", remotes=remotes, gateway_name=gateway_name)
 
+    def publish_descriptor(self, document: dict) -> int:
+        return self.command("descriptor", document=document).get("serial", 0)
+
     def log(self, since: int = 0, events_since: int = 0) -> dict:
         return self.command("log", since=since, events_since=events_since)

@@ -684,6 +684,18 @@ def _cmd_dst(h, db, obj):
     return {}
 
 
+def _cmd_descriptor(h, db, obj):
+    """Публикует описатель. Сервер его не проверяет -- корня организации он не
+    знает; проверяет носитель. Сервер лишь раздаёт."""
+    document = obj.get("document")
+    if not isinstance(document, dict) or not isinstance(document.get("descriptor"), dict):
+        raise Refused(400, {"error": "bad_descriptor"})
+    tmp = h.state_dir / "descriptor.json.tmp"
+    tmp.write_text(json.dumps(document, ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp, h.state_dir / "descriptor.json")
+    return {"serial": document["descriptor"].get("serial")}
+
+
 def _cmd_log(h, db, obj):
     since = obj.get("since", 0)
     if not isinstance(since, int):
@@ -707,6 +719,7 @@ COMMANDS = {
     "group": _cmd_group, "media_group": _cmd_media_group, "assign": _cmd_assign,
     "policy": _cmd_policy, "distribution": _cmd_distribution, "release": _cmd_release,
     "vpn": _cmd_vpn, "dst": _cmd_dst, "log": _cmd_log, "get_targets": _cmd_get_targets,
+    "descriptor": _cmd_descriptor,
 }
 #: Команды, которые только читают: им не нужен счётчик (повтор безвреден).
 READ_ONLY = {"log", "get_targets"}

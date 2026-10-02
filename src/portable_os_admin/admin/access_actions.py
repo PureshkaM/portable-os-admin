@@ -48,3 +48,28 @@ def media_events(container, media_id: str) -> list[str]:
     lines += [f"{e['t']}: {media_id}: {e['kind']}" + (f" {e['detail']}" if e.get("detail") else "")
               for e in log.get("server", []) if e.get("media_id") == media_id]
     return sorted(lines, reverse=True)
+
+
+def publish_descriptor(container, endpoints: list[str] | None = None,
+                       fallback: list[str] = ()) -> int:
+    """Подписывает рабочим ключом и публикует описатель сервера (Э18).
+
+    По умолчанию -- текущий адрес сервера, его отпечаток TLS (снятый с обычной
+    проверкой УЦ) и ключ подписи сервера из контейнера: то же, что носитель
+    получает при записи. Смена адреса или ключей -- передать новые.
+    """
+    import base64
+
+    from cryptography.hazmat.primitives import serialization
+
+    from . import org_root
+
+    endpoints = list(endpoints or [container.data.revocation_server_url.rstrip("/")])
+    pins = [access_client.fetch_tls_spki(url) for url in endpoints if url.startswith("https://")]
+    key = serialization.load_pem_public_key(container.data.revocation_public_key_pem.encode("ascii"))
+    raw = key.public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+    document = org_root.descriptor(container, endpoints, sorted(set(pins)),
+                                   [base64.b64encode(raw).decode("ascii")], list(fallback))
+    serial = client(container).publish_descriptor(document)
+    container.record_event("access_descriptor", "", f"опубликован описатель {serial}")
+    return serial
