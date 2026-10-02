@@ -1992,6 +1992,10 @@ class OSInstaller:
 
         run = lambda argv, **kw: self._run(argv, plan, dry_run, confirm, **kw)  # noqa: E731
         self._progress.step("Сборка общего initramfs")
+        for relative, content in backend.boot_config_files(config).items():
+            target = f"{root}/{relative}"
+            run(["mkdir", "-p", target.rsplit("/", 1)[0]])
+            self._write_file(target, content, plan, dry_run, confirm)
         for relative, (content, mode) in backend.scripted_files(
             config, medium_initrd.GENERIC, image=self._image, overlay_root=True
         ).items():
