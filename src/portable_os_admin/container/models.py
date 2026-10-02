@@ -327,9 +327,22 @@ class AdminContainerData:
     #: значило бы связать две независимые роли одного контейнера: смена одной
     #: потянула бы за собой другую.
     exchange_seed_b64: str = ""
+    #: Корень доверия организации (LIVE-2.0, Э18): открытая часть корневого
+    #: ключа (сам ключ -- офлайн, в сейфе), заверение рабочего ключа этого
+    #: контейнера и последний отзыв заверений -- всё в виде JSON-документов
+    #: `poa_trust`. Пусто -- контейнер ещё не включён в организацию.
+    org_root_public_b64: str = ""
+    working_key_cert_json: str = ""
+    revoked_keys_json: str = ""
+    #: Номер последнего выпущенного описателя сервера: строго растёт.
+    descriptor_serial: int = 0
 
     def to_dict(self) -> dict:
         return {
+            "org_root_public_b64": self.org_root_public_b64,
+            "working_key_cert_json": self.working_key_cert_json,
+            "revoked_keys_json": self.revoked_keys_json,
+            "descriptor_serial": self.descriptor_serial,
             "media_records": [m.to_dict() for m in self.media_records],
             "recovery_records": [r.to_dict() for r in self.recovery_records],
             "configs": [c.to_dict() for c in self.configs],
@@ -358,4 +371,8 @@ class AdminContainerData:
             revocation_public_key_pem=data.get("revocation_public_key_pem", ""),
             admin_authority_secret_b64=data.get("admin_authority_secret_b64", ""),
             exchange_seed_b64=data.get("exchange_seed_b64", ""),
+            org_root_public_b64=data.get("org_root_public_b64", ""),
+            working_key_cert_json=data.get("working_key_cert_json", ""),
+            revoked_keys_json=data.get("revoked_keys_json", ""),
+            descriptor_serial=int(data.get("descriptor_serial", 0)),
         )

@@ -66,3 +66,12 @@ def test_a_kiosk_with_access_needs_no_other_application():
     assert not [e for e in ConfigValidator().validate(config).errors if "хотя бы один пакет" in e]
     config.revocation.enabled = False
     assert [e for e in ConfigValidator().validate(config).errors if "хотя бы один пакет" in e]
+
+
+def test_runtime_is_a_package_so_setuptools_ships_it():
+    """Без __init__.py setuptools не кладёт каталог в собранную программу, и
+    сборка образа на машине администратора не нашла бы код клиента."""
+    # Проверяется то, на что смотрит find_packages: каталог -- пакет, если в нём
+    # есть __init__.py (setuptools на стенде не установлен).
+    assert (access_files.RUNTIME_SOURCE / "__init__.py").is_file()
+    assert (access_files.RUNTIME_SOURCE.parent / "__init__.py").is_file()
