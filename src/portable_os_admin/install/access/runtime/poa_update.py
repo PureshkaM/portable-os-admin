@@ -206,8 +206,47 @@ class Updater:
         return payload
 
 
+def check_running_slot(anchors: list[dict], boot: str = BOOT, cmdline: str | None = None) -> list[str]:
+    """Расхождения работающего слота с его подписанным выпуском (Э5).
+
+    `slot.cfg` и файлы слота лежат на незашифрованном разделе: на флешке их
+    можно подменить вместе. Подпись `release.json` подменить нельзя -- значит,
+    сверять с ней и ядро, и initramfs, и то, с каким хешем образа и номером
+    система на самом деле загрузилась (командная строка ядра).
+    """
+    slot = cmdline_value("poa.slot", cmdline)
+    if not slot or not anchors:
+        return []   # без корня организации выпуски не подписаны -- сверять не с чем
+    directory = os.path.join(boot, f"slot-{slot}")
+    try:
+        with open(os.path.join(directory, "release.json"), encoding="utf-8") as handle:
+            payload = poa_trust.verify_document(anchors, json.load(handle), "release")
+    except (OSError, ValueError, poa_trust.TrustError) as exc:
+        return [f"выпуск слота {slot} не проверен: {exc}"]
+    problems = []
+    for name, key in (("vmlinuz", "kernel"), ("initrd.img", "initrd")):
+        path = os.path.join(directory, name)
+        if not os.path.exists(path) or sha256_file(path) != payload[key]["sha256"]:
+            problems.append(f"слот {slot}: {name} не совпадает с подписанным выпуском")
+    if cmdline_value("poa.roothash", cmdline) != payload["verity_root_hash"]:
+        problems.append(f"слот {slot}: загружен образ не с тем корневым хешем, что в выпуске")
+    if cmdline_value("poa.serial", cmdline) != str(payload["serial"]):
+        problems.append(f"слот {slot}: номер выпуска в загрузке не тот, что подписан")
+    return problems
+
+
 def main(argv: list[str]) -> int:
-    """poa_update.py <access.json> <release-info.json> -- запускает служба."""
+    """poa_update.py <access.json> <release-info.json> -- запускает служба;
+    poa_update.py --check-slot <access.json> -- проверка целостности (Э5)."""
+    if argv[1] == "--check-slot":
+        with open(argv[2], encoding="utf-8") as handle:
+            config = json.load(handle)
+        import poa_accessd
+
+        problems = check_running_slot(poa_accessd.Service(config).anchors())
+        for problem in problems:
+            subprocess.run(["logger", "-t", "poa-integrity", problem], check=False)
+        return 1 if problems else 0
     with open(argv[1], encoding="utf-8") as handle:
         config = json.load(handle)
     with open(argv[2], encoding="utf-8") as handle:

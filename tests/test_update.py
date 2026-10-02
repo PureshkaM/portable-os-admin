@@ -175,3 +175,17 @@ def test_many_small_pieces_are_not_counted_as_failures(world, monkeypatch):
     assert updater.apply(INFO) == "b"
     assert (images / "slot-b" / "rootfs.squashfs").read_bytes() == FILES["rootfs.squashfs"]
 
+
+def test_the_running_slot_is_checked_against_its_signed_release(world):
+    """Э5: подмена ядра или slot.cfg (хеш образа) на флешке видна после загрузки."""
+    updater, publish, boot, _images, srv, _calls, (root, _working) = world
+    publish(_payload(11))
+    updater.apply(INFO)
+    good = f"BOOT_IMAGE=/slot-b/vmlinuz poa.slot=b poa.roothash={'ab' * 32} poa.serial=11"
+    assert update.check_running_slot([root.entry], str(boot), good) == []
+    bad_hash = good.replace("ab" * 32, "cd" * 32)
+    assert any("корневым хешем" in p for p in update.check_running_slot([root.entry], str(boot), bad_hash))
+    (boot / "slot-b" / "vmlinuz").write_bytes(b"evil")
+    assert any("vmlinuz" in p for p in update.check_running_slot([root.entry], str(boot), good))
+    assert update.check_running_slot([], str(boot), good) == []   # нет корня -- нечем сверять
+

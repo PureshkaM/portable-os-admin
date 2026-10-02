@@ -114,3 +114,17 @@ def test_a_missing_area_is_not_an_error(tmp_path):
     последнем шаге испортило бы носитель, который уже готов.
     """
     assert integrity.collect({"boot": str(tmp_path / "нет"), "esp": ""}) == {}
+
+
+def test_slot_files_and_the_slot_choice_are_not_in_the_manifest(tmp_path):
+    """Э4/Э9: обновление законно меняет каталоги слотов и переменные GRUB --
+    в опись они не входят (слот сверяется с подписанным выпуском, Э5)."""
+    from portable_os_admin.install import integrity
+
+    boot, esp = tmp_path / "boot", tmp_path / "boot" / "efi"
+    for path in (boot / "slot-a" / "vmlinuz", boot / "slot-b" / "initrd.img", boot / "poa-medium.img",
+                 boot / "grub" / "grub.cfg", esp / "EFI" / "poa" / "grubenv", esp / "EFI" / "BOOT" / "BOOTX64.EFI"):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"x")
+    manifest = integrity.collect({"boot": str(boot), "esp": str(esp)})
+    assert set(manifest) == {"boot:poa-medium.img", "boot:grub/grub.cfg", "esp:EFI/BOOT/BOOTX64.EFI"}

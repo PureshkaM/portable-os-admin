@@ -55,6 +55,11 @@ MANIFEST_PATH = "var/lib/portable-os-admin/boot-integrity.json"
 #: Что считается неизменным. Всё, что исполняется до расшифровки корня.
 GUARDED_AREAS = ("esp", "boot")
 
+#: Что законно меняется после записи (Э4/Э9) и в опись не входит: каталоги
+#: слотов (их пишет обновление; сверяются с подписанным release.json слота --
+#: `poa_update.check_running_slot`) и переменные выбора слота на ESP.
+MUTABLE_PREFIXES = ("boot:slot-a/", "boot:slot-b/", "esp:EFI/poa/grubenv")
+
 
 def _hash_file(path: str) -> str:
     """sha256 одного файла, читая его кусками.
@@ -104,7 +109,10 @@ def collect(roots: "dict[str, str]") -> "dict[str, str]":
                 if os.path.islink(full) or not os.path.isfile(full):
                     continue
                 relative = os.path.relpath(full, root)
-                manifest[f"{area}:{relative}"] = _hash_file(full)
+                key = f"{area}:{relative}"
+                if key.startswith(MUTABLE_PREFIXES):
+                    continue
+                manifest[key] = _hash_file(full)
     return manifest
 
 
@@ -246,6 +254,14 @@ while IFS= read -r line; do
 done <<'POA_LIST'
 {chr(10).join(f"{path}|{digest}" for path, digest in sorted(manifest.items()))}
 POA_LIST
+
+# Файлы работающего слота -- по его подписанному release.json (Э5): опись
+# их не держит, потому что обновление законно их меняет.
+if [ -x /usr/lib/poa-access/poa_update.py ]; then
+    if ! /usr/bin/python3 /usr/lib/poa-access/poa_update.py --check-slot /etc/poa/access.json; then
+        changed=$((changed + 1))
+    fi
+fi
 
 if [ "$changed" -gt 0 ]; then
     logger -t poa-integrity "ВНИМАНИЕ: незашифрованная часть носителя изменена ($changed). Пароль этой загрузки считать скомпрометированным."
