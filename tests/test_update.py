@@ -34,15 +34,28 @@ KEYS = {"rootfs.squashfs": "image", "rootfs.verity": "verity", "vmlinuz": "kerne
 
 
 class Server:
-    """Отдаёт файлы выпуска так, как Endpoint.download их получает."""
+    """Отдаёт файлы выпуска так, как Endpoint.download их получает; при
+    `cut` первая попытка обрывается на трети -- как медленная флешка за nginx."""
 
-    def __init__(self, root: pathlib.Path):
+    def __init__(self, root: pathlib.Path, cut: bool = False):
         self.root = root
+        self.cut = cut
+        self.calls = 0
 
     def download(self, path, dest, progress=None):
+        self.calls += 1
         name = path.rsplit("/", 1)[-1]
-        shutil.copyfile(self.root / name, dest)
-        return pathlib.Path(dest).stat().st_size
+        data = (self.root / name).read_bytes()
+        dest = pathlib.Path(dest)
+        have = dest.stat().st_size if dest.exists() else 0
+        piece = data[have:]
+        if self.cut and have == 0 and name != "release.json":
+            piece = piece[: len(piece) // 3]
+        with open(dest, "ab") as handle:
+            handle.write(piece)
+        if progress:
+            progress(dest.stat().st_size)
+        return dest.stat().st_size
 
 
 def _payload(serial, family="debian", files=FILES):
@@ -74,6 +87,7 @@ def world(tmp_path):
                              run=lambda argv, check=False: calls.append(argv),
                              images=str(images), boot=str(boot), state=str(tmp_path / "update.json"),
                              cmdline="BOOT_IMAGE=/slot-a/vmlinuz poa.slot=a poa.serial=10")
+    updater.sleep = lambda seconds: None
     return updater, publish, boot, images, server_dir, calls, (root, working)
 
 
@@ -94,7 +108,8 @@ def test_a_newer_signed_release_lands_in_the_other_slot_and_is_offered_to_grub(w
 def test_a_corrupted_file_leaves_grub_untouched(world):
     updater, publish, boot, _images, srv, calls, _keys = world
     publish(_payload(11))
-    (srv / "vmlinuz").write_bytes(b"evil kernel")
+    # Та же длина, другое содержимое: подмену ловит именно sha256.
+    (srv / "vmlinuz").write_bytes(b"X" * len(FILES["vmlinuz"]))
     with pytest.raises(update.UpdateError, match="sha256"):
         updater.apply(INFO)
     assert not (boot / "slot-b" / "vmlinuz").exists()
@@ -127,3 +142,14 @@ def test_the_window_text_follows_the_update():
     assert "50%" in launch.update_text({"state": "downloading", "done": 50, "total": 100})
     assert "следующем включении" in launch.update_text({"state": "ready"})
     assert launch.update_text({}) == ""
+
+
+def test_a_broken_download_is_resumed_from_where_it_stopped(world):
+    updater, publish, boot, images, srv, calls, _keys = world
+    updater.endpoint = Server(srv, cut=True)
+    publish(_payload(11))
+    assert updater.apply(INFO) == "b"
+    assert (images / "slot-b" / "rootfs.squashfs").read_bytes() == FILES["rootfs.squashfs"]
+    # release.json + по две попытки на каждый из четырёх файлов
+    assert updater.endpoint.calls == 1 + 2 * 4
+

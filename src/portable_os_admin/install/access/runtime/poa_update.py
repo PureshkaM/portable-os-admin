@@ -26,6 +26,7 @@ import hashlib
 import json
 import os
 import subprocess
+import time
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -37,6 +38,8 @@ IMAGES = "/run/poa/images"
 BOOT = "/boot"
 STATE = "/run/poa/update.json"
 TRIES = 3
+#: Попыток докачать файл, прежде чем сдаться до следующего входа.
+ATTEMPTS = 30
 #: Имя файла выпуска -> (где лежит в слоте, ключ sha256 в release.json).
 FILES = (
     ("rootfs.squashfs", "images", "image"),
@@ -81,6 +84,7 @@ class Updater:
         self.editenv = editenv
         self.run = run
         self.images, self.boot, self.state = images, boot, state
+        self.sleep = time.sleep
         self.slot = cmdline_value("poa.slot", cmdline)
         self.serial = int(cmdline_value("poa.serial", cmdline) or 0)
 
@@ -122,13 +126,15 @@ class Updater:
             for name, where, key in FILES:
                 directory = images_dir if where == "images" else boot_dir
                 part = os.path.join(directory, name + ".part")
-                self.report(state="downloading", serial=info["serial"], file=name,
-                            done=done, total=total)
-                self.endpoint.download(f"{base}/{name}", part)
+                expected = int(payload[key]["size"])
+                self.fetch(f"{base}/{name}", part, expected,
+                           lambda size, done=done, name=name: self.report(
+                               state="downloading", serial=info["serial"], file=name,
+                               done=done + size, total=total))
                 if sha256_file(part) != payload[key]["sha256"]:
                     os.unlink(part)
                     raise UpdateError(f"{name}: sha256 не совпал с подписанным выпуском")
-                done += os.path.getsize(part)
+                done += expected
             # Всё сошлось -- на места. До этого момента слот загрузчику не виден.
             for name, where, _key in FILES:
                 directory = images_dir if where == "images" else boot_dir
@@ -147,6 +153,34 @@ class Updater:
             raise
         finally:
             self.run(["mount", "-o", "remount,ro", self.images], check=False)
+
+    def fetch(self, path: str, part: str, expected: int, progress) -> None:
+        """Файл целиком, с докачкой. Обрывы -- норма: медленная флешка не
+        успевает за сетью, и сервер закрывает соединение по своему таймауту
+        (живая проверка 02.10.2026: образ обрывался на 313 МБ из 952), связь
+        у ноутбука пропадает. Каждая попытка продолжает с места обрыва."""
+
+
+        last = [0.0]
+
+        def throttled(size: int) -> None:
+            now = time.monotonic()
+            if now - last[0] >= 2 or size >= expected:
+                last[0] = now
+                progress(size)
+
+        for attempt in range(1, ATTEMPTS + 1):
+            try:
+                self.endpoint.download(path, part, throttled)
+            except poa_client.AccessError:
+                pass
+            size = os.path.getsize(part) if os.path.exists(part) else 0
+            if size == expected:
+                return
+            if size > expected:
+                os.unlink(part)      # мусор от прежней попытки -- заново
+            self.sleep(min(30, 2 * attempt))
+        raise UpdateError(f"{os.path.basename(part)[:-5]}: не скачался за {ATTEMPTS} попыток")
 
     def verify(self, document: dict, info: dict) -> dict:
         """Подпись, номер и совместимость -- до того, как скачан хоть байт образа."""
