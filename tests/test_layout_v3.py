@@ -60,15 +60,21 @@ def test_the_boot_script_mounts_the_slot_image_under_verity(selinux, mount_conta
 
 
 def test_the_cmdline_parsing_in_the_boot_script_works(tmp_path):
-    """Разбор poa.slot/poa.roothash -- тем же sed, что в скрипте."""
+    """Разбор poa.slot/poa.roothash -- строками из сгенерированного скрипта.
+
+    Живая загрузка 02.10.2026: в исходнике на Python в `sed` стояло `\\1` с
+    одной обратной чертой, и строка превратилась в символ с кодом 1. Проверки
+    «не пусто» проходили, путь выходил `slot-<\\x01>`. Прежний тест проверял
+    свой собственный sed -- и был зелёным."""
     cmdline = tmp_path / "cmdline"
     cmdline.write_text("BOOT_IMAGE=/slot-a/vmlinuz ro poa.slot=b poa.roothash=" + "ab" * 32 + " quiet\n")
-    slot = subprocess.run(["sed", "-n", r"s/.*poa\.slot=\([ab]\).*/\1/p", str(cmdline)],
-                          text=True, capture_output=True).stdout.strip()
-    root = subprocess.run(["sed", "-n", r"s/.*poa\.roothash=\([0-9a-f]\{64\}\).*/\1/p", str(cmdline)],
-                          text=True, capture_output=True).stdout.strip()
-    assert slot == "b" and root == "ab" * 32
-
+    script = overlay.boot_script("${POA_MAPPER}")
+    lines = [line.replace("/proc/cmdline", str(cmdline)) for line in script.splitlines()
+             if line.startswith(("slot=", "roothash="))]
+    assert len(lines) == 2
+    out = subprocess.run(["sh", "-c", "\n".join(lines) + '\nprintf "%s|%s" "$slot" "$roothash"'],
+                         text=True, capture_output=True).stdout
+    assert out == "b|" + "ab" * 32
 
 def test_grub_boots_the_slot_kernel_with_its_root_hash():
     config, layout = _layout()

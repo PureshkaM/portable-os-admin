@@ -299,6 +299,9 @@ mount -o remount,rw "$container" 2>/dev/null || true"""
 # Здесь смонтированный контейнер подменяется собранным overlay.
 {strict}
 fail() {{
+    # И в журнал ядра: plymouth прячет консоль, а dmesg виден из аварийной
+    # оболочки и попадает в журнал системы (живая загрузка 02.10.2026).
+    echo "poa-overlay: $1" > /dev/kmsg 2>/dev/null || true
     echo "poa-overlay: $1" >&2
     echo "poa-overlay: система не собрана, загрузка прервана" >&2
     exit 1
@@ -322,13 +325,16 @@ modprobe loop 2>/dev/null || true
 modprobe squashfs 2>/dev/null || true
 modprobe overlay 2>/dev/null || true
 modprobe dm-verity 2>/dev/null || true
+# Узлы /dev/loop* и устройства dm появляются через udev -- дождаться, иначе
+# первый же veritysetup после загрузки модуля может их не найти.
+udevadm settle --timeout=30 2>/dev/null || true
 
 # Образ слота -- на разделе образов, под dm-verity (Э3b). Слот и корневой хеш
 # -- из командной строки ядра: с Э4 их передаёт проверяющая ступень после
 # проверки подписи выпуска. Без хеша корень не собирается вовсе: образ без
 # проверки целостности -- это ровно то, от чего verity защищает.
-slot=$(sed -n 's/.*poa\.slot=\([ab]\).*/\1/p' /proc/cmdline)
-roothash=$(sed -n 's/.*poa\.roothash=\([0-9a-f]\{{64\}}\).*/\1/p' /proc/cmdline)
+slot=$(sed -n 's/.*poa\\.slot=\\([ab]\\).*/\\1/p' /proc/cmdline)
+roothash=$(sed -n 's/.*poa\\.roothash=\\([0-9a-f]\\{{64\\}}\\).*/\\1/p' /proc/cmdline)
 [ -n "$slot" ] || fail "в командной строке ядра не назван слот (poa.slot)"
 [ -n "$roothash" ] || fail "в командной строке ядра нет корневого хеша образа (poa.roothash)"
 [ -n "${{POA_IMAGES_UUID:-}}" ] || fail "носитель не назвал раздел образов"
@@ -339,9 +345,12 @@ while [ ! -b "/dev/disk/by-uuid/$POA_IMAGES_UUID" ] && [ "$poa_wait" -lt 30 ]; d
     sleep 1; poa_wait=$((poa_wait + 1))
 done
 mount -o ro "/dev/disk/by-uuid/$POA_IMAGES_UUID" "$images" || fail "не смонтировать раздел образов"
-veritysetup open "$images/slot-$slot/{SLOT_IMAGE}" {VERITY_MAPPER} \
-    "$images/slot-$slot/{SLOT_VERITY}" "$roothash" \
-    || fail "образ слота $slot не прошёл проверку целостности"
+# DM_DISABLE_UDEV: в local-bottom initramfs-tools veritysetup создавал
+# устройство и вечно ждал подтверждения udev (живая загрузка 02.10.2026);
+# без синхронизации libdevmapper сама создаёт узел в /dev/mapper.
+DM_DISABLE_UDEV=1 veritysetup open "$images/slot-$slot/{SLOT_IMAGE}" {VERITY_MAPPER} \
+    "$images/slot-$slot/{SLOT_VERITY}" "$roothash" 2>/run/poa-verity.err \
+    || fail "образ слота $slot не прошёл проверку целостности: $(cat /run/poa-verity.err 2>/dev/null)"
 mount -t squashfs -o ro /dev/mapper/{VERITY_MAPPER} "$lower" || fail "не подключить образ системы"
 
 [ -d "$medium" ] || fail "в контейнере нет слоя носителя $medium"
