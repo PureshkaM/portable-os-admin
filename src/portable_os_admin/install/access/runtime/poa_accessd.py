@@ -41,7 +41,10 @@ import poa_trust  # noqa: E402
 
 CONFIG = os.environ.get("POA_ACCESS_CONFIG", "/etc/poa/access.json")
 SOCKET = os.environ.get("POA_ACCESS_SOCKET", "/run/poa/access.sock")
-VPN_RUN = "/run/poa/vpn"
+#: Под /run/openvpn: политика SELinux РЕД ОС даёт openvpn читать только
+#: openvpn_var_run_t, а /run/poa -- var_run_t (AVC denied, живая загрузка
+#: 02.10.2026). Метку ставит restorecon после записи.
+VPN_RUN = "/run/openvpn/poa"
 #: Принятый описатель сервера -- в постоянном состоянии (state/poa).
 DESCRIPTOR = "/var/lib/poa/descriptor.json"
 TLS_PIN = "/var/lib/poa/tls-pin"
@@ -220,10 +223,14 @@ class Service:
         self.session_id = os.urandom(8).hex()
         directory = os.path.join(VPN_RUN, self.session_id)
         os.makedirs(directory, mode=0o700)
+        os.chmod(VPN_RUN, 0o700)
         with open(os.path.join(directory, "client.conf"), "w", encoding="ascii") as handle:
             handle.write(openvpn_config(vpn, key_pem.decode("ascii"),
                                         vpn.get("gateway_name") or self.config.get("gateway_name", "")))
         os.chmod(os.path.join(directory, "client.conf"), 0o600)
+        if shutil.which("restorecon"):
+            self.run(["restorecon", os.path.dirname(VPN_RUN)], check=False)
+            self.run(["restorecon", "-R", VPN_RUN], check=False)
         self.run(["systemctl", "start", f"poa-vpn@{self.session_id}.service"], check=True)
 
     def vpn_state(self) -> str:

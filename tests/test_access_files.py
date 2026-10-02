@@ -31,7 +31,7 @@ def test_image_carries_the_client_units_and_autostart():
         content, mode = files[f"{access_files.RUNTIME_DIR}/{name}"]
         assert content and mode == 0o755
     assert "poa_accessd.py" in files[access_files.SERVICE_PATH][0]
-    assert "/run/poa/vpn/%i/client.conf" in files[access_files.VPN_UNIT_PATH][0]
+    assert "/run/openvpn/poa/%i/client.conf" in files[access_files.VPN_UNIT_PATH][0]
     assert "poa_connect.py" in files[access_files.AUTOSTART_PATH][0]
 
 

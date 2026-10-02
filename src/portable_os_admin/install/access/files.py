@@ -73,7 +73,7 @@ After=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/sbin/openvpn --config /run/poa/vpn/%i/client.conf
+ExecStart=/usr/sbin/openvpn --config /run/openvpn/poa/%i/client.conf
 Restart=on-failure
 RestartSec=5
 """
