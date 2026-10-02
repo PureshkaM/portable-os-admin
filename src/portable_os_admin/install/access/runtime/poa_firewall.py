@@ -5,7 +5,7 @@
 
 | Стадия            | Что открыто                                           |
 |-------------------|-------------------------------------------------------|
-| всегда            | DHCP, DNS, сервер доступа (80 -- проба, 443)          |
+| всегда            | DHCP, DNS, сервер доступа (80 -- проба, порт адреса)  |
 | портал            | веб только для пользователя окна портала (`poa-portal`)|
 | выдан доступ      | шлюзы VPN (адрес, протокол, порт)                     |
 | VPN поднят        | назначенные цели, и только через туннель              |
@@ -22,8 +22,8 @@ TABLE = "poa"
 PORTAL_USER = "poa-portal"
 
 RULESET = f"""table inet {TABLE} {{
-    set server4 {{ type ipv4_addr; }}
-    set server6 {{ type ipv6_addr; }}
+    set server4 {{ type ipv4_addr . inet_service; }}
+    set server6 {{ type ipv6_addr . inet_service; }}
     set gateway4 {{ type ipv4_addr . inet_proto . inet_service; }}
     set target4 {{ type ipv4_addr . inet_service; }}
 
@@ -42,8 +42,8 @@ RULESET = f"""table inet {TABLE} {{
         udp dport {{ 53, 67, 123 }} accept
         tcp dport 53 accept
         icmpv6 type {{ nd-neighbor-solicit, nd-neighbor-advert, nd-router-solicit }} accept
-        ip daddr @server4 tcp dport {{ 80, 443 }} accept
-        ip6 daddr @server6 tcp dport {{ 80, 443 }} accept
+        ip daddr . tcp dport @server4 accept
+        ip6 daddr . tcp dport @server6 accept
         ip daddr . meta l4proto . th dport @gateway4 accept
         oifname "tun*" ip daddr . th dport @target4 accept
         meta skuid "{PORTAL_USER}" tcp dport {{ 80, 443 }} accept
@@ -81,9 +81,10 @@ class Firewall:
             script += f"add element inet {TABLE} {name} {{ {', '.join(elements)} }}\n"
         self._nft(script)
 
-    def allow_server(self, host: str) -> list[str]:
+    def allow_server(self, host: str, port: int = 443) -> list[str]:
+        """Сервер доступа: порт из его адреса и 80 для пробы портала."""
         addresses = resolve4(host)
-        self._replace("server4", addresses)
+        self._replace("server4", [f"{a} . {p}" for a in addresses for p in sorted({80, int(port)})])
         return addresses
 
     def allow_gateways(self, remotes: list[dict]) -> None:

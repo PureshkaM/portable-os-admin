@@ -105,3 +105,24 @@ def test_the_default_official_address_is_not_taken_for_a_company_mirror():
     assert get_backend("debian").company_mirror(config) == ""
     config.mirror = "http://repo.corp.local/debian"
     assert get_backend("debian").company_mirror(config) == "http://repo.corp.local/debian"
+
+
+def test_redos_drops_the_kernel_left_from_the_image_after_upgrade(monkeypatch):
+    """Обновление приносит новое ядро, а прежнее остаётся (installonly) --
+    430 МБ модулей в каждом выпуске (найдено на сборке 02.10.2026)."""
+    monkeypatch.setattr(repo_metadata, "discover_repos", lambda mountpoint, arch: (
+        repo_metadata.Repo("base", "https://x/os", "file:///etc/pki/rpm-gpg/RPM-GPG-KEY-RED-SOFT"),))
+    backend = get_backend("redos")
+    backend.bind_install_source("file:///mnt/image", "8.0", arch="x86_64")
+    backend.bind_network(_config(target_os="redos"), "/mnt/image", "/target")
+    script = backend.old_kernels_command("/target")[-1]
+    assert "sort -V" in script and "rpm --root /target -qf" in script
+    # Из rpm -qf -- только успешный ответ: текст ошибки в dnf remove недопустим.
+    assert '2>/dev/null) && old="$old $p"' in script
+
+
+def test_isolated_build_keeps_its_only_kernel():
+    backend = get_backend("redos")
+    backend.bind_install_source("file:///mnt/image", "8.0", arch="x86_64")
+    backend.bind_network(_config(target_os="redos", network_packages=False), "/mnt/image", "/target")
+    assert backend.old_kernels_command("/target") is None

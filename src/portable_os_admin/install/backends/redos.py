@@ -26,6 +26,8 @@ generic RHEL assumptions:
 """
 from __future__ import annotations
 
+import shlex
+
 from ...config.schema import InstallConfig
 from .. import kiosk as kiosk_mode
 from .. import machine_binding
@@ -628,6 +630,33 @@ class RedOSInstallBackend(InstallBackend):
         if not self.network_repos:
             return None
         return self._dnf(mount_root, "upgrade")
+
+    def old_kernels_command(self, mount_root: str) -> list[str] | None:
+        """Пакеты, которым принадлежат каталоги модулей, кроме самого нового ядра.
+
+        Не `dnf remove --oldinstallonly`: он оставляет «работающее» ядро (в
+        chroot это ядро хоста), а в РЕД ОС installonly -- только мета-пакет
+        `kernel-lt`; `kernel-lt-core` и `-modules` с 430 МБ модулей остаются
+        (проверено на сборке 02.10.2026). Зависящее от удаляемых dnf снимает
+        сам. Одно ядро -- не ошибка: удалять нечего.
+        """
+        if not self.network_repos:
+            return None
+        root = shlex.quote(mount_root)
+        # Имена берутся только из успешного `rpm -qf`: текст ошибки («не
+        # принадлежит ни одному пакету»), попав в dnf remove, совпадал с
+        # чужими пакетами -- так проверка на стенде чуть не сняла grub2.
+        # Бесхозное, что остаётся от старых ядер (modules.dep и т.п.), -- прочь.
+        env = (["env", f"RPM_SEQUOIA_CRYPTO_POLICY={self._sequoia_policy_path}"]
+               if self._sequoia_policy_path else [])
+        return [*env, "sh", "-c",
+                f"cd {root}/usr/lib/modules || exit 0; "
+                "latest=$(ls | sort -V | tail -n 1); old=; "
+                'for d in *; do [ "$d" = "$latest" ] && continue; '
+                f"p=$(rpm --root {root} -qf --qf '%{{NAME}}-%{{VERSION}}-%{{RELEASE}}.%{{ARCH}}\\n' "
+                '/usr/lib/modules/"$d" 2>/dev/null) && old="$old $p"; done; '
+                f"if [ -n \"$old\" ]; then dnf --installroot {root} -y --disablerepo='*' remove $old || exit 1; fi; "
+                'for d in *; do [ "$d" = "$latest" ] || rm -rf -- "$d"; done']
 
     def package_install_command(self, mount_root: str, packages: list[str]) -> list[str] | None:
         if not packages:

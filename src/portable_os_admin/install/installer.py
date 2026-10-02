@@ -1164,6 +1164,10 @@ class OSInstaller:
 
         self._install_extra_packages(root, backend, run, plan, dry_run, confirm_device)
 
+        prune = backend.old_kernels_command(root)
+        if prune is not None:
+            run(prune, timeout=BOOTSTRAP_TIMEOUT)
+
         self._progress.step("Создание учётной записи и служб")
         for argv in backend.chroot_setup_commands(root, config):
             run(argv, timeout=BOOTSTRAP_TIMEOUT)

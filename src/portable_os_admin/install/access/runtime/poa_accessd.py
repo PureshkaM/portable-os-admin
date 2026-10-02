@@ -318,9 +318,11 @@ def keep_server_open(firewall: "poa_firewall.Firewall", host: str, stop=None) ->
     """
     import urllib.parse
 
-    name = urllib.parse.urlsplit(host).hostname or host
+    parts = urllib.parse.urlsplit(host)
+    name = parts.hostname or host
+    port = parts.port or (80 if parts.scheme == "http" else 443)
     while not (stop and stop.is_set()):
-        resolved = firewall.allow_server(name)
+        resolved = firewall.allow_server(name, port)
         time.sleep(300 if resolved else 30)
 
 

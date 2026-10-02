@@ -57,3 +57,12 @@ def test_the_ruleset_is_accepted_by_nft(tmp_path):
     text = fw.RULESET.replace(f'meta skuid "{fw.PORTAL_USER}"', "meta skuid 0")
     result = subprocess.run(["nft", "-c", "-f", "-"], input=text, text=True, capture_output=True)
     assert result.returncode == 0, result.stderr
+
+
+def test_server_is_open_on_its_own_port_and_80_for_the_probe(monkeypatch):
+    """Сервер не обязательно на 443 (стенд -- 8443): экран берёт порт из адреса."""
+    monkeypatch.setattr(fw, "resolve4", lambda host: ["10.0.2.2"])
+    rec = Recorder()
+    fw.Firewall(runner=rec).allow_server("10.0.2.2", 8443)
+    assert "10.0.2.2 . 80, 10.0.2.2 . 8443" in rec.scripts[0]
+    assert "ip daddr . tcp dport @server4 accept" in fw.RULESET
