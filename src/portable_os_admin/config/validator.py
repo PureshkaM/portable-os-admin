@@ -246,7 +246,12 @@ class BuiltinConfigValidator:
         # и доступно. Носитель без единого пакета -- это рабочий стол, с
         # которого нечего запустить, и сказать об этом надо до сборки, а не
         # после выдачи.
-        if not config.packages:
+        #
+        # С доступом (LIVE-2.0, Э8) приложение у пользователя есть всегда --
+        # окно «Подключение» и клиенты RDP/VNC/SSH ставятся вместе с ним.
+        from ..install.access.files import is_enabled as access_enabled
+
+        if not config.packages and not access_enabled(config):
             errors.append(
                 "в режиме киоска нужно выбрать хотя бы один пакет с приложением: "
                 "система собирается минимальной, и без них пользователю нечего "

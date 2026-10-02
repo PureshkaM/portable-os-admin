@@ -57,3 +57,12 @@ def test_medium_config_names_the_server_and_its_keys():
     raw = key.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
     assert data["server_sign_keys"] == [base64.b64encode(raw).decode()]
     assert data["device_key"] == "/etc/poa/device.key" and data["state"] == access_files.STATE_PATH
+
+
+def test_a_kiosk_with_access_needs_no_other_application():
+    from portable_os_admin.config.validator import BuiltinConfigValidator as ConfigValidator
+    config = _config(True)
+    config.packages = []
+    assert not [e for e in ConfigValidator().validate(config).errors if "хотя бы один пакет" in e]
+    config.revocation.enabled = False
+    assert [e for e in ConfigValidator().validate(config).errors if "хотя бы один пакет" in e]
