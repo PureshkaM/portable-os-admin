@@ -2829,3 +2829,47 @@ def test_access_tab_issues_a_code_and_saves_workplaces(gui_app, tmp_path, monkey
             break
     assert [t["id"] for t in saved["targets"]] == ["rdp-1", "ssh-1"]
     window.destroy()
+
+
+def test_the_org_root_tab_creates_a_reserve_root_and_certifies_the_container(gui_app, tmp_path, monkeypatch):
+    """Через окно, а не API: резервный корень, фраза один раз, сертификат
+    этому контейнеру -- как это сделает администратор (Э18)."""
+    from portable_os_admin.admin import org_root
+    from portable_os_admin.gui.screens import org_root_tab
+    from portable_os_admin.gui.screens.maintenance import MaintenanceFrame
+
+    monkeypatch.setattr(org_root, "RESERVE_KDF_N", 2 ** 14)
+    app = gui_app
+    _open_container(app, tmp_path)
+    app.show_frame(MaintenanceFrame)
+    app.update()
+    tab = app._current_frame.org_root_tab
+    root_path = tmp_path / "reserve.poaroot"
+    monkeypatch.setattr(org_root_tab.filedialog, "asksaveasfilename", lambda **_: str(root_path))
+    shown = {}
+    monkeypatch.setattr(org_root_tab, "PhraseDialog",
+                        lambda parent, phrase, entry: shown.update(phrase=phrase, entry=entry))
+    tab._create()
+    for _ in range(200):
+        app.update()
+        if "phrase" in shown:
+            break
+        import time
+        time.sleep(0.05)
+    assert root_path.exists() and len(shown["phrase"]) == org_root.RESERVE_PHRASE_LENGTH
+    assert org_root.anchors(app.session.container) == [shown["entry"]]
+    assert "disabled" in tab.create_button.state()
+
+    monkeypatch.setattr(org_root_tab.filedialog, "askopenfilename", lambda **_: str(root_path))
+    monkeypatch.setattr(org_root_tab, "PhraseEntryDialog",
+                        lambda parent, on_accept: on_accept(shown["phrase"]))
+    tab._certify_self()
+    for _ in range(200):
+        app.update()
+        if app.session.container.data.working_key_cert_json:
+            break
+        import time
+        time.sleep(0.05)
+    assert app.session.container.data.working_key_cert_json
+    texts = " ".join(w.cget("text") for w in tab.facts.winfo_children()[0].winfo_children())
+    assert "действует до" in texts and org_root.fingerprint(shown["entry"]) in texts

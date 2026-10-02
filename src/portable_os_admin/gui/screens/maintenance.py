@@ -107,6 +107,9 @@ class MaintenanceFrame(ttk.Frame):
         ).pack(anchor="w", pady=(theme.SPACE_SM, 0))
         self._show_revocation_state()
 
+        from .org_root_tab import build_org_root_tab
+        self.org_root_tab = build_org_root_tab(notebook, self)
+
     def _open_password(self) -> None:
         from .password import PasswordFrame
 
