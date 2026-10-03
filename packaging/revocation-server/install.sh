@@ -31,6 +31,9 @@ ORG=""
 KIT_NAME=""
 KIT_DIR=""
 DB=postgresql
+CLUSTER_NEW=""
+CLUSTER_KIT=""
+NODE=""
 TLS_CERT=""
 TLS_KEY=""
 
@@ -53,6 +56,13 @@ usage() {
                             Encrypt -- для закрытых сетей и своего УЦ
   --db postgresql|sqlite    база (по умолчанию postgresql на этой же машине;
                             sqlite -- только стенд и переход)
+
+Кластер (не меньше трёх узлов; на каждом -- приложение, PostgreSQL под
+Patroni и etcd; у каждого узла свой --domain, все они -- в описателе):
+  --cluster-new n1=IP,n2=IP,n3=IP --node n1 --cluster-kit <каталог>
+                            первый узел: создать комплект кластера и встать
+  --cluster-kit <каталог> --node <имя>
+                            остальные узлы: встать по перенесённому комплекту
   --org <название>          название организации в сертификате CA для VPN
                             (по умолчанию -- имя домена)
   --gateway-kit <имя> <каталог>
@@ -72,6 +82,9 @@ while [ $# -gt 0 ]; do
         --tls-cert) TLS_CERT=$2; shift 2 ;;
         --tls-key) TLS_KEY=$2; shift 2 ;;
         --db) DB=$2; shift 2 ;;
+        --cluster-new) CLUSTER_NEW=$2; shift 2 ;;
+        --cluster-kit) CLUSTER_KIT=$2; shift 2 ;;
+        --node) NODE=$2; shift 2 ;;
         --org) ORG=$2; shift 2 ;;
         --gateway-kit) KIT_NAME=$2; KIT_DIR=$3; shift 3 ;;
         -h|--help) usage ;;
@@ -95,6 +108,11 @@ fi
 [ -n "$ORG" ] || ORG=$DOMAIN
 [ -z "$KEY" ] || [ -f "$KEY" ] || { echo "нет файла ключа: $KEY" >&2; exit 1; }
 case "$DB" in postgresql|sqlite) ;; *) echo "--db: postgresql или sqlite" >&2; exit 1 ;; esac
+if [ -n "$CLUSTER_KIT$CLUSTER_NEW$NODE" ]; then
+    [ -n "$CLUSTER_KIT" ] && [ -n "$NODE" ] || { echo "кластер: нужны --cluster-kit и --node" >&2; exit 1; }
+    [ -n "$CLUSTER_NEW" ] || [ -d "$CLUSTER_KIT" ] || { echo "нет комплекта $CLUSTER_KIT" >&2; exit 1; }
+    DB=cluster
+fi
 if [ -n "$TLS_CERT$TLS_KEY" ]; then
     [ -f "$TLS_CERT" ] && [ -f "$TLS_KEY" ] || { echo "--tls-cert и --tls-key: оба файла" >&2; exit 1; }
 fi
@@ -112,10 +130,13 @@ if command -v apt-get >/dev/null 2>&1; then
     # «local user with ID … does not exist» (проверено на чистом Debian 13).
     [ "$DB" = sqlite ] || apt-get install -y -q --no-install-recommends \
         postgresql python3-psycopg2 libnss-systemd >/dev/null
+    [ "$DB" != cluster ] || apt-get install -y -q --no-install-recommends \
+        patroni python3-etcd etcd-server etcd-client >/dev/null   # DCS etcd3 Patroni -- на python3-etcd
     # openvpn нужен только как генератор ключей tls-crypt-v2, сама служба не включается.
     systemctl disable --now openvpn.service >/dev/null 2>&1 || true
 elif command -v dnf >/dev/null 2>&1; then
     dnf install -y -q python3 python3-cryptography openssl openvpn nginx certbot
+    [ "$DB" != cluster ] || { echo "кластер пока ставится только на Debian" >&2; exit 1; }
     if [ "$DB" = postgresql ]; then
         dnf install -y -q postgresql-server python3-psycopg2
         [ -f /var/lib/pgsql/data/PG_VERSION ] || postgresql-setup --initdb
@@ -131,6 +152,11 @@ install -m 755 "$HERE/poa-revocation-server.py" "$LIB/poa-revocation-server.py"
 install -m 644 "$HERE"/poa_access/*.py "$LIB/poa_access/"
 ln -sf "$LIB/poa-revocation-server.py" /usr/local/sbin/poa-revocation-server.py
 install -m 644 "$HERE/poa-revocation.service" /etc/systemd/system/poa-revocation.service
+install -m 755 "$HERE/cluster.sh" "$LIB/cluster.sh"
+if [ "$DB" = cluster ] && [ -z "$CLUSTER_NEW" ]; then
+    # Ключи сервера на всех узлах одинаковые: до шага ниже, иначе он создал бы свой.
+    sh "$LIB/cluster.sh" keys "$CLUSTER_KIT"
+fi
 
 echo "== ключ отзыва"
 mkdir -p /etc/poa-revocation
@@ -152,13 +178,18 @@ echo "== ключи сервера доступа v3"
 # Только недостающие: новый CA лишил бы шлюз доверия, новый ключ данных сделал
 # бы нечитаемыми семена TOTP в базе.
 (cd "$LIB" && umask 077 && python3 -m poa_access.tool init-keys "$KEYS" "$ORG")
+if [ -n "$CLUSTER_NEW" ] && [ ! -d "$CLUSTER_KIT" ]; then
+    sh "$LIB/cluster.sh" kit "$CLUSTER_KIT" "$ORG" "$CLUSTER_NEW"
+fi
 
 echo "== база"
 # PostgreSQL на этой же машине, вход службы -- по unix-сокету без пароля
 # (peer): у службы DynamicUser с именем юнита, ему и принадлежит роль. Пароля
 # нет ни в юните, ни на диске. Старая база sqlite переносится один раз.
 mkdir -p /etc/systemd/system/poa-revocation.service.d
-if [ "$DB" = postgresql ]; then
+if [ "$DB" = cluster ]; then
+    sh "$LIB/cluster.sh" node "$CLUSTER_KIT" "$NODE"
+elif [ "$DB" = postgresql ]; then
     PGURL="postgresql://poa-revocation@/poa_access?host=/run/postgresql"
     MIGRATE_URL="postgresql:///poa_access?host=/run/postgresql"   # вход как postgres
     systemctl enable --now postgresql >/dev/null 2>&1 || systemctl enable --now postgresql.service
@@ -272,7 +303,9 @@ systemctl daemon-reload
 systemctl enable --now poa-revocation.service >/dev/null
 systemctl restart poa-revocation.service
 sleep 2
-systemctl is-active poa-revocation.service
+# В кластере служба поднимется, когда Patroni выберет ведущего (нужен
+# кворум -- второй узел): до того она перезапускается сама.
+systemctl is-active poa-revocation.service || [ "$DB" = cluster ]
 
 # Код знакомства служба создаёт сама при первом старте: каталог состояния
 # принадлежит ей, а не root, и писать туда снаружи -- лишняя возня с правами.

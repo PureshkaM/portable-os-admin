@@ -21,6 +21,7 @@
 from __future__ import annotations
 
 import contextlib
+import os
 import re
 import sqlite3
 
@@ -137,13 +138,26 @@ class Database:
         #: данных входит как postgres, а таблицы должны принадлежать службе.
         self.role = role
 
+    @staticmethod
+    def _password() -> dict:
+        """Пароль кластера -- из файла учётных данных systemd
+        (`POA_DB_PASSWORD_FILE`), а не через PGPASSFILE: systemd выкладывает
+        учётные данные с правами 0440 и ACL, а libpq молча игнорирует файл
+        паролей с правом группы («no password supplied», стенд 03.10.2026).
+        Один узел обходится без пароля (peer)."""
+        path = os.environ.get("POA_DB_PASSWORD_FILE")
+        if not path:
+            return {}
+        with open(path, encoding="utf-8") as handle:
+            return {"password": handle.read().strip()}
+
     @contextlib.contextmanager
     def tx(self):
         """Транзакция с блокировкой записи с первой же команды."""
         if self.postgres:
             import psycopg2
 
-            raw = psycopg2.connect(self.target)
+            raw = psycopg2.connect(self.target, **self._password())
             try:
                 conn = Connection(raw, True)
                 if self.role:
