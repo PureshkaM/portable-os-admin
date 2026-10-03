@@ -104,7 +104,7 @@ def publish_distribution(container, directory: str, dist_id: str, progress=None)
     if "signer" not in document:
         raise AccessActionError(
             "выпуск не подписан: рабочий ключ контейнера не заверен корнем организации "
-            "(Обслуживание → Корень организации), а неподписанный выпуск носитель не примет")
+            "(Обслуживание → Корень), а неподписанный выпуск носитель не примет")
     release = document["release"]
     api = client(container)
     known = {d["id"]: d for d in api.overview()["distributions"]}

@@ -2929,3 +2929,33 @@ def test_the_releases_tab_shows_the_tree_and_assigns_a_distribution(gui_app, tmp
             break
         time.sleep(0.02)
     assert calls == [("team", None)]
+
+
+def test_the_descriptor_is_published_with_the_listed_nodes(gui_app, tmp_path, monkeypatch):
+    """«Ресурс отзыва → Описатель сервера» (Э18): адреса через запятую или
+    пробел уходят списком, пустой список не публикуется."""
+    import time
+
+    from portable_os_admin.admin import access_actions
+    from portable_os_admin.gui.screens.maintenance import MaintenanceFrame
+
+    sent = []
+    monkeypatch.setattr(access_actions, "publish_descriptor",
+                        lambda c, nodes, fallback: sent.append((nodes, fallback)) or 42)
+    app = gui_app
+    _open_container(app, tmp_path)
+    app.show_frame(MaintenanceFrame)
+    frame = app._current_frame
+    frame.descriptor_nodes.set("")
+    frame._publish_descriptor()
+    assert sent == []
+    frame.descriptor_nodes.set("https://a.example:8443, https://b.example:8443")
+    frame.descriptor_fallback.set("https://mirror.example/poa")
+    frame._publish_descriptor()
+    for _ in range(100):
+        app.update()
+        if sent:
+            break
+        time.sleep(0.02)
+    assert sent == [(["https://a.example:8443", "https://b.example:8443"],
+                     ["https://mirror.example/poa"])]

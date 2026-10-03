@@ -109,6 +109,22 @@ class MaintenanceFrame(ttk.Frame):
         ).pack(anchor="w", pady=(theme.SPACE_SM, 0))
         self._show_revocation_state()
 
+        # Описатель сервера (Э18): адреса узлов, отпечатки TLS и ключ сервера,
+        # подписанные рабочим ключом. Носитель берёт его при входе -- так
+        # смена адреса или ключей доезжает без перезаписи носителей.
+        descriptor = ttk.LabelFrame(revocation_page, text="Описатель сервера",
+                                    padding=theme.SPACE_SM)
+        descriptor.pack(anchor="w", fill="x", pady=(theme.SPACE_MD, 0))
+        self.descriptor_nodes = tk.StringVar(
+            value=self.app.session.container.data.revocation_server_url)
+        self.descriptor_fallback = tk.StringVar()
+        _, row = add_field(descriptor, 0, "Адреса узлов", self.descriptor_nodes)
+        _, row = add_field(descriptor, row, "Резервные места", self.descriptor_fallback,
+                           hint="Где носитель ищет новый описатель, если ни один узел не ответил.")
+        ttk.Button(descriptor, text="Опубликовать описатель",
+                   command=self._publish_descriptor).grid(
+            row=row, column=0, columnspan=2, sticky="w", pady=(theme.SPACE_SM, 0))
+
         from .org_root_tab import build_org_root_tab
         self.org_root_tab = build_org_root_tab(notebook, self)
         from .releases_tab import build_releases_tab
@@ -143,6 +159,25 @@ class MaintenanceFrame(ttk.Frame):
             self.message_bar.success(
                 "Всё освобождено, носитель можно извлекать или размечать заново."
             )
+
+    def _publish_descriptor(self) -> None:
+        from ...admin import access_actions
+
+        container = self.app.session.container
+        nodes = self.descriptor_nodes.get().replace(",", " ").split()
+        fallback = self.descriptor_fallback.get().replace(",", " ").split()
+        if not nodes:
+            self.message_bar.error("Нужен хотя бы один адрес узла.")
+            return
+
+        def done(serial) -> None:
+            self.app.save_container()
+            self.message_bar.success(f"Описатель № {serial} опубликован: узлов {len(nodes)}.")
+
+        run_in_background(
+            self, lambda: access_actions.publish_descriptor(container, nodes, fallback),
+            on_success=done,
+            on_error=lambda exc: self.message_bar.error(f"Описатель не опубликован: {exc}"))
 
     def _show_revocation_state(self) -> None:
         data = self.app.session.container.data
