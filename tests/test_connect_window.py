@@ -114,3 +114,35 @@ def test_window_picks_the_page_from_the_service_state(tmp_path, monkeypatch, sta
     window = connect.ConnectWindow()
     assert window.stack.get_visible_child_name() == page
     window.destroy()
+
+
+# Строки сняты с FreeRDP 3 против xrdp стенда 03.10.2026.
+FINGERPRINT_CHANGED = [
+    "[13:38:30:953] [2757180:002a123f] [ERROR][com.freerdp.crypto] - [tls_print_new_certificate_warn]: "
+    "Host key verification failed.",
+    "[13:38:30:953] [2757180:002a123f] [ERROR][com.freerdp.core] - [transport_default_connect_tls]: "
+    "ERRCONNECT_TLS_CONNECT_FAILED [0x00020008]",
+]
+NLA_REFUSED = [
+    "[13:38:30:982] [2757212:002a1260] [ERROR][com.freerdp.core] - [rdp_client_connect]: "
+    "ERRCONNECT_SECURITY_NEGO_CONNECT_FAILED [0x0002000C]",
+]
+NO_ANSWER = [
+    "[13:38:46:221] [2757327:002a12d3] [ERROR][com.freerdp.core] - [freerdp_tcp_default_connect]: "
+    "ERRCONNECT_CONNECT_FAILED [0x00020006]",
+]
+
+
+def test_rdp_failures_are_explained_in_words():
+    assert "подмена" in launch.session_error("rdp", 143, FINGERPRINT_CHANGED)
+    assert "NLA или TLS" in launch.session_error("rdp", 133, NLA_REFUSED)
+    assert "не отвечает" in launch.session_error("rdp", 141, NO_ANSWER)
+    unknown = ["[x] [y] [ERROR][com.freerdp.core] - [f]: something odd happened"]
+    assert launch.session_error("rdp", 200, unknown) == "Подключение не удалось: [f]: something odd happened"
+
+
+def test_a_normal_end_of_session_is_not_an_error():
+    # Ниже 128 -- отключение, выход из системы, простой: окно говорит «Сеанс завершён».
+    assert launch.session_error("rdp", 0, NO_ANSWER) == ""
+    assert launch.session_error("rdp", 12, []) == ""
+    assert launch.session_error("ssh", 255, NO_ANSWER) == ""

@@ -14,6 +14,7 @@
 """
 from __future__ import annotations
 
+import collections
 import os
 import subprocess
 import sys
@@ -115,7 +116,9 @@ class ConnectWindow(Gtk.Window):
 
         again = Gtk.Button(label="Подключиться снова")
         again.connect("clicked", lambda *_: self._show_targets())
-        self._page("again", self._label("Сеанс завершён.", big=True), again)
+        self.again_title = self._label("Сеанс завершён.", big=True)
+        self.again_error = self._label()
+        self._page("again", self.again_title, self.again_error, again)
 
     # -- опрос службы ---------------------------------------------------------
     def _poll(self) -> bool:
@@ -223,15 +226,27 @@ class ConnectWindow(Gtk.Window):
         self.hide()
 
         def run():
-            process = subprocess.Popen(argv, stdin=subprocess.PIPE if password is not None else None)
+            # Вывод клиента читается всегда -- иначе причина отказа терялась,
+            # и окно говорило «Сеанс завершён» на любой исход. Хранятся
+            # последние строки в памяти: пароль в вывод не попадает, а на
+            # диск (пусть и в RAM) журнал клиента не нужен.
+            process = subprocess.Popen(argv, stdin=subprocess.PIPE if password is not None else None,
+                                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
             if password is not None:
                 process.stdin.write(password.encode("utf-8") + b"\n")
                 process.stdin.close()
+            tail = collections.deque(maxlen=200)
+            for raw in process.stdout:
+                tail.append(raw.decode("utf-8", "replace").rstrip())
             process.wait()
-            GLib.idle_add(self._session_over)
+            reason = poa_launch.session_error(target["type"], process.returncode, list(tail))
+            GLib.idle_add(self._session_over, reason)
         threading.Thread(target=run, daemon=True).start()
 
-    def _session_over(self) -> None:
+    def _session_over(self, reason: str = "") -> None:
+        self.again_title.set_markup(
+            f"<big>{'Подключение не удалось.' if reason else 'Сеанс завершён.'}</big>")
+        self.again_error.set_text(reason)
         self.show_all()
         self.stack.set_visible_child_name("again")
 

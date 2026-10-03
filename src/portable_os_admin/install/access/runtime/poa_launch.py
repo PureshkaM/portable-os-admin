@@ -96,6 +96,51 @@ def client_command(target: dict) -> tuple[list[str], bool]:
     raise ValueError(f"неизвестный тип цели: {kind}")
 
 
+#: Причины отказа FreeRDP по имени ошибки из его журнала. Имена стабильнее
+#: кодов выхода; первые пять сняты с живого FreeRDP 3 против xrdp стенда
+#: (03.10.2026), отказы входа Windows -- по исходникам FreeRDP, вживую не
+#: проверены (Windows на стенде нет).
+RDP_REASONS = (
+    (("ERRCONNECT_TLS_CONNECT_FAILED", "Host key verification failed"),
+     "Сертификат рабочего места не совпадает с тем, что задал администратор. "
+     "Подключение прервано: это может быть подмена. Сообщите администратору."),
+    (("ERRCONNECT_SECURITY_NEGO_CONNECT_FAILED",),
+     "Рабочее место не поддерживает способ входа, заданный администратором (NLA или TLS)."),
+    (("ERRCONNECT_DNS_NAME_NOT_FOUND",), "Адрес рабочего места не найден."),
+    (("ERRCONNECT_CONNECT_FAILED", "ERRCONNECT_CONNECT_TRANSPORT_FAILED"),
+     "Рабочее место не отвечает или оборвало соединение."),
+    (("ERRCONNECT_LOGON_FAILURE", "ERRCONNECT_WRONG_PASSWORD", "ERRCONNECT_AUTHENTICATION_FAILED"),
+     "Неверный пользователь или пароль."),
+    (("ERRCONNECT_ACCOUNT_LOCKED_OUT",), "Учётная запись заблокирована."),
+    (("ERRCONNECT_ACCOUNT_DISABLED", "ERRCONNECT_ACCOUNT_EXPIRED"),
+     "Учётная запись отключена или срок её действия истёк."),
+    (("ERRCONNECT_PASSWORD_EXPIRED", "ERRCONNECT_PASSWORD_MUST_CHANGE",
+      "ERRCONNECT_PASSWORD_CERTAINLY_EXPIRED"),
+     "Срок пароля истёк — его нужно сменить. Обратитесь к администратору."),
+    (("ERRCONNECT_ACCESS_DENIED", "ERRCONNECT_LOGON_TYPE_NOT_GRANTED",
+      "ERRCONNECT_INSUFFICIENT_PRIVILEGES"),
+     "Этой учётной записи вход на рабочее место запрещён."),
+)
+
+
+def session_error(kind: str, returncode: int, output: list[str]) -> str:
+    """Почему сеанс не состоялся -- словами для человека; "" если всё штатно.
+
+    Только RDP: у FreeRDP коды выхода ниже 128 -- штатные концы сеанса
+    (отключение, выход из системы, простой), от 128 -- отказы подключения.
+    SSH и VNC идут через свои обёртки и сообщают о себе в своём окне.
+    """
+    if kind != "rdp" or returncode < 128:
+        return ""
+    text = "\n".join(output)
+    for markers, reason in RDP_REASONS:
+        if any(marker in text for marker in markers):
+            return reason
+    errors = [line.split(" - ", 1)[-1] for line in output if "[ERROR]" in line]
+    detail = errors[-1][:200] if errors else f"код {returncode}"
+    return f"Подключение не удалось: {detail}"
+
+
 def update_text(state: dict) -> str:
     """Что сказать человеку об обновлении системы (Э9)."""
     kind = state.get("state")
