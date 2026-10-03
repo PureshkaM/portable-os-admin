@@ -504,7 +504,12 @@ def test_refusing_registration_really_stops_the_boot(tmp_path):
         # say возвращал 1 (без plymouth ветка заканчивалась удачным echo).
         "poa_ui_active() { return 0; }\n"
         "plymouth() { :; }\n"
-        f"poweroff() {{ touch {marker}; return 1; }}\n"
+        # Заглушка выключения -- УСПЕШНАЯ, и путь sysrq -- во временный файл:
+        # иначе запасной путь halt_now пишет «o» в настоящий
+        # /proc/sysrq-trigger, и тест, запущенный от root, выключает машину
+        # (так 03.10.2026 был выключен стенд).
+        f"poweroff() {{ touch {marker}; return 0; }}\n"
+        f"POA_SYSRQ_TRIGGER={tmp_path / 'sysrq'}\n"
         "sleep() { :; }\n"
         + _functions(script, "say", "halt_now")
         + "\nsay ''\necho after-say\nhalt_now 'Компьютер не записан.'\necho returned\n"

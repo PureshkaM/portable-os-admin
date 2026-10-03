@@ -368,7 +368,10 @@ halt_now() {{
     say ""
     say "$1"
     sleep 5
-    poweroff -f 2>/dev/null || echo o > /proc/sysrq-trigger
+    # Путь sysrq подменяем только в тестах: тест, запущенный от root на
+    # стенде, записал «o» в настоящий /proc/sysrq-trigger и выключил стенд
+    # (03.10.2026).
+    poweroff -f 2>/dev/null || echo o > "${{POA_SYSRQ_TRIGGER:-/proc/sysrq-trigger}}"
     # Не выход: вызвавший (хук dracut, keyscript) продолжил бы загрузку.
     # Ждать выключения -- сколько бы оно ни шло.
     while :; do sleep 60; done
