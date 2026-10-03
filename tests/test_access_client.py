@@ -143,3 +143,50 @@ def test_groups_assignment_and_vm_policy_round_trip(setup):
     assert next(g for g in access_actions.overview(container)["groups"]
                 if g["id"] == "dept")["allow_vm"] is None
     assert len(container.events) == 5
+
+
+def test_target_pins_are_normalized_or_refused(tmp_path):
+    """Отпечаток в том виде, в каком его ждёт носитель: PEM, вставленный в
+    однострочное поле, собирается заново; .pub теряет комментарий."""
+    import datetime
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.x509.oid import NameOID
+
+    from portable_os_admin.admin import access_actions
+
+    hexa = "37b00521e24d56161219debeca8e4c7b481af979951090c67834319ceafa4204"
+    colon = ":".join(hexa[i:i + 2] for i in range(0, 64, 2)).upper()
+    assert access_actions.normalize_pin("rdp", colon) == f"sha256:{hexa}"
+    with pytest.raises(access_actions.AccessActionError):
+        access_actions.normalize_pin("rdp", "sha256:abc")
+
+    assert access_actions.normalize_pin("ssh", "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5 root@debian\n") == \
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5"
+    with pytest.raises(access_actions.AccessActionError):
+        access_actions.normalize_pin("ssh", "просто текст")
+
+    key = ec.generate_private_key(ec.SECP256R1())
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "10.99.0.1")])
+    now = datetime.datetime.now(datetime.timezone.utc)
+    cert = (x509.CertificateBuilder().subject_name(name).issuer_name(name)
+            .public_key(key.public_key()).serial_number(1)
+            .not_valid_before(now).not_valid_after(now + datetime.timedelta(days=1))
+            .sign(key, hashes.SHA256()))
+    pem = cert.public_bytes(serialization.Encoding.PEM).decode()
+    flattened = pem.replace("\n", " ")
+    restored = access_actions.normalize_pin("vnc", flattened)
+    assert x509.load_pem_x509_certificate(restored.encode()) == cert
+    with pytest.raises(access_actions.AccessActionError, match="не разбирается"):
+        access_actions.normalize_pin("vnc", pem.replace(pem.splitlines()[2], "A" * 64))
+
+
+def test_command_numbers_grow_across_client_objects(monkeypatch):
+    """Два клиента в одну миллисекунду -- разные номера: access_actions
+    создаёт клиента на каждое действие."""
+    monkeypatch.setattr(access_client.time, "time_ns", lambda: 5_000_000_000_000)
+    first = access_client.AccessClient("http://x", b"s" * 32)._counter()
+    second = access_client.AccessClient("http://x", b"s" * 32)._counter()
+    assert second > first

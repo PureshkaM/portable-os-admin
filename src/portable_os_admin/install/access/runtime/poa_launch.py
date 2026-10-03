@@ -126,10 +126,15 @@ RDP_REASONS = (
 def session_error(kind: str, returncode: int, output: list[str]) -> str:
     """Почему сеанс не состоялся -- словами для человека; "" если всё штатно.
 
-    Только RDP: у FreeRDP коды выхода ниже 128 -- штатные концы сеанса
-    (отключение, выход из системы, простой), от 128 -- отказы подключения.
-    SSH и VNC идут через свои обёртки и сообщают о себе в своём окне.
+    RDP: у FreeRDP коды выхода ниже 128 -- штатные концы сеанса (отключение,
+    выход из системы, простой), от 128 -- отказы подключения. Обёртка VNC
+    пишет причину строкой `POA-ERROR: …`; SSH сообщает о себе в своём
+    терминале.
     """
+    # Свои обёртки (VNC) называют причину сами -- строкой POA-ERROR.
+    for line in reversed(output):
+        if line.startswith("POA-ERROR: "):
+            return line[len("POA-ERROR: "):]
     if kind != "rdp" or returncode < 128:
         return ""
     text = "\n".join(output)

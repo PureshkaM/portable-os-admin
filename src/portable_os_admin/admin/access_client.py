@@ -20,6 +20,7 @@ import hashlib
 import json
 import os
 import secrets
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -91,17 +92,25 @@ def new_activation_code() -> tuple[str, str]:
     return shown, hashlib.sha256(raw.encode("ascii")).hexdigest()
 
 
+#: Последний выданный номер команды -- на процесс, а не на клиента:
+#: `access_actions` создаёт клиента на каждое действие, и счётчик в
+#: экземпляре давал двум командам одной миллисекунды один номер (сервер:
+#: 409 stale_counter; поймано тестом на быстром стенде 03.10.2026).
+_LAST_COUNTER = 0
+_COUNTER_LOCK = threading.Lock()
+
+
 @dataclass
 class AccessClient:
     url: str
     seed: bytes
     opener: object = urllib.request.urlopen
-    _last: int = 0
 
     def _counter(self) -> int:
-        # Две команды в одну миллисекунду не должны получить один номер.
-        self._last = max(self._last + 1, time.time_ns() // 1_000_000)
-        return self._last
+        global _LAST_COUNTER
+        with _COUNTER_LOCK:
+            _LAST_COUNTER = max(_LAST_COUNTER + 1, time.time_ns() // 1_000_000)
+            return _LAST_COUNTER
 
     def command(self, name: str, **params) -> dict:
         body = _canonical({"cmd": name, "counter": self._counter(), **params})

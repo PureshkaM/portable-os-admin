@@ -14,7 +14,7 @@
 from __future__ import annotations
 
 import tkinter as tk
-from tkinter import ttk
+from tkinter import filedialog, ttk
 
 from ...admin import access_actions
 from .. import theme
@@ -195,21 +195,41 @@ class TargetDialog(tk.Toplevel):
             else:
                 widget = ttk.Entry(form, textvariable=self.vars[key], width=48)
             widget.grid(row=row, column=1, sticky="we", pady=2)
+            if key == "pin":
+                ttk.Button(form, text="Из файла…", command=self._pin_from_file).grid(
+                    row=row, column=2, sticky="w", padx=(theme.SPACE_XS, 0))
         ttk.Checkbutton(form, text="Вход по смарт-карте (токен рабочего места)",
                         variable=self.smartcard).grid(row=len(labels), column=1, sticky="w")
         ttk.Checkbutton(form, text="RDP без NLA (сервер xrdp)",
                         variable=self.tls_only).grid(row=len(labels) + 1, column=1, sticky="w")
-        self.error = ttk.Label(form, foreground=theme.DANGER)
-        self.error.grid(row=len(labels) + 2, column=0, columnspan=2, sticky="w")
+        self.error = ttk.Label(form, foreground=theme.DANGER, wraplength=theme.TEXT_WRAP)
+        self.error.grid(row=len(labels) + 2, column=0, columnspan=3, sticky="w")
         ttk.Button(form, text="Готово", command=self._ok).grid(row=len(labels) + 3, column=1, sticky="e")
 
     def _default_port(self, _event=None) -> None:
         self.vars["port"].set(str(DEFAULT_PORTS[self.vars["type"].get()]))
 
+    def _pin_from_file(self) -> None:
+        """Сертификат CA (VNC) или `ssh_host_*_key.pub` (SSH) -- файлом: PEM
+        в однострочное поле не вставить, не потеряв переводы строк."""
+        path = filedialog.askopenfilename(parent=self, title="Отпечаток цели")
+        if not path:
+            return
+        try:
+            with open(path, encoding="utf-8") as handle:
+                self.vars["pin"].set(handle.read(65536).strip())
+        except (OSError, UnicodeDecodeError) as exc:
+            self.error.configure(text=f"Файл не прочитан: {exc}")
+
     def _ok(self) -> None:
         values = {k: v.get().strip() for k, v in self.vars.items()}
         if not values["host"] or not values["pin"] or not values["port"].isdigit():
             self.error.configure(text="Нужны адрес, порт и отпечаток.")
+            return
+        try:
+            values["pin"] = access_actions.normalize_pin(values["type"], values["pin"])
+        except access_actions.AccessActionError as exc:
+            self.error.configure(text=str(exc))
             return
         values["port"] = int(values["port"])
         values["id"] = values["id"] or f"{values['type']}-{values['host']}".replace(":", "-")[:60]

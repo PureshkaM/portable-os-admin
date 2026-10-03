@@ -146,3 +146,30 @@ def test_a_normal_end_of_session_is_not_an_error():
     assert launch.session_error("rdp", 0, NO_ANSWER) == ""
     assert launch.session_error("rdp", 12, []) == ""
     assert launch.session_error("ssh", 255, NO_ANSWER) == ""
+
+
+def test_own_wrappers_name_the_reason_themselves():
+    """Обёртка VNC пишет причину строкой POA-ERROR -- окно показывает её как есть."""
+    output = ["(poa_vnc.py): Gtk-WARNING: …", "POA-ERROR: Неверный пользователь или пароль."]
+    assert launch.session_error("vnc", 2, output) == "Неверный пользователь или пароль."
+    assert launch.session_error("vnc", 0, ["обычный вывод"]) == ""
+
+
+def test_gvalue_arrays_are_read_without_iteration():
+    """PyGObject в Debian 13 не итерирует GValueArray из gtk-vnc."""
+    vnc_source = (RUNTIME / "poa_vnc.py").read_text(encoding="utf-8")
+    namespace = {}
+    start = vnc_source.index("def items(array)")
+    exec(vnc_source[start:vnc_source.index("\n\n\n", start)], namespace)
+
+    class ValueArray:
+        n_values = 2
+
+        def __iter__(self):
+            raise TypeError("'ValueArray' object is not iterable")
+
+        def get_nth(self, i):
+            return [19, 262][i]
+
+    assert namespace["items"](ValueArray()) == [19, 262]
+    assert namespace["items"]([1, 2]) == [1, 2]

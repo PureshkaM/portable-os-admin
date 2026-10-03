@@ -31,6 +31,52 @@ def set_targets(container, media_id: str, targets: list[dict]) -> int:
     return count
 
 
+def normalize_pin(kind: str, text: str) -> str:
+    """Отпечаток цели в том виде, в каком его ждёт носитель, или ошибка.
+
+    * RDP -- `sha256:<64 hex>`; принимается и с двоеточиями, и заглавными;
+    * SSH -- `тип ключ` без комментария (строка из `ssh_host_*_key.pub`);
+    * VNC -- сертификат CA в PEM. Поле в диалоге однострочное, и вставленный
+      PEM теряет переводы строк, поэтому тело собирается заново и проверяется
+      разбором сертификата: битый PEM здесь лучше, чем отказ VNC у
+      пользователя без объяснения.
+    """
+    import base64
+    import binascii
+    import re
+
+    text = text.strip()
+    if kind == "rdp":
+        digest = text[len("sha256:"):] if text.lower().startswith("sha256:") else text
+        digest = digest.replace(":", "").lower()
+        if not re.fullmatch(r"[0-9a-f]{64}", digest):
+            raise AccessActionError("RDP: нужен отпечаток sha256 сертификата — 64 шестнадцатеричных знака")
+        return f"sha256:{digest}"
+    if kind == "ssh":
+        parts = text.split()
+        if len(parts) < 2 or not parts[0].startswith(("ssh-", "ecdsa-")):
+            raise AccessActionError("SSH: нужен открытый ключ хоста вида «ssh-ed25519 AAAA…»")
+        try:
+            base64.b64decode(parts[1], validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise AccessActionError("SSH: ключ хоста не похож на base64") from exc
+        return f"{parts[0]} {parts[1]}"
+    if kind == "vnc":
+        from cryptography import x509
+
+        match = re.search(r"-----BEGIN CERTIFICATE-----(.*?)-----END CERTIFICATE-----", text, re.S)
+        if not match:
+            raise AccessActionError("VNC: нужен сертификат CA в PEM (-----BEGIN CERTIFICATE-----…)")
+        body = re.sub(r"\s+", "", match.group(1))
+        try:
+            x509.load_der_x509_certificate(base64.b64decode(body, validate=True))
+        except (binascii.Error, ValueError) as exc:
+            raise AccessActionError(f"VNC: сертификат не разбирается: {exc}") from exc
+        lines = [body[i:i + 64] for i in range(0, len(body), 64)]
+        return "-----BEGIN CERTIFICATE-----\n" + "\n".join(lines) + "\n-----END CERTIFICATE-----\n"
+    raise AccessActionError(f"неизвестный тип цели: {kind}")
+
+
 def get_targets(container, media_id: str) -> list[dict]:
     return client(container).get_targets(media_id)
 
