@@ -293,3 +293,77 @@ def test_a_revocation_list_is_remembered_even_if_the_next_descriptor_omits_it(wo
     assert service.refresh_descriptor() is False
     assert service.descriptor()["serial"] == 5
 
+
+
+# -- портал (Э14) ---------------------------------------------------------------------
+def _http_server(handler_body):
+    import http.server
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802
+            handler_body(self)
+
+        def log_message(self, *args):
+            pass
+
+    httpd = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    return httpd
+
+
+def test_the_probe_tells_our_server_from_a_portal(world):
+    _server, service, *_ = world
+    assert accessd.portal_probe(service.probe_url())["state"] == "open"
+
+    def redirect(h):
+        h.send_response(302)
+        h.send_header("Location", "http://portal.example/login?x=1")
+        h.end_headers()
+
+    def page(h):
+        h.send_response(200)
+        h.end_headers()
+        h.wfile.write(b"<html>Welcome to Hotel WiFi</html>")
+
+    for body, expected in ((redirect, "http://portal.example/login?x=1"), (page, None)):
+        httpd = _http_server(body)
+        url = f"http://127.0.0.1:{httpd.server_port}/v3/probe"
+        assert accessd.portal_probe(url) == {"state": "portal", "url": expected or url}
+        httpd.shutdown()
+    closed = socket.socket()
+    closed.bind(("127.0.0.1", 0))
+    port = closed.getsockname()[1]
+    closed.close()
+    assert accessd.portal_probe(f"http://127.0.0.1:{port}/v3/probe", timeout=1)["state"] == "offline"
+
+
+def test_the_portal_window_runs_as_its_own_user_for_a_limited_time(world):
+    _server, service, *_ = world
+    assert service.open_portal(":0") == {"error": "no_portal"}
+    service.portal = {"state": "portal", "url": "http://portal.example/login"}
+    assert service.open_portal(":0; rm -rf /") == {"error": "bad_display"}
+    assert service.open_portal(":0") == {"ok": True}
+    argv = service.run.calls[-1]
+    assert argv[0] == "systemd-run" and "--uid=poa-portal" in argv and "--unit=poa-portal" in argv
+    assert f"RuntimeMaxSec={accessd.PORTAL_SECONDS}" in argv and "--setenv=DISPLAY=:0" in argv
+    assert argv[-2:] == ["http://portal.example/login", service.probe_url()]
+
+
+def test_an_opened_network_starts_the_revocation_check_at_once(world, monkeypatch):
+    """После портала (или подключения к Wi-Fi) проверка отзыва не ждёт таймера."""
+    _server, service, _sock, runner, tmp = world
+    service.config["authorized"] = str(tmp / "authorized")
+    states = iter([{"state": "portal", "url": "u"}, {"state": "open", "url": ""}])
+    monkeypatch.setattr(accessd, "portal_probe", lambda url: next(states))
+    calls = []
+
+    def sleep(_seconds):
+        calls.append(service.portal["state"])
+        if len(calls) == 2:
+            raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        service.watch_portal(sleep=sleep)
+    assert calls == ["portal", "open"]
+    started = [c for c in runner.calls if c[:2] == ["systemctl", "start"]]
+    assert started == [["systemctl", "start", "--no-block", accessd.REVOCATION_UNIT]]

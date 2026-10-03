@@ -29,7 +29,7 @@ UPDATE_UNIT_PATH = "etc/systemd/system/poa-image-update.service"
 AUTOSTART_PATH = "etc/xdg/autostart/poa-connect.desktop"
 RUNTIME_FILES = ("poa_client.py", "poa_accessd.py", "poa_launch.py", "poa_connect.py",
                  "poa_qr.py", "poa_ssh.py", "poa_vnc.py", "poa_events.py", "poa_firewall.py",
-                 "poa_trust.py", "poa_gost.py", "poa_update.py")
+                 "poa_trust.py", "poa_gost.py", "poa_update.py", "poa_portal.py")
 FIREWALL_SERVICE_NAME = "poa-firewall.service"
 FIREWALL_SERVICE_PATH = f"etc/systemd/system/{FIREWALL_SERVICE_NAME}"
 SYSUSERS_PATH = "usr/lib/sysusers.d/poa-access.conf"

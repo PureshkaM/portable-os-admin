@@ -333,6 +333,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if parsed.path.startswith(prefix):
             self._admin_asks(parsed.path[len(prefix):])
             return
+        if parsed.path == "/v3/probe":
+            # Проба портала (Э14): носитель спрашивает по HTTP, без
+            # перенаправлений. Чужой ответ -- сеть перехватывает веб, то есть
+            # гостиничная или аэропортовая страница входа. Ничего не
+            # доказывает и ничего не открывает -- только «есть ли портал».
+            self._send(200, v3.PROBE_BODY, no_store=True)
+            return
         if parsed.path == "/v3/descriptor":
             v3.descriptor(self)
             return

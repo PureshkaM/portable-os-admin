@@ -73,7 +73,12 @@ class ConnectWindow(Gtk.Window):
 
     def _build(self) -> None:
         self.wait_label = self._label("Подключитесь к сети значком в панели.", big=True)
-        self._page("wait", self.wait_label)
+        # Только когда проба нашла портал (Э14): гостиничная или аэропортовая
+        # сеть пускает в интернет после своей страницы входа.
+        self.portal_button = Gtk.Button(label="Открыть страницу входа в сеть")
+        self.portal_button.connect("clicked", lambda *_: self._open_portal())
+        self.portal_button.set_no_show_all(True)
+        self._page("wait", self.wait_label, self.portal_button)
 
         self.code_entry = Gtk.Entry(placeholder_text="XXXXX-XXXXX")
         self.code_entry.connect("activate", self._on_activate)
@@ -129,8 +134,11 @@ class ConnectWindow(Gtk.Window):
         if status.get("error"):
             self.wait_label.set_text(poa_launch.explain(status))
         elif not status.get("authorized"):
-            self.wait_label.set_text("Подключитесь к сети значком в панели. "
-                                     "Ждём ответа сервера…")
+            portal = status.get("portal") == "portal"
+            self.wait_label.set_text(
+                "Сеть просит войти через свою страницу." if portal else
+                "Подключитесь к сети значком в панели. Ждём ответа сервера…")
+            self.portal_button.set_visible(portal)
         elif status.get("vpn") == "up" and status.get("targets"):
             self.targets = status["targets"]
             self._show_targets()
@@ -242,6 +250,15 @@ class ConnectWindow(Gtk.Window):
             reason = poa_launch.session_error(target["type"], process.returncode, list(tail))
             GLib.idle_add(self._session_over, reason)
         threading.Thread(target=run, daemon=True).start()
+
+    def _open_portal(self) -> None:
+        # Окно портала работает под другим пользователем -- ему нужен доступ
+        # к этому экрану. Даётся только ему и только локально (SI:localuser).
+        subprocess.run(["xhost", "+SI:localuser:poa-portal"], check=False,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        answer = poa_launch.ask({"cmd": "portal", "display": os.environ.get("DISPLAY", ":0")})
+        if answer.get("error"):
+            self.wait_label.set_text(poa_launch.explain(answer))
 
     def _session_over(self, reason: str = "") -> None:
         self.again_title.set_markup(

@@ -535,7 +535,8 @@ class RedOSInstallBackend(InstallBackend):
         return arguments
 
     #: Пакеты доступа (Э8), имена сверены по образам (Э0).
-    ACCESS_PACKAGES = ("openvpn", "freerdp", "python3-gobject", "gtk3", "vte291", "gtk-vnc2", "gvnc", "python3-cryptography", "openssh-clients")
+    ACCESS_PACKAGES = ("openvpn", "freerdp", "python3-gobject", "gtk3", "vte291", "gtk-vnc2", "gvnc", "webkit2gtk4.1",
+                       "python3-cryptography", "openssh-clients")
 
     #: Политика Sequoia для dnf сборки, если подключены сетевые репозитории.
     #:

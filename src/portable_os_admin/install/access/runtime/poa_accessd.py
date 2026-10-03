@@ -23,6 +23,7 @@
 from __future__ import annotations
 
 import base64
+import http.client
 import json
 import os
 import pwd
@@ -33,6 +34,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.parse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import poa_client  # noqa: E402
@@ -55,6 +57,17 @@ UPDATE_REQUEST = "/run/poa/update-request.json"
 UPDATE_STATE = "/run/poa/update.json"
 #: Последний подлинный список отзыва рабочих ключей (Э18).
 REVOKED = "/var/lib/poa/revoked.json"
+#: Признак «проверка отзыва ответила» (её ставит poa-revocation-check).
+AUTHORIZED = "/run/poa/authorized"
+#: Проба портала (Э14): ответ сервера на `GET /v3/probe` по HTTP.
+PROBE_BODY = b"poa-probe 1\n"
+#: Окно портала -- отдельный пользователь, отдельный юнит, ограниченное время:
+#: пока оно живо, этому пользователю открыт веб (правило в poa_firewall).
+PORTAL_UNIT = "poa-portal"
+#: Проверка отзыва (её таймер -- раз в 5 мин); запускается сразу, как только
+#: сеть открылась, -- иначе после портала человек ждал бы до пяти минут.
+REVOCATION_UNIT = "poa-revocation.service"
+PORTAL_SECONDS = 600
 #: Поправлять часы, если расходятся с сервером больше чем на столько секунд:
 #: OpenVPN-клиент проверяет сроки сертификата шлюза.
 CLOCK_SKEW = 300
@@ -76,6 +89,8 @@ class Service:
         self.lock = threading.Lock()
         self.grant: dict | None = None
         self.session_id = ""
+        #: Последний результат пробы портала: state -- open/portal/offline.
+        self.portal: dict = {"state": "unknown", "url": ""}
 
     # -- клиент -----------------------------------------------------------
     def server(self) -> dict:
@@ -182,6 +197,7 @@ class Service:
             "targets": (self.grant or {}).get("targets", []),
             "authorized": os.path.exists("/run/poa/authorized"),
             "update": self.update_state(),
+            "portal": self.portal.get("state", "unknown"),
         }
 
     def activate(self, code: str) -> dict:
@@ -271,6 +287,54 @@ class Service:
                 "version": self.config.get("version", ""), "medium": "flash"}
 
     # -- обновление образа (Э9) -------------------------------------------
+    # -- портал (Э14) ------------------------------------------------------
+    def probe_url(self) -> str:
+        """Проба -- по HTTP на порт 80 того же сервера (сервер слушает там
+        `/v3/`); сервер, заданный как http://, -- по его же адресу и порту."""
+        parts = urllib.parse.urlsplit(self.server()["endpoint"])
+        netloc = parts.netloc if parts.scheme == "http" else (parts.hostname or "")
+        return f"http://{netloc}/v3/probe"
+
+    def open_portal(self, display: str) -> dict:
+        """Окно страницы входа сети -- под пользователем poa-portal.
+
+        `systemd-run`: свой юнит (не запустить второе окно), предел времени
+        (веб для этого пользователя не остаётся открытым), свой /tmp. Ссылка
+        -- из перенаправления, которое вернула проба, иначе сама проба:
+        портал перехватит и её.
+        """
+        if self.portal.get("state") != "portal":
+            return {"error": "no_portal"}
+        if not display.startswith(":") or not display[1:].replace(".", "").isdigit():
+            return {"error": "bad_display"}
+        script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "poa_portal.py")
+        argv = ["systemd-run", f"--unit={PORTAL_UNIT}", "--collect", "--quiet",
+                f"--uid={poa_firewall.PORTAL_USER}", f"--gid={poa_firewall.PORTAL_USER}",
+                "-p", f"RuntimeMaxSec={PORTAL_SECONDS}", "-p", "PrivateTmp=yes",
+                f"--setenv=DISPLAY={display}", "--setenv=HOME=/tmp",
+                "/usr/bin/python3", script, self.portal.get("url") or self.probe_url(), self.probe_url()]
+        result = self.run(argv, check=False)
+        return {"ok": getattr(result, "returncode", 0) == 0}
+
+    def watch_portal(self, stop=None, sleep=time.sleep) -> None:
+        """Проба портала, пока сервер не ответил: раз в 5 с при портале,
+        раз в 10 с без сети; после ответа сервера -- раз в 30 с."""
+        while not (stop and stop.is_set()):
+            if os.path.exists(self.config.get("authorized", AUTHORIZED)):
+                self.portal = {"state": "open", "url": ""}
+                sleep(30)
+                continue
+            before = self.portal.get("state")
+            try:
+                self.portal = portal_probe(self.probe_url())
+            except Exception:  # noqa: BLE001 - проба не должна ронять службу
+                self.portal = {"state": "offline", "url": ""}
+            if self.portal["state"] == "open" and before != "open":
+                # Сеть только что открылась (портал пройден, Wi-Fi подключён) --
+                # проверку отзыва не ждём по таймеру (живая проверка 03.10.2026).
+                self.run(["systemctl", "start", "--no-block", REVOCATION_UNIT], check=False)
+            sleep(5 if self.portal["state"] == "portal" else 10)
+
     def start_update(self, info: dict | None) -> None:
         """Назначенный сервером выпуск новее работающего -- запустить загрузку
         в неактивный слот (служба poa-image-update, под systemd-inhibit)."""
@@ -376,6 +440,31 @@ def probe(host: str, port: int, timeout: float = 4.0) -> str:
         return "silent"
 
 
+def portal_probe(url: str, timeout: float = 5.0) -> dict:
+    """Перехватывает ли сеть веб: {"state": open|portal|offline, "url": куда}.
+
+    HTTP и без следования перенаправлениям: портал отвечает за сервер своим
+    перенаправлением или своей страницей. Ответ сервера сверяется побайтно --
+    иначе страница портала с кодом 200 сошла бы за «сеть открыта».
+    """
+    parts = urllib.parse.urlsplit(url)
+    connection = http.client.HTTPConnection(parts.hostname, parts.port or 80, timeout=timeout)
+    try:
+        connection.request("GET", parts.path or "/", headers={"Cache-Control": "no-cache"})
+        response = connection.getresponse()
+        body = response.read(4096)
+    except (OSError, http.client.HTTPException):
+        return {"state": "offline", "url": ""}
+    finally:
+        connection.close()
+    if response.status == 200 and body == PROBE_BODY:
+        return {"state": "open", "url": ""}
+    location = response.getheader("Location") or ""
+    if 300 <= response.status < 400 and location.startswith(("http://", "https://")):
+        return {"state": "portal", "url": location}
+    return {"state": "portal", "url": url}
+
+
 def detect_virt(runner=subprocess.run) -> str:
     """Признак виртуализации для политики сервера (сценарий V8)."""
     result = runner(["systemd-detect-virt", "--vm"], check=False, capture_output=True, text=True)
@@ -423,6 +512,8 @@ def handle(service: Service, conn: socket.socket, allowed_uid: int | None) -> No
                     answer = service.check()
                 elif command == "disconnect":
                     answer = service.disconnect()
+                elif command == "portal":
+                    answer = service.open_portal(str(request.get("display", "")))
                 else:
                     answer = {"error": "unknown_command"}
         except poa_client.AccessError as exc:
@@ -453,7 +544,9 @@ def main() -> int:
     uid = pwd.getpwnam(config["kiosk_user"]).pw_uid if config.get("kiosk_user") else None
     firewall = poa_firewall.Firewall()
     threading.Thread(target=keep_server_open, args=(firewall, config["endpoint"]), daemon=True).start()
-    serve(Service(config, firewall=firewall), allowed_uid=uid)
+    service = Service(config, firewall=firewall)
+    threading.Thread(target=service.watch_portal, daemon=True).start()
+    serve(service, allowed_uid=uid)
     return 0
 
 
