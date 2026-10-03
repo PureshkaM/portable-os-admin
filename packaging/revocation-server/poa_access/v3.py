@@ -721,7 +721,30 @@ def _cmd_log(h, db, obj):
     return {"server": [dict(r) for r in rows], "device": device}
 
 
+def _cmd_overview(h, db, obj):
+    """Всё, что окно «Выпуски и группы» показывает, -- одним ответом: группы с
+    действующим (унаследованным) назначением, дистрибутивы с выпусками и то,
+    в какой группе каждый носитель."""
+    groups = []
+    for row in db.execute("SELECT * FROM groups ORDER BY id").fetchall():
+        groups.append({"id": row["id"], "parent": row["parent"],
+                       "distribution": row["distribution"],
+                       "allow_vm": None if row["allow_vm"] is None else bool(row["allow_vm"]),
+                       "effective": Store.effective(db, row["id"], "distribution"),
+                       "effective_vm": bool(Store.effective(db, row["id"], "allow_vm") or 0)})
+    distributions = []
+    for row in db.execute("SELECT * FROM distributions ORDER BY id").fetchall():
+        releases = [r["serial"] for r in db.execute(
+            "SELECT serial FROM releases WHERE distribution = ? ORDER BY serial DESC LIMIT 20",
+            (row["id"],)).fetchall()]
+        distributions.append({**dict(row), "releases": releases})
+    media = [{"media_id": r["media_id"], "group": r["group_id"] or ROOT_GROUP}
+             for r in db.execute("SELECT media_id, group_id FROM media ORDER BY media_id").fetchall()]
+    return {"groups": groups, "distributions": distributions, "media": media}
+
+
 COMMANDS = {
+    "overview": _cmd_overview,
     "activation": _cmd_activation, "targets": _cmd_targets, "unblock": _cmd_unblock,
     "group": _cmd_group, "media_group": _cmd_media_group, "assign": _cmd_assign,
     "policy": _cmd_policy, "distribution": _cmd_distribution, "release": _cmd_release,
@@ -729,7 +752,7 @@ COMMANDS = {
     "descriptor": _cmd_descriptor,
 }
 #: Команды, которые только читают: им не нужен счётчик (повтор безвреден).
-READ_ONLY = {"log", "get_targets"}
+READ_ONLY = {"log", "get_targets", "overview"}
 
 
 def admin_command(h, name: str) -> None:

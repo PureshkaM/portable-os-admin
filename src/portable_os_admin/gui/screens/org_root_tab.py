@@ -262,5 +262,5 @@ class ConfirmDialog(tk.Toplevel):
 
 def build_org_root_tab(notebook: ttk.Notebook, frame) -> OrgRootTab:
     page = ttk.Frame(notebook, style="Card.TFrame", padding=theme.SPACE_MD)
-    notebook.add(page, text="Корень организации")
+    notebook.add(page, text="Корень")
     return OrgRootTab(page, frame)

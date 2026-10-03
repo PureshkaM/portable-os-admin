@@ -66,6 +66,12 @@ class AccessTab:
 
         service = ttk.Frame(page)
         service.pack(fill="x", pady=(theme.SPACE_SM, 0))
+        ttk.Label(service, text="Группа").pack(side="left")
+        self.group_var = tk.StringVar()
+        self.group_box = ttk.Combobox(service, textvariable=self.group_var, state="readonly", width=16)
+        self.group_box.pack(side="left", padx=theme.SPACE_XS)
+        ttk.Button(service, text="Перенести", command=self._move).pack(side="left")
+        ttk.Separator(service, orient="vertical").pack(side="left", fill="y", padx=theme.SPACE_SM)
         ttk.Button(service, text="Снять блокировку", command=self._unblock).pack(side="left")
         ttk.Button(service, text="События с сервера", command=self._load_events).pack(
             side="left", padx=theme.SPACE_XS)
@@ -75,8 +81,26 @@ class AccessTab:
             window, lambda: access_actions.get_targets(self.container, self.media_id),
             on_success=lambda targets: (self.targets.extend(targets), self._render()),
             on_error=lambda exc: window.message_bar.error(f"Рабочие места не получены: {exc}"))
+        run_in_background(window, lambda: access_actions.overview(self.container),
+                          on_success=self._show_groups,
+                          on_error=lambda exc: window.message_bar.error(f"Группы не получены: {exc}"))
 
     # -- действия ---------------------------------------------------------
+    def _show_groups(self, data: dict) -> None:
+        self.group_box.configure(values=sorted(g["id"] for g in data["groups"]))
+        current = next((m["group"] for m in data["media"] if m["media_id"] == self.media_id), "")
+        self.group_var.set(current)
+
+    def _move(self) -> None:
+        bar, group = self.window.message_bar, self.group_var.get()
+        if not group:
+            return
+        run_in_background(
+            self.window, lambda: access_actions.move_media(self.container, self.media_id, group),
+            on_success=lambda _r: (self.window.app.save_container(),
+                                   bar.success(f"Носитель в группе {group}.")),
+            on_error=lambda exc: bar.error(f"Не перенесён: {exc}"))
+
     def _issue(self) -> None:
         bar = self.window.message_bar
         run_in_background(

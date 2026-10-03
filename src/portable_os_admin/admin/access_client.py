@@ -191,11 +191,20 @@ class AccessClient:
             self._send(request, UPLOAD_TIMEOUT_SECONDS)
         return sha
 
-    def publish_release(self, dist: str, serial: int, paths: list[str]) -> None:
+    def publish_release(self, dist: str, serial: int, paths: list[str], progress=None) -> None:
         """Выгружает файлы выпуска и объявляет его. Порядок важен: сервер
-        принимает объявление, только если все файлы уже лежат и сходятся."""
-        files = {os.path.basename(p): self.upload(dist, serial, p) for p in paths}
+        принимает объявление, только если все файлы уже лежат и сходятся.
+        `progress(номер, всего, имя)` -- перед каждым файлом."""
+        files = {}
+        for index, path in enumerate(paths):
+            if progress:
+                progress(index, len(paths), os.path.basename(path))
+            files[os.path.basename(path)] = self.upload(dist, serial, path)
         self.command("release", distribution=dist, serial=serial, files=files)
+
+    def overview(self) -> dict:
+        """Группы, дистрибутивы с выпусками, носители по группам."""
+        return self.command("overview")
 
     def set_vpn_remotes(self, remotes: list[dict], gateway_name: str = "") -> None:
         """Адреса шлюза и имя в его сертификате (носитель сверяет его)."""

@@ -51,7 +51,9 @@ class MaintenanceFrame(ttk.Frame):
         notebook.pack(fill="both", expand=True)
 
         password_page = ttk.Frame(notebook, style="Card.TFrame", padding=theme.SPACE_MD)
-        notebook.add(password_page, text="Пароль контейнера")
+        # Подписи вкладок короткие: пять полных не помещались в окно 1040 точек,
+        # и Tk обрезал каждую («Корень организаци», снимок 03.10.2026).
+        notebook.add(password_page, text="Пароль")
         ttk.Label(
             password_page,
             text="Контейнер хранит ключи всех выданных носителей: сменить пароль стоит "
@@ -109,6 +111,8 @@ class MaintenanceFrame(ttk.Frame):
 
         from .org_root_tab import build_org_root_tab
         self.org_root_tab = build_org_root_tab(notebook, self)
+        from .releases_tab import build_releases_tab
+        self.releases_tab = build_releases_tab(notebook, self)
 
     def _open_password(self) -> None:
         from .password import PasswordFrame

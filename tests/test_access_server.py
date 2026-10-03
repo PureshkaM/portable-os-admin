@@ -380,6 +380,23 @@ def test_group_assignment_is_inherited_and_overridden(server, device):
     assert server.admin_cmd("group", id="dept", parent="team")[0] == 409
 
 
+def test_overview_shows_groups_with_inherited_assignment_and_releases(server, device):
+    server.admin_cmd("distribution", id="d1", family="debian", arch="amd64", layout=3, min_serial=4)
+    server.admin_cmd("group", id="dept", parent="root")
+    server.admin_cmd("assign", group="root", distribution="d1")
+    server.admin_cmd("policy", group="dept", allow_vm=True)
+    server.admin_cmd("media_group", media=MEDIA, group="dept")
+    status, body = server.admin_cmd("overview")
+    assert status == 200
+    groups = {g["id"]: g for g in body["groups"]}
+    assert groups["dept"]["distribution"] is None and groups["dept"]["effective"] == "d1"
+    assert groups["dept"]["allow_vm"] is True and groups["root"]["effective_vm"] is False
+    assert body["distributions"][0]["min_serial"] == 4 and body["distributions"][0]["releases"] == []
+    assert {"media_id": MEDIA, "group": "dept"} in body["media"]
+    # Только чтение: повтор не требует нового счётчика и ничего не меняет.
+    assert server.admin_cmd("overview")[1] == body
+
+
 # -- журнал и команды -----------------------------------------------------------------
 def test_events_are_acknowledged_up_to_the_last_contiguous_seq(server, device):
     status, body = device.post("/v3/events", {"catalog": 1, "events": [

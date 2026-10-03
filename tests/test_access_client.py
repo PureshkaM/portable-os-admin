@@ -72,3 +72,74 @@ def test_refusal_is_explained(setup):
     stranger = access_client.AccessClient(client.url, secrets.token_bytes(32))
     with pytest.raises(access_client.AccessServerError, match="не допустил"):
         stranger.group("x")
+
+
+# -- выпуски и группы через access_actions (Э7) -----------------------------------------
+def _container(client):
+    from types import SimpleNamespace
+
+    events = []
+    return SimpleNamespace(
+        data=SimpleNamespace(revocation_server_url=client.url),
+        admin_authority_secret=client.seed,
+        record_event=lambda *args: events.append(args), events=events)
+
+
+def _dist(tmp_path, serial, family="debian", signed=True):
+    import json
+
+    directory = tmp_path / f"dist-{serial}-{family}-{'s' if signed else 'u'}"
+    directory.mkdir()
+    for name in ("rootfs.squashfs", "rootfs.verity", "vmlinuz", "initrd.img"):
+        (directory / name).write_bytes(name.encode() * 10)
+    release = {"serial": serial, "family": family, "arch": "amd64", "layout": 3}
+    document = {"release": release, **({"signer": {"cert": {}}} if signed else {})}
+    (directory / "release.json").write_text(json.dumps(document))
+    return str(directory)
+
+
+def test_a_distribution_is_published_as_a_release_line(setup, tmp_path):
+    from portable_os_admin.admin import access_actions
+
+    _server, client = setup
+    container = _container(client)
+    with pytest.raises(access_actions.AccessActionError, match="не подписан"):
+        access_actions.publish_distribution(container, _dist(tmp_path, 5, signed=False), "kiosk")
+    steps = []
+    assert access_actions.publish_distribution(
+        container, _dist(tmp_path, 5), "kiosk", lambda i, n, f: steps.append((i, n))) == 5
+    assert steps[-1] == (4, 5)
+    access_actions.set_min_serial(container, "kiosk", 5)
+    line = access_actions.overview(container)["distributions"][0]
+    assert (line["id"], line["family"], line["releases"], line["min_serial"]) == \
+        ("kiosk", "debian", [5], 5)
+    with pytest.raises(access_actions.AccessActionError, match="не новее"):
+        access_actions.publish_distribution(container, _dist(tmp_path, 4), "kiosk")
+    with pytest.raises(access_actions.AccessActionError, match="не подходит"):
+        access_actions.publish_distribution(container, _dist(tmp_path, 6, family="redos"), "kiosk")
+    # Публикация следующего выпуска не сбрасывает требование «не ниже».
+    access_actions.publish_distribution(container, _dist(tmp_path, 6), "kiosk")
+    line = access_actions.overview(container)["distributions"][0]
+    assert line["releases"] == [6, 5] and line["min_serial"] == 5
+
+
+def test_groups_assignment_and_vm_policy_round_trip(setup):
+    from portable_os_admin.admin import access_actions
+
+    server, client = setup
+    device = harness.Device(server)
+    server.register(device.media, device.key)
+    container = _container(client)
+    client.distribution("kiosk", "debian", "amd64", 3)
+    access_actions.create_group(container, "dept", "root")
+    access_actions.assign(container, "root", "kiosk")
+    access_actions.set_vm_policy(container, "dept", True)
+    access_actions.move_media(container, device.media, "dept")
+    data = access_actions.overview(container)
+    dept = next(g for g in data["groups"] if g["id"] == "dept")
+    assert (dept["effective"], dept["allow_vm"]) == ("kiosk", True)
+    assert {"media_id": device.media, "group": "dept"} in data["media"]
+    access_actions.set_vm_policy(container, "dept", None)
+    assert next(g for g in access_actions.overview(container)["groups"]
+                if g["id"] == "dept")["allow_vm"] is None
+    assert len(container.events) == 5

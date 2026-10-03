@@ -2878,3 +2878,54 @@ def test_the_org_root_tab_creates_a_reserve_root_and_certifies_the_container(gui
     assert app.session.container.data.working_key_cert_json
     texts = " ".join(w.cget("text") for w in tab.facts.winfo_children()[0].winfo_children())
     assert "действует до" in texts and org_root.fingerprint(shown["entry"]) in texts
+
+
+def test_the_releases_tab_shows_the_tree_and_assigns_a_distribution(gui_app, tmp_path, monkeypatch):
+    """«Выпуски и группы» (Э7): подгруппа -- под родителем, унаследованное
+    назначение видно, выбор в диалоге уходит на сервер."""
+    import time
+
+    from portable_os_admin.admin import access_actions
+    from portable_os_admin.gui.screens import releases_tab
+    from portable_os_admin.gui.screens.maintenance import MaintenanceFrame
+
+    data = {
+        "distributions": [{"id": "kiosk", "family": "debian", "arch": "amd64", "layout": 3,
+                           "min_serial": 0, "releases": [7, 5]}],
+        "groups": [
+            {"id": "team", "parent": "dept", "distribution": None, "allow_vm": None,
+             "effective": "kiosk", "effective_vm": True},
+            {"id": "root", "parent": None, "distribution": "kiosk", "allow_vm": None,
+             "effective": "kiosk", "effective_vm": False},
+            {"id": "dept", "parent": "root", "distribution": None, "allow_vm": True,
+             "effective": "kiosk", "effective_vm": True}],
+        "media": [{"media_id": "m1", "group": "team"}],
+    }
+    calls = []
+    monkeypatch.setattr(access_actions, "overview", lambda c: data)
+    monkeypatch.setattr(access_actions, "assign", lambda c, g, d: calls.append((g, d)))
+    app = gui_app
+    _open_container(app, tmp_path)
+    app.session.container.data.revocation_server_url = "https://access.example.org"
+    app.show_frame(MaintenanceFrame)
+    tab = app._current_frame.releases_tab
+    for _ in range(100):
+        app.update()
+        if tab.group_tree.get_children():
+            break
+        time.sleep(0.02)
+    assert list(tab.group_tree.get_children()) == ["root", "dept", "team"]
+    team = tab.group_tree.item("team")["values"]
+    assert team[3] == "kiosk" and team[4] == "да, насл." and team[5] == 1
+    assert tab.dist_tree.item("kiosk")["values"][2] == 7
+
+    tab.group_tree.selection_set("team")
+    monkeypatch.setattr(releases_tab, "ChoiceDialog",
+                        lambda parent, title, label, values, current, accept: accept(values[0]))
+    tab._assign()
+    for _ in range(100):
+        app.update()
+        if calls:
+            break
+        time.sleep(0.02)
+    assert calls == [("team", None)]
