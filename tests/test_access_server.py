@@ -50,6 +50,32 @@ class Clock:
         return self.now
 
 
+def _database(root: pathlib.Path):
+    """База теста: sqlite-файл или, если задана POA_TEST_PG
+    (`postgresql://роль:пароль@хост/postgres`), отдельная база PostgreSQL на
+    тест (Э17) -- тот же набор тестов проверяет обе."""
+    import os
+
+    admin_url = os.environ.get("POA_TEST_PG")
+    if not admin_url:
+        return root / "media.sqlite", None
+    import psycopg2
+
+    name = f"poa_t_{secrets.token_hex(6)}"
+    conn = psycopg2.connect(admin_url)
+    conn.autocommit = True
+    conn.cursor().execute(f"CREATE DATABASE {name}")
+    conn.close()
+    url = admin_url.rsplit("/", 1)[0] + f"/{name}"
+
+    def drop():
+        conn = psycopg2.connect(admin_url)
+        conn.autocommit = True
+        conn.cursor().execute(f"DROP DATABASE IF EXISTS {name} WITH (FORCE)")
+        conn.close()
+    return url, drop
+
+
 class _Server:
     def __init__(self, root: pathlib.Path, clock: Clock) -> None:
         self.root = root
@@ -64,7 +90,8 @@ class _Server:
             ca_cert_pem=ca_cert_pem,
             data_key=secrets.token_bytes(32),
         )
-        db_path = root / "media.sqlite"
+        db_path, self._drop_db = _database(root)
+        self.db_path = db_path
         handler = type("TestHandler", (srv.Handler,), {
             "key": self.sign_key,
             "db": srv.Database(db_path),
@@ -85,6 +112,8 @@ class _Server:
     def close(self) -> None:
         self.httpd.shutdown()
         self.httpd.server_close()
+        if self._drop_db:
+            self._drop_db()
 
     def request(self, method, path, headers=None, body=b""):
         conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)

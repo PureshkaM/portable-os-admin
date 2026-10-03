@@ -215,7 +215,7 @@ def activate(h) -> None:
         # пользователь мог не дойти до QR. Прежнее L0 уходит в историю -- его
         # предъявление дальше будет клоном.
         if access["link_c"]:
-            db.execute("INSERT OR IGNORE INTO link_history (media_id, h) VALUES (?, ?)",
+            db.execute("INSERT INTO link_history (media_id, h) VALUES (?, ?) ON CONFLICT DO NOTHING",
                        (media, access["link_c"]))
         secret = totp.new_secret()
         link, link_h = new_link()
@@ -288,12 +288,12 @@ def session(h) -> None:
         presented = link_hash(obj.get("link"))
         if presented == access["link_c"]:
             if access["link_p"]:
-                db.execute("INSERT OR IGNORE INTO link_history (media_id, h) VALUES (?, ?)",
+                db.execute("INSERT INTO link_history (media_id, h) VALUES (?, ?) ON CONFLICT DO NOTHING",
                            (media, access["link_p"]))
                 Store.log(db, "link_anomaly", media)
         elif access["link_p"] and presented == access["link_p"]:
             # Запись удалась, подтверждение потерялось: засчитываем.
-            db.execute("INSERT OR IGNORE INTO link_history (media_id, h) VALUES (?, ?)",
+            db.execute("INSERT INTO link_history (media_id, h) VALUES (?, ?) ON CONFLICT DO NOTHING",
                        (media, access["link_c"]))
             db.execute("UPDATE access SET link_c = link_p WHERE media_id = ?", (media,))
         elif db.execute("SELECT 1 FROM link_history WHERE media_id = ? AND h = ?",
@@ -355,7 +355,7 @@ def confirm(h) -> None:
         elif provider != "vipnet":
             raise Refused(400, {"error": "bad_provider"})
 
-        db.execute("INSERT OR IGNORE INTO link_history (media_id, h) VALUES (?, ?)",
+        db.execute("INSERT INTO link_history (media_id, h) VALUES (?, ?) ON CONFLICT DO NOTHING",
                    (media, access["link_c"]))
         db.execute("UPDATE access SET link_c = link_p, link_p = NULL, activated = 1"
                    " WHERE media_id = ?", (media,))
@@ -415,8 +415,8 @@ def events(h) -> None:
             acked = good[0]["seq"] - 1
         for item in good:
             params = item.get("p") if isinstance(item.get("p"), dict) else {}
-            db.execute("INSERT OR IGNORE INTO device_events (media_id, seq, code, t, boot, params,"
-                       " received) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            db.execute("INSERT INTO device_events (media_id, seq, code, t, boot, params,"
+                       " received) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
                        (media, item["seq"], item["code"],
                         item.get("t") if isinstance(item.get("t"), int) else None,
                         str(item.get("boot", ""))[:64] or None,
@@ -550,8 +550,11 @@ def _cmd_activation(h, db, obj):
             or not isinstance(expires, int) or expires <= time.time():
         raise Refused(400, {"error": "bad_activation"})
     db.execute("DELETE FROM activations WHERE media_id = ? AND used_by IS NULL", (obj["media"],))
-    db.execute("INSERT OR REPLACE INTO activations (code_hash, media_id, expires, issued_at)"
-               " VALUES (?, ?, ?, ?)", (code_hash, obj["media"], expires, int(time.time())))
+    # Как прежний INSERT OR REPLACE: совпавший код -- заново, неиспользованным.
+    db.execute("INSERT INTO activations (code_hash, media_id, expires, issued_at) VALUES (?, ?, ?, ?)"
+               " ON CONFLICT(code_hash) DO UPDATE SET media_id = excluded.media_id,"
+               " expires = excluded.expires, issued_at = excluded.issued_at, used_by = NULL",
+               (code_hash, obj["media"], expires, int(time.time())))
     # Новая активация -- новый человек или новый телефон: прежняя привязка гаснет.
     db.execute("UPDATE access SET activated = 0, totp = NULL WHERE media_id = ?", (obj["media"],))
     return {}
@@ -712,8 +715,9 @@ def _cmd_log(h, db, obj):
     rows = db.execute("SELECT * FROM server_log WHERE id > ? ORDER BY id LIMIT 500",
                       (since,)).fetchall()
     events_since = obj.get("events_since", 0)
-    events_rows = db.execute("SELECT rowid AS id, * FROM device_events WHERE rowid > ?"
-                             " ORDER BY rowid LIMIT 2000", (events_since,)).fetchall()
+    rowid = db.rowid
+    events_rows = db.execute(f"SELECT {rowid} AS id, * FROM device_events WHERE {rowid} > ?"
+                             f" ORDER BY {rowid} LIMIT 2000", (events_since,)).fetchall()
     device = []
     for row in events_rows:
         record = dict(row)

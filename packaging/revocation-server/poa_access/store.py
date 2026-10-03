@@ -1,19 +1,19 @@
-"""Хранилище сервера доступа поверх той же базы sqlite, что и v2.
+"""Хранилище сервера доступа поверх той же базы, что и v2: sqlite или
+PostgreSQL (`poa_access.db`, этап Э17).
 
 Главное свойство -- **один шаг входа = одна транзакция с блокировкой**: nonce,
-звено и `last_step` TOTP меняются вместе (`BEGIN IMMEDIATE`). Иначе два
-параллельных запроса с одним звеном прошли бы оба, и цепочка раздвоилась бы --
-ровно то, что звено должно ловить. На PostgreSQL (этап Э17) то же самое даст
-`SELECT ... FOR UPDATE` строки носителя; интерфейс этого класса не меняется.
+звено и `last_step` TOTP меняются вместе. Иначе два параллельных запроса с
+одним звеном прошли бы оба, и цепочка раздвоилась бы -- ровно то, что звено
+должно ловить. Как это даёт каждая из баз -- в `poa_access.db`.
 
 Звенья хранятся только хешами: копия базы не даёт предъявить звено.
 """
 from __future__ import annotations
 
-import contextlib
 import json
-import sqlite3
 import time
+
+from .db import Database
 
 SCHEMA = (
     # Столбцы v3 у записи носителя v2.
@@ -55,47 +55,46 @@ TABLES = (
     " media_id TEXT, detail TEXT)",
     "CREATE TABLE IF NOT EXISTS admin_counters ("
     " key_id TEXT PRIMARY KEY, counter INTEGER NOT NULL)",
+    # Таблица v2 (числа запросов /v2/state): её заводит и служба v2, а здесь --
+    # чтобы схему целиком создавал один класс (перенос в PostgreSQL, Э17).
+    "CREATE TABLE IF NOT EXISTS nonces ("
+    " media_id TEXT NOT NULL, nonce TEXT NOT NULL, seen_at INTEGER NOT NULL,"
+    " PRIMARY KEY (media_id, nonce))",
 )
 #: Корень дерева групп. Его назначение -- дистрибутив по умолчанию.
 ROOT_GROUP = "root"
 
 
 class Store:
-    def __init__(self, path) -> None:
+    def __init__(self, path, role: str | None = None) -> None:
         self.path = path
+        self.database = Database(path, role)
         with self.tx() as db:
-            present = {row[1] for row in db.execute("PRAGMA table_info(media)")}
+            present = db.columns("media")
             if not present:
-                # База без v2 (тесты v3 поднимают сервер с нуля): таблица v2
-                # заводится здесь в той же форме, что у v2.
-                db.execute(
+                # База без v2 (тесты v3 поднимают сервер с нуля, новая база
+                # PostgreSQL): таблица v2 заводится здесь в той же форме, что у v2.
+                db.ddl(
                     "CREATE TABLE media (media_id TEXT PRIMARY KEY, owner TEXT NOT NULL,"
                     " state TEXT NOT NULL, counter INTEGER NOT NULL, updated_at TEXT NOT NULL,"
                     " device_key TEXT, last_seen TEXT, version TEXT, machine TEXT)"
                 )
-                present = {row[1] for row in db.execute("PRAGMA table_info(media)")}
+                present = db.columns("media")
             for statement in SCHEMA:
                 column = statement.split("ADD COLUMN ")[1].split()[0]
                 if column not in present:
-                    db.execute(statement)
+                    db.ddl(statement)
             for statement in TABLES:
-                db.execute(statement)
-            db.execute("INSERT OR IGNORE INTO groups (id, parent) VALUES (?, NULL)", (ROOT_GROUP,))
+                db.ddl(statement)
+            if db.postgres:
+                # У sqlite порядок событий -- rowid; у PostgreSQL его нет.
+                db.execute("ALTER TABLE device_events ADD COLUMN IF NOT EXISTS id BIGSERIAL")
+            db.execute("INSERT INTO groups (id, parent) VALUES (?, NULL) ON CONFLICT DO NOTHING",
+                       (ROOT_GROUP,))
 
-    @contextlib.contextmanager
     def tx(self):
         """Транзакция с блокировкой записи с первой же команды."""
-        db = sqlite3.connect(self.path, timeout=30, isolation_level=None)
-        db.row_factory = sqlite3.Row
-        try:
-            db.execute("BEGIN IMMEDIATE")
-            yield db
-            db.execute("COMMIT")
-        except BaseException:
-            db.execute("ROLLBACK")
-            raise
-        finally:
-            db.close()
+        return self.database.tx()
 
     # -- журнал сервера ------------------------------------------------------
     @staticmethod

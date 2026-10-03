@@ -49,7 +49,6 @@ import http.server
 import pathlib
 import re
 import secrets
-import sqlite3
 import sys
 import threading
 import time
@@ -61,6 +60,7 @@ from cryptography.hazmat.primitives.asymmetric import ed25519
 # Пакет сервера доступа v3 лежит рядом со скриптом (`poa_access/`).
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from poa_access import secrets_store, v3  # noqa: E402
+from poa_access.db import Database as SharedDatabase  # noqa: E402
 from poa_access.store import Store  # noqa: E402
 
 #: Идентификатор носителя: восемь шестнадцатеричных знаков, как их выдаёт
@@ -161,10 +161,12 @@ class Database:
         ("machine", "TEXT"),      # отпечаток машины из последнего запроса
     )
 
-    def __init__(self, path: pathlib.Path) -> None:
+    def __init__(self, path) -> None:
         self.path = path
-        with self._connect() as db:
-            db.execute(
+        # sqlite-файл или postgresql://… (Э17) -- запросы одни и те же.
+        self.database = SharedDatabase(path)
+        with self.database.tx() as db:
+            db.ddl(
                 "CREATE TABLE IF NOT EXISTS media ("
                 " media_id TEXT PRIMARY KEY,"
                 " owner TEXT NOT NULL,"
@@ -172,11 +174,11 @@ class Database:
                 " counter INTEGER NOT NULL,"
                 " updated_at TEXT NOT NULL)"
             )
-            present = {row[1] for row in db.execute("PRAGMA table_info(media)")}
+            present = db.columns("media")
             for name, kind in self.V2_COLUMNS:
                 if name not in present:
-                    db.execute(f"ALTER TABLE media ADD COLUMN {name} {kind}")
-            db.execute(
+                    db.ddl(f"ALTER TABLE media ADD COLUMN {name} {kind}")
+            db.ddl(
                 "CREATE TABLE IF NOT EXISTS nonces ("
                 " media_id TEXT NOT NULL,"
                 " nonce TEXT NOT NULL,"
@@ -184,15 +186,8 @@ class Database:
                 " PRIMARY KEY (media_id, nonce))"
             )
 
-    def _connect(self) -> sqlite3.Connection:
-        # Соединение на операцию, а не одно на всю жизнь службы: запросов
-        # единицы в минуту, а так база остаётся согласованной даже если служба
-        # умрёт посреди работы.
-        return sqlite3.connect(self.path, timeout=10)
-
     def record_of(self, media_id: str) -> dict | None:
-        with self._connect() as db:
-            db.row_factory = sqlite3.Row
+        with self.database.tx() as db:
             row = db.execute(
                 "SELECT owner, state, counter, device_key, last_seen, version, machine"
                 " FROM media WHERE media_id = ?",
@@ -203,7 +198,7 @@ class Database:
     def put(self, media_id: str, owner: str, state: str, counter: int,
             device_key: str | None) -> None:
         """Заводит или меняет запись. `device_key=None` -- ключ остаётся прежним."""
-        with self._connect() as db:
+        with self.database.tx() as db:
             db.execute(
                 "INSERT INTO media (media_id, owner, state, counter, updated_at, device_key)"
                 " VALUES (?, ?, ?, ?, ?, ?)"
@@ -223,14 +218,14 @@ class Database:
         каждом успешном запросе дёшева и не требует отдельного таймера.
         """
         now = int(time.time())
-        with self._connect() as db:
+        with self.database.tx() as db:
             db.execute("DELETE FROM nonces WHERE seen_at < ?", (now - NONCE_TTL_SECONDS,))
-            try:
-                db.execute(
-                    "INSERT INTO nonces (media_id, nonce, seen_at) VALUES (?, ?, ?)",
-                    (media_id, nonce, now),
-                )
-            except sqlite3.IntegrityError:
+            inserted = db.execute(
+                "INSERT INTO nonces (media_id, nonce, seen_at) VALUES (?, ?, ?)"
+                " ON CONFLICT DO NOTHING",
+                (media_id, nonce, now),
+            ).rowcount
+            if inserted != 1:
                 return False
             db.execute(
                 "UPDATE media SET last_seen = ?, version = ?, machine = ? WHERE media_id = ?",
@@ -585,8 +580,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Ресурс отзыва носителей")
     parser.add_argument("--key", required=True, type=pathlib.Path,
                         help="закрытый ключ отзыва в PEM: им подписываются ответы носителям")
-    parser.add_argument("--db", required=True, type=pathlib.Path,
-                        help="файл базы с записями о носителях")
+    parser.add_argument("--db", required=True,
+                        help="база: файл sqlite или postgresql://… (Э17); "
+                             "пароль PostgreSQL -- в ~/.pgpass или PGPASSFILE, не в строке")
     parser.add_argument("--admins", type=pathlib.Path, default=None,
                         help="каталог с открытыми ключами допущенных администраторов "
                              "(*.pem); без него приём команд выключен")
@@ -605,7 +601,9 @@ def main() -> int:
     Handler.key = serialization.load_pem_private_key(args.key.read_bytes(), password=None)
     Handler.db = Database(args.db)
     Handler.store = Store(args.db)
-    Handler.state_dir = args.state or args.db.parent
+    if args.state is None and Handler.store.database.postgres:
+        parser.error("с PostgreSQL нужен --state: каталог выпусков и ключей сервера")
+    Handler.state_dir = args.state or pathlib.Path(args.db).parent
     Handler.secrets = (secrets_store.load(args.credentials, sign_key_path=args.key)
                        if args.credentials else secrets_store.ServerSecrets(sign_key=Handler.key))
     Handler.admins = load_admins(args.admins)
