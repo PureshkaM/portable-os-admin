@@ -1112,9 +1112,12 @@ def test_a_carried_in_drive_is_refused_at_the_device_level(layout):
     деавторизовывал сам себя: `Synchronizing SCSI cache`, отказ ввода-вывода,
     корень перемонтирован только для чтения. Найдено прогоном 28.08.2026.
     """
+    import re
+
     from portable_os_admin.install.kiosk.common import (
         UDEV_RULES_PATH,
         UDEV_RUNTIME_RULES_PATH,
+        USB_LOCKDOWN_RULES_PATH,
         USB_LOCKDOWN_UNIT_PATH,
     )
 
@@ -1123,8 +1126,13 @@ def test_a_carried_in_drive_is_refused_at_the_device_level(layout):
     assert UDEV_RULES_PATH not in refused
     assert USB_LOCKDOWN_UNIT_PATH in refused
     unit = refused[USB_LOCKDOWN_UNIT_PATH][0]
-    assert 'ATTR{authorized}="0"' in unit
-    assert UDEV_RUNTIME_RULES_PATH in unit
+    assert 'ATTR{authorized}="0"' in refused[USB_LOCKDOWN_RULES_PATH][0]
+    assert UDEV_RUNTIME_RULES_PATH in unit and f"/{USB_LOCKDOWN_RULES_PATH}" in unit
+    # Каждая строка -- секция, комментарий или ключ=значение: многострочные
+    # правила в ExecStart рвали строку, и systemd отвергал юнит целиком
+    # (журнал носителя РЕД ОС, 03.10.2026).
+    for line in unit.splitlines():
+        assert not line or re.match(r"^(#|\[[A-Za-z]+\]$|[A-Za-z]+=)", line), line
     # После того как система поднялась, а не раньше: до этого момента правило
     # достаётся загрузочному носителю.
     assert "After=multi-user.target" in unit

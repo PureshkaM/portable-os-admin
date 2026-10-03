@@ -721,6 +721,11 @@ class RedOSInstallBackend(InstallBackend):
             # Корень -- образ слота под dm-verity (Э3b); в семействе Fedora
             # veritysetup -- отдельный пакет, в образ сам не приходит.
             "veritysetup",
+            # attr (setfattr) -- метка SELinux корня на tmpfs верхнего слоя в
+            # initramfs. Без пакета `inst_multiple -o` молча пропускал утилиту,
+            # и `/` получал unlabeled_t (журнал носителя: «метка корня не
+            # поставлена», живая проверка 03.10.2026).
+            "attr",
             # openssl, because the recovery module derives the recovery
             # passphrase with scrypt and nothing else in a boot
             # environment can do that. The initramfs hook copies it in.
@@ -919,7 +924,9 @@ class RedOSInstallBackend(InstallBackend):
             "}\n"
             "install() {\n"
             "    # setfattr -- метка корня на tmpfs верхнего слоя (LIVE-2.0).\n"
-            "    inst_multiple -o setfattr\n"
+            "    # Обязательно, без -o: необязательная установка молча пропускала\n"
+            "    # утилиту, если пакета attr не было.\n"
+            "    inst_multiple setfattr\n"
             "    # Корень -- образ слота под dm-verity (Э3b).\n"
             "    inst_multiple veritysetup sed\n"
             '    inst_hook cmdline 30 "$moddir/poa-overlay-parse.sh"\n'

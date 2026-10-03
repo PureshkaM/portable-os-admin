@@ -53,6 +53,7 @@ from .common import (
     LOGIND_CONF_PATH,
     OVERRIDE_DIR,
     POLKIT_RULES_PATH,
+    USB_LOCKDOWN_RULES_PATH,
     USB_LOCKDOWN_UNIT_PATH,
     SESSION_NAME,
     XORG_CONF_PATH,
@@ -142,6 +143,7 @@ def config_files(config: InstallConfig, image=None) -> dict[str, tuple[str, int 
     unit = usb_lockdown_unit(config)
     if unit:
         files[USB_LOCKDOWN_UNIT_PATH] = (unit, 0o644)
+        files[USB_LOCKDOWN_RULES_PATH] = (udev_storage_rules(config), 0o644)
 
     files.update(environments.for_config(config, image).files(config))
 
