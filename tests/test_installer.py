@@ -684,3 +684,24 @@ def test_every_medium_gets_its_own_device_key(session, big_removable_device, mak
     second = OSInstaller(session)
     second.run(big_removable_device, config, b"user-passphrase-123", dry_run=True)
     assert second._device_public_key_b64 != installer._device_public_key_b64
+
+
+def test_host_binds_into_the_chroot_do_not_propagate_back_to_the_host():
+    """Без `--make-rslave` всё, что монтируется и размонтируется под
+    `<root>/dev`, уходит на `/dev` машины: у стенда так пропал `/dev/pts`
+    (03.10.2026). Рабом становится каждая привязка хостового каталога, и до
+    того, как под ней что-то смонтировано."""
+    from types import SimpleNamespace
+
+    installer = OSInstaller.__new__(OSInstaller)
+    calls = []
+    installer._run = lambda argv, *a, **kw: calls.append(argv)
+    state = SimpleNamespace(mounts=[])
+    installer._mount_pseudo_filesystems("/b/root", state, None, False, "/b/root")
+    installer._bind_image_into("/b/root", "file:///mnt/poa-image-1", state, None, False, "/b/root")
+    mounts = [c for c in calls if c[0] == "mount"]
+    for index, argv in enumerate(mounts):
+        if "--bind" in argv:
+            assert mounts[index + 1] == ["mount", "--make-rslave", argv[-1]]
+    dev = mounts.index(["mount", "--make-rslave", "/b/root/dev"])
+    assert dev < mounts.index(["mount", "--bind", "/dev/pts", "/b/root/dev/pts"])

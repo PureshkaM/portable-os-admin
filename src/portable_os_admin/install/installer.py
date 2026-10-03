@@ -1366,6 +1366,14 @@ class OSInstaller:
         Without them apt and the initramfs tools fail in obscure ways. /run is
         deliberately not bound: it would expose this machine's systemd and dbus
         sockets to the chroot.
+
+        Привязки хостовых каталогов -- рабами (`--make-rslave`). systemd делает
+        `/` разделяемым, и `<root>/dev` после bind -- в одной группе
+        распространения с `/dev` машины: всё, что монтируется под ним (наш
+        `/dev/pts`, скрипты пакетов в chroot) и размонтируется (`umount -l` при
+        уборке), уходит и на хост. Так у стенда пропал `/dev/pts`, и sshd
+        перестал выдавать терминалы (`openpty: No such device`, 03.10.2026) --
+        у администратора это сломанные терминалы после сборки.
         """
         run = lambda argv, **kw: self._run(argv, plan, dry_run, confirm_device, **kw)  # noqa: E731
         for target, argv in (
@@ -1376,6 +1384,8 @@ class OSInstaller:
         ):
             run(["mkdir", "-p", target])
             run(argv)
+            if "--bind" in argv:
+                run(["mount", "--make-rslave", target])
             state.mounts.append(target)
 
     def _bind_image_into(self, root, image_url, state, plan, dry_run, confirm_device) -> None:
@@ -1391,6 +1401,7 @@ class OSInstaller:
         target = f"{root}{inside}"
         run(["mkdir", "-p", target])
         run(["mount", "--bind", inside, target])
+        run(["mount", "--make-rslave", target])     # см. _mount_pseudo_filesystems
         state.mounts.append(target)
 
     def _bind_network(self, backend, config: InstallConfig, image_url: str, root: str) -> None:
