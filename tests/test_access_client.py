@@ -190,3 +190,30 @@ def test_command_numbers_grow_across_client_objects(monkeypatch):
     first = access_client.AccessClient("http://x", b"s" * 32)._counter()
     second = access_client.AccessClient("http://x", b"s" * 32)._counter()
     assert second > first
+
+
+def test_server_events_read_as_words_with_local_time(monkeypatch):
+    """Э20: журнал носителя в окне -- словами и местным временем, без сырых
+    секунд и JSON; идентификатор носителя в его же окне не повторяется."""
+    import datetime
+    from types import SimpleNamespace
+
+    from portable_os_admin.admin import access_actions
+
+    media = "f8f99575-1328a79e"
+    log = {"device": [{"media_id": media, "t": 1791018622, "received": 1791018700,
+                       "text": f"{media}: [И] Вход в систему (virt=qemu)"}],
+           "server": [{"media_id": media, "t": 1791021279, "kind": "session_granted",
+                       "detail": '{"provider": "openvpn"}'},
+                      {"media_id": media, "t": 1791018430, "kind": "admin_targets",
+                       "detail": '{"admin": "9ff459de5c285ac9"}'},
+                      {"media_id": "other", "t": 1, "kind": "activation", "detail": None}]}
+    monkeypatch.setattr(access_actions, "client", lambda c: SimpleNamespace(log=lambda: log))
+    lines = access_actions.media_events(None, media)
+    stamp = datetime.datetime.fromtimestamp(1791021279).strftime("%d.%m.%Y %H:%M:%S")
+    assert lines[0] == f"{stamp}  Выдан доступ к VPN (openvpn)"
+    assert lines[1].endswith("  [И] Вход в систему (virt=qemu)")
+    assert lines[2].endswith("  Администратор 9ff459de изменил рабочие места")
+    assert len(lines) == 3
+    assert access_actions.server_event_text("totp_failed", None) == "Неверный код TOTP (подряд: ?)"
+    assert access_actions.server_event_text("new_kind", '{"x": 1}') == 'new_kind {"x": 1}'

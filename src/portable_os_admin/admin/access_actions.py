@@ -86,14 +86,80 @@ def unblock(container, media_id: str) -> None:
     container.record_event("access_unblock", media_id, "носитель разблокирован на сервере")
 
 
+#: Записи журнала сервера словами (Э20). Поля -- из detail записи; чего нет,
+#: то просто не подставляется. Неизвестный вид показывается как есть.
+SERVER_EVENTS = {
+    "activation": "Носитель активирован",
+    "activation_repeated": "Повторная активация тем же кодом",
+    "activation_unknown_code": "Активация с неизвестным кодом",
+    "activation_foreign_code": "Активация чужим кодом (код носителя {owner})",
+    "session_granted": "Выдан доступ к VPN ({provider})",
+    "totp_failed": "Неверный код TOTP (подряд: {fails})",
+    "blocked_totp_limit": "Носитель заблокирован: исчерпаны попытки TOTP",
+    "clone": "Обнаружен клон носителя: носитель заблокирован, сертификатов отозвано: {revoked_certs}",
+    "link_anomaly": "Звено предъявлено повторно до подтверждения",
+    "denied_update_required": "Отказ: выпуск {serial} ниже обязательного {min_serial}",
+    "denied_virtualization": "Отказ: вход с виртуальной машины ({virt})",
+    "events_gap": "Пропуск в журнале носителя: события {first}–{last} утеряны",
+}
+#: Команды администратора, касающиеся носителя (`admin_<команда>`).
+ADMIN_EVENTS = {
+    "activation": "выдал код активации",
+    "targets": "изменил рабочие места",
+    "unblock": "снял блокировку",
+    "media_group": "перенёс носитель в другую группу",
+    "dst": "задал пароль ключей ViPNet",
+}
+
+
+class _Fields(dict):
+    def __missing__(self, key):
+        return "?"
+
+
+def server_event_text(kind: str, detail) -> str:
+    import json
+
+    try:
+        fields = _Fields(json.loads(detail) if isinstance(detail, str) else (detail or {}))
+    except ValueError:
+        fields = _Fields()
+    if kind.startswith("admin_"):
+        action = ADMIN_EVENTS.get(kind[len("admin_"):], kind[len("admin_"):])
+        return f"Администратор {fields.get('admin', '')[:8]} {action}".replace("  ", " ")
+    template = SERVER_EVENTS.get(kind)
+    return template.format_map(fields) if template else f"{kind} {detail or ''}".strip()
+
+
+def _when(stamp) -> str:
+    import datetime
+
+    try:
+        return datetime.datetime.fromtimestamp(int(stamp)).strftime("%d.%m.%Y %H:%M:%S")
+    except (TypeError, ValueError, OverflowError, OSError):
+        return str(stamp)
+
+
 def media_events(container, media_id: str) -> list[str]:
-    """Строки журнала сервера об этом носителе, новые сверху."""
+    """Журнал сервера об этом носителе словами, новые сверху (Э20).
+
+    События носителя сервер уже расшифровал (`ID: текст`); идентификатор в
+    окне самого носителя лишний и отрезается. Записи сервера переводятся
+    здесь. Время -- местное, а не секунды Unix.
+    """
     log = client(container).log()
-    lines = [f"{e.get('t') or e['received']}: {e['text']}" for e in log.get("device", [])
-             if e.get("media_id") == media_id]
-    lines += [f"{e['t']}: {media_id}: {e['kind']}" + (f" {e['detail']}" if e.get("detail") else "")
-              for e in log.get("server", []) if e.get("media_id") == media_id]
-    return sorted(lines, reverse=True)
+    items = []
+    for e in log.get("device", []):
+        if e.get("media_id") != media_id:
+            continue
+        text = e["text"]
+        if text.startswith(f"{media_id}: "):
+            text = text[len(media_id) + 2:]
+        items.append((int(e.get("t") or e["received"]), text))
+    for e in log.get("server", []):
+        if e.get("media_id") == media_id:
+            items.append((int(e["t"]), server_event_text(e["kind"], e.get("detail"))))
+    return [f"{_when(t)}  {text}" for t, text in sorted(items, key=lambda item: -item[0])]
 
 
 def publish_descriptor(container, endpoints: list[str] | None = None,
