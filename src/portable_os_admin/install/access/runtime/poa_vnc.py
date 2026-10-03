@@ -16,7 +16,19 @@ import gi
 gi.require_version("Gtk", "3.0")
 gi.require_version("GtkVnc", "2.0")
 gi.require_version("GVnc", "1.0")
-from gi.repository import GVnc, Gtk, GtkVnc  # noqa: E402
+from gi.repository import Gdk, GLib, GVnc, Gtk, GtkVnc  # noqa: E402
+
+
+#: Выход из сеанса: у полноэкранного окна нет ни меню, ни кнопки, а выход из
+#: системы на цели (TigerVNC) сеанс VNC не закрывает. Сочетание, которое
+#: на рабочем месте никому не нужно, -- перехватывается до GtkVnc.
+EXIT_KEYS = "Ctrl+Alt+Shift+Q"
+EXIT_HINT_SECONDS = 6
+
+
+def is_exit_key(event) -> bool:
+    mask = Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.MOD1_MASK | Gdk.ModifierType.SHIFT_MASK
+    return (event.state & mask) == mask and Gdk.keyval_to_lower(event.keyval) == Gdk.KEY_q
 
 
 #: Строка в stderr, по которой окно «Подключение» показывает причину отказа
@@ -59,7 +71,19 @@ def main() -> int:
     window = Gtk.Window(title=target.get("name") or target["host"])
     window.fullscreen()
     display = GtkVnc.Display()
-    window.add(display)
+    overlay = Gtk.Overlay()
+    overlay.add(display)
+    hint = Gtk.Label(label=f"Выход из сеанса — {EXIT_KEYS}", margin=12)
+    hint.set_halign(Gtk.Align.CENTER)
+    hint.set_valign(Gtk.Align.START)
+    hint.get_style_context().add_class("osd")
+    overlay.add_overlay(hint)
+    window.add(overlay)
+    # Окно получает клавиши раньше GtkVnc: сочетание выхода на цель не уходит.
+    window.connect("key-press-event",
+                   lambda _w, event: (Gtk.main_quit(), True)[1] if is_exit_key(event) else False)
+    display.connect("vnc-initialized",
+                    lambda *_: GLib.timeout_add_seconds(EXIT_HINT_SECONDS, lambda: hint.hide()))
     connection = display.get_connection()
 
     # Тип и подтип выбирает сам GtkVnc.Display из своих предпочтений; наш
