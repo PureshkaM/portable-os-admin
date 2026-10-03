@@ -99,32 +99,19 @@ def test_redos_leaves_the_distributions_own_repository_files_alone():
     assert RedOSInstallBackend().sources_list(config, "8.0") is None
 
 
-def test_redos_writes_a_mirror_next_to_them_not_over_them():
-    config = InstallConfig.create_default("stick1", "redos")
-    config.mirror = "https://repo.example.org/redos"
-    backend = RedOSInstallBackend()
-
-    text = backend.sources_list(config, "8.0")
-    assert "repo.example.org" in text
-    # a file of our own, so the distribution's stay untouched
-    assert backend.sources_path == "etc/yum.repos.d/poa-mirror.repo"
-    assert "RedOS-Base" not in backend.sources_path
-
-
-def test_signing_settings_come_from_the_image_and_default_to_honest_silence():
-    """With no image to read, the file says packages are not verified rather
-    than pointing at a key path that may not exist -- a wrong gpgkey makes
-    every dnf command fail with a confusing error."""
-    config = InstallConfig.create_default("stick1", "redos")
-    config.mirror = "https://repo.example.org/redos"
-    text = RedOSInstallBackend().sources_list(config, "8.0", image_mountpoint="")
-    assert "gpgcheck=0" in text
-    assert "gpgkey=" not in text
+def test_the_finished_system_keeps_no_package_sources_even_with_a_mirror():
+    """Э10: обновление -- образом, а не пакетами. Зеркало нужно сборке, но в
+    готовую систему не попадает; Debian затирает путь сборки комментарием."""
+    for family, backend in (("redos", RedOSInstallBackend()), ("debian", DebianInstallBackend())):
+        config = InstallConfig.create_default("stick1", family)
+        config.mirror = "https://repo.example.org/" + family
+        text = backend.sources_list(config, "8.0") or ""
+        assert "repo.example.org" not in text
+        assert not any(line.startswith("deb ") for line in text.splitlines())
 
 
 def test_each_family_writes_its_sources_where_that_family_keeps_them():
     assert DebianInstallBackend().sources_path == "etc/apt/sources.list"
-    assert RedOSInstallBackend().sources_path.startswith("etc/yum.repos.d/")
 
 
 def test_redos_package_installs_use_the_image_not_the_host_repositories():

@@ -289,13 +289,9 @@ class InstallBackend(ABC):
         return {}
 
     def sources_list(self, config: InstallConfig, release: str, image_mountpoint: str = "") -> str | None:
-        """Package sources to leave behind in the installed system, or None if
-        the family needs nothing written.
-
-        `image_mountpoint` is the mounted installation image, when there is
-        one. It lets a backend read settings off the image -- the signing key,
-        for instance -- instead of this project writing down values that are
-        right for one release and wrong for the next.
+        """What to leave in the finished system's package sources, or None to
+        leave the family's own files alone. Never a working source: the system
+        is updated as a whole image (LIVE-2.0, Э9), not package by package.
         """
         return None
 
