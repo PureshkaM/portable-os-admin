@@ -336,25 +336,42 @@ command -v poa_ui_active >/dev/null 2>&1 || poa_ui_active() {{ return 1; }}
 # снимут, и на экране 29.08.2026 они наложились друг на друга в левом верхнем
 # углу -- от первых остались обрывки, последнее прочесть было нельзя.
 poa_last_message=""
+# Всегда 0. Скрипт идёт под `set -e`, и `[ -n "$1" ] && …` последней
+# строкой возвращал 1 на пустом сообщении: `say ""` в начале halt_now
+# завершал скрипт раньше выключения, а dracut запускает хуки с «-» в
+# ExecStart и код возврата не смотрит -- отказ от регистрации («нет»)
+# пропускал загрузку дальше (РЕД ОС, 03.10.2026). В журнал ядра -- тоже:
+# администратор видит отказ в журналах носителя.
 say() {{
-    if poa_ui_active; then
-        [ -n "$poa_last_message" ] && plymouth hide-message --text="$poa_last_message" 2>/dev/null
-        poa_last_message="$1"
-        [ -n "$1" ] && plymouth display-message --text="$1"
-    else
-        echo "$1" > /dev/console 2>/dev/null || echo "$1"
+    if [ -n "$1" ]; then
+        echo "poa-machine: $1" > /dev/kmsg 2>/dev/null || true
     fi
+    if poa_ui_active; then
+        if [ -n "$poa_last_message" ]; then
+            plymouth hide-message --text="$poa_last_message" 2>/dev/null || true
+        fi
+        poa_last_message="$1"
+        if [ -n "$1" ]; then
+            plymouth display-message --text="$1" 2>/dev/null || true
+        fi
+    else
+        echo "$1" > /dev/console 2>/dev/null || echo "$1" || true
+    fi
+    return 0
 }}
 ask() {{ printf '%s' "$1" > /dev/console 2>/dev/null || printf '%s' "$1"; }}
 
 # Выключение, а не продолжение: смысл механизма в том, что на машине, которую
 # пользователь отказался регистрировать, система не работает.
 halt_now() {{
+    set +e
     say ""
     say "$1"
     sleep 5
     poweroff -f 2>/dev/null || echo o > /proc/sysrq-trigger
-    exit 1
+    # Не выход: вызвавший (хук dracut, keyscript) продолжил бы загрузку.
+    # Ждать выключения -- сколько бы оно ни шло.
+    while :; do sleep 60; done
 }}
 
 slot_taken() {{  # $1 -- номер слота

@@ -1456,3 +1456,12 @@ def test_service_volumes_are_hidden_from_the_desktop():
         "правило не в /etc: положенное в /run оно переживёт только текущую загрузку"
     )
 
+
+
+def test_a_failed_boot_reboots_instead_of_opening_a_shell():
+    """Аварийная оболочка initramfs -- root после открытия LUKS: испорченный
+    своими руками образ давал бы пользователю ключ носителя. Обе семьи -- без
+    оболочки и с перезагрузкой (а с ней -- откат GRUB на прежний слот)."""
+    for family in ("debian", "redos"):
+        words = get_backend(family).kernel_cmdline(InstallConfig.create_default("s", family)).split()
+        assert {"rd.shell=0", "rd.emergency=reboot", "panic=10"} <= set(words)

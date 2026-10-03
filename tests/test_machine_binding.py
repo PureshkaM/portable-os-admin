@@ -476,3 +476,44 @@ def test_debian_registers_after_the_root_is_unlocked_not_before():
     # Пароль берётся из того же места, куда его кладёт keyscript: второй
     # запрос выглядел бы как сбой.
     assert "/run/poa-passphrase" in script
+
+
+def _functions(script: str, *names: str) -> str:
+    """Определения функций оболочки из скрипта -- без остального скрипта."""
+    out = []
+    for name in names:
+        start = script.index(f"{name}() {{")
+        end = script.index("\n}\n", start) + 3
+        out.append(script[start:end])
+    return "\n".join(out)
+
+
+def test_refusing_registration_really_stops_the_boot(tmp_path):
+    """Под `set -eu` `say ""` возвращал 1 и обрывал halt_now раньше
+    выключения, а dracut код возврата хука не смотрит: «нет» пропускало
+    загрузку дальше (РЕД ОС, 03.10.2026). Теперь say возвращает 0, а
+    halt_now после выключения ждёт, а не выходит."""
+    import subprocess
+
+    script = mb.register_script(make_config(), "abc12345")
+    marker = tmp_path / "powered-off"
+    harness = (
+        "set -eu\n"
+        "poa_last_message=''\n"
+        # Как на живой загрузке: plymouth работает -- именно в этой ветке
+        # say возвращал 1 (без plymouth ветка заканчивалась удачным echo).
+        "poa_ui_active() { return 0; }\n"
+        "plymouth() { :; }\n"
+        f"poweroff() {{ touch {marker}; return 1; }}\n"
+        "sleep() { :; }\n"
+        + _functions(script, "say", "halt_now")
+        + "\nsay ''\necho after-say\nhalt_now 'Компьютер не записан.'\necho returned\n"
+    )
+    try:
+        result = subprocess.run(["sh", "-c", harness], capture_output=True, text=True, timeout=3)
+        output = result.stdout
+    except subprocess.TimeoutExpired as exc:
+        output = (exc.stdout or b"").decode() if isinstance(exc.stdout, bytes) else (exc.stdout or "")
+    assert "after-say" in output
+    assert marker.exists(), "выключение не вызвано"
+    assert "returned" not in output, "halt_now вернул управление -- загрузка пошла бы дальше"

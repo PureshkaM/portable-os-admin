@@ -1108,3 +1108,19 @@ def test_debian_asks_for_the_tool_that_opens_the_service_volumes():
     # У РЕД ОС бинарь внутри systemd, отдельного пакета не существует.
     redos_config = InstallConfig.create_baseline("stick", "redos")
     assert get_backend("redos").optional_packages(redos_config) == []
+
+
+def test_a_new_slot_is_confirmed_only_after_the_whole_image_is_read():
+    """verity проверяет блок при чтении: испорченный, но не прочитанный при
+    загрузке блок прошёл бы подтверждение (РЕД ОС, 03.10.2026). Новый слот
+    читается целиком до подтверждения; старый -- нет (зачем каждый раз)."""
+    import subprocess
+
+    for backend in (DebianInstallBackend(), RedOSInstallBackend()):
+        files = backend.boot_ok_files()
+        script = files[backend.BOOT_OK_SCRIPT][0]
+        subprocess.run(["sh", "-n"], input=script.encode(), check=True)
+        read = script.index("dd if=/dev/mapper/poa-root")
+        assert script.index('[ "$trial" = "$slot" ]') < read < script.index("set poa_good")
+        assert "exit 1" in script[read:script.index("set poa_good")]
+        assert "TimeoutStartSec=" in files[backend.BOOT_OK_UNIT][0]
