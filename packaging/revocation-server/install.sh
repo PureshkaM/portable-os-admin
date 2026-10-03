@@ -30,6 +30,9 @@ EMAIL=""
 ORG=""
 KIT_NAME=""
 KIT_DIR=""
+DB=postgresql
+TLS_CERT=""
+TLS_KEY=""
 
 usage() {
     cat >&2 <<'USAGE'
@@ -45,6 +48,11 @@ usage() {
                             в себе открытую часть старого ключа)
   --repo-root <каталог>     раздавать этот каталог как /repo (репозиторий пакетов)
   --email <адрес>           адрес для Let's Encrypt (по умолчанию без адреса)
+  --tls-cert <файл> --tls-key <файл>
+                            свой сертификат TLS (цепочка в PEM) вместо Let's
+                            Encrypt -- для закрытых сетей и своего УЦ
+  --db postgresql|sqlite    база (по умолчанию postgresql на этой же машине;
+                            sqlite -- только стенд и переход)
   --org <название>          название организации в сертификате CA для VPN
                             (по умолчанию -- имя домена)
   --gateway-kit <имя> <каталог>
@@ -61,6 +69,9 @@ while [ $# -gt 0 ]; do
         --revocation-key) KEY=$2; shift 2 ;;
         --repo-root) REPO_ROOT=$2; shift 2 ;;
         --email) EMAIL=$2; shift 2 ;;
+        --tls-cert) TLS_CERT=$2; shift 2 ;;
+        --tls-key) TLS_KEY=$2; shift 2 ;;
+        --db) DB=$2; shift 2 ;;
         --org) ORG=$2; shift 2 ;;
         --gateway-kit) KIT_NAME=$2; KIT_DIR=$3; shift 3 ;;
         -h|--help) usage ;;
@@ -83,6 +94,10 @@ fi
 [ -n "$DOMAIN" ] || usage
 [ -n "$ORG" ] || ORG=$DOMAIN
 [ -z "$KEY" ] || [ -f "$KEY" ] || { echo "нет файла ключа: $KEY" >&2; exit 1; }
+case "$DB" in postgresql|sqlite) ;; *) echo "--db: postgresql или sqlite" >&2; exit 1 ;; esac
+if [ -n "$TLS_CERT$TLS_KEY" ]; then
+    [ -f "$TLS_CERT" ] && [ -f "$TLS_KEY" ] || { echo "--tls-cert и --tls-key: оба файла" >&2; exit 1; }
+fi
 [ "$(id -u)" = "0" ] || { echo "нужны права root" >&2; exit 1; }
 
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -91,11 +106,20 @@ echo "== зависимости"
 if command -v apt-get >/dev/null 2>&1; then
     apt-get update -qq
     apt-get install -y -q --no-install-recommends \
-        python3 python3-cryptography openssl openvpn nginx certbot python3-certbot-nginx >/dev/null
+        python3 python3-cryptography openssl openvpn nginx certbot >/dev/null
+    # libnss-systemd: имя временного пользователя службы (DynamicUser) должно
+    # разрешаться -- по нему PostgreSQL пускает её без пароля (peer). Без него
+    # «local user with ID … does not exist» (проверено на чистом Debian 13).
+    [ "$DB" = sqlite ] || apt-get install -y -q --no-install-recommends \
+        postgresql python3-psycopg2 libnss-systemd >/dev/null
     # openvpn нужен только как генератор ключей tls-crypt-v2, сама служба не включается.
     systemctl disable --now openvpn.service >/dev/null 2>&1 || true
 elif command -v dnf >/dev/null 2>&1; then
-    dnf install -y -q python3 python3-cryptography openssl openvpn nginx certbot python3-certbot-nginx
+    dnf install -y -q python3 python3-cryptography openssl openvpn nginx certbot
+    if [ "$DB" = postgresql ]; then
+        dnf install -y -q postgresql-server python3-psycopg2
+        [ -f /var/lib/pgsql/data/PG_VERSION ] || postgresql-setup --initdb
+    fi
 else
     echo "не знаю менеджера пакетов этой системы; поставьте python3-cryptography, nginx и certbot сами" >&2
 fi
@@ -129,12 +153,64 @@ echo "== ключи сервера доступа v3"
 # бы нечитаемыми семена TOTP в базе.
 (cd "$LIB" && umask 077 && python3 -m poa_access.tool init-keys "$KEYS" "$ORG")
 
+echo "== база"
+# PostgreSQL на этой же машине, вход службы -- по unix-сокету без пароля
+# (peer): у службы DynamicUser с именем юнита, ему и принадлежит роль. Пароля
+# нет ни в юните, ни на диске. Старая база sqlite переносится один раз.
+mkdir -p /etc/systemd/system/poa-revocation.service.d
+if [ "$DB" = postgresql ]; then
+    PGURL="postgresql://poa-revocation@/poa_access?host=/run/postgresql"
+    MIGRATE_URL="postgresql:///poa_access?host=/run/postgresql"   # вход как postgres
+    systemctl enable --now postgresql >/dev/null 2>&1 || systemctl enable --now postgresql.service
+    PSQL="runuser -u postgres -- psql -qtA"
+    $PSQL -c "SELECT 1 FROM pg_roles WHERE rolname = 'poa-revocation'" | grep -q 1 \
+        || $PSQL -c 'CREATE ROLE "poa-revocation" LOGIN'
+    $PSQL -c "SELECT 1 FROM pg_database WHERE datname = 'poa_access'" | grep -q 1 \
+        || runuser -u postgres -- createdb -O poa-revocation poa_access
+    for OLD in /var/lib/private/poa-revocation/media.sqlite /var/lib/poa-revocation/media.sqlite; do
+        [ -f "$OLD" ] || continue
+        systemctl stop poa-revocation.service 2>/dev/null || true
+        TMP=$(mktemp -d)
+        cp "$OLD" "$TMP/media.sqlite"
+        chown -R postgres "$TMP"
+        (cd "$LIB" && runuser -u postgres -- python3 -m poa_access.migrate "$TMP/media.sqlite" \
+            "$MIGRATE_URL" --role poa-revocation)
+        rm -rf "$TMP"
+        mv "$OLD" "$OLD.migrated"
+        echo "база sqlite перенесена в PostgreSQL ($OLD.migrated оставлен как копия)"
+        break
+    done
+    printf '[Service]\nEnvironment="POA_DB=%s"\n' "$PGURL" \
+        > /etc/systemd/system/poa-revocation.service.d/db.conf
+else
+    rm -f /etc/systemd/system/poa-revocation.service.d/db.conf
+fi
+
 echo "== приём и TLS"
 SITE=/etc/nginx/sites-available/poa-revocation
-{
+ACME=/var/www/poa-acme
+mkdir -p "$ACME"
+# Оба блока пишет этот скрипт, а certbot только выпускает сертификат.
+# `certbot --nginx --redirect` переделывал блок порта 80 в перенаправление
+# всего подряд -- и проба портала (/v3/probe, Э14) получала 301: любой
+# носитель решил бы, что сидит за гостиничным порталом.
+port80() {
     echo "server {"
     echo "    listen 80;"
     echo "    server_name $DOMAIN;"
+    echo "    # Проба портала -- только по HTTP и без перенаправления."
+    echo "    location = /v3/probe { proxy_pass http://127.0.0.1:8081; }"
+    echo "    location /.well-known/acme-challenge/ { root $ACME; }"
+    echo "    location / { return 301 https://\$host\$request_uri; }"
+    echo "}"
+}
+port443() {
+    echo "server {"
+    echo "    listen 443 ssl;"
+    echo "    server_name $DOMAIN;"
+    echo "    ssl_certificate $1;"
+    echo "    ssl_certificate_key $2;"
+    echo "    ssl_protocols TLSv1.2 TLSv1.3;"
     echo "    # Носители спрашивают только /v2/state, приложение -- только эти три."
     echo "    # /state протокола 1.0.0 служба отклоняет сама (403)."
     echo "    location = /v2/state { proxy_pass http://127.0.0.1:8081; }"
@@ -156,32 +232,39 @@ SITE=/etc/nginx/sites-available/poa-revocation
     fi
     echo "    location / { return 404; }"
     echo "}"
-} > "$SITE"
+}
 mkdir -p /etc/nginx/sites-enabled
 ln -sf "$SITE" /etc/nginx/sites-enabled/poa-revocation
 rm -f /etc/nginx/sites-enabled/default
-nginx -t >/dev/null
-systemctl reload nginx
 
-# Блок с `listen 443` в файл сайта дописывает certbot, а файл выше переписан
-# заново -- поэтому смотреть надо на сам файл, а не на наличие сертификата.
-# Иначе повторный запуск установки оставляет сервер без TLS: сертификат на
-# месте, слушателя на 443 нет, и носители молча перестают проверяться.
-if [ -n "$EMAIL" ]; then
-    set -- --agree-tos -m "$EMAIL"
+if [ -n "$TLS_CERT" ]; then
+    mkdir -p /etc/poa-revocation/tls
+    install -m 644 "$TLS_CERT" /etc/poa-revocation/tls/fullchain.pem
+    install -m 600 "$TLS_KEY" /etc/poa-revocation/tls/privkey.pem
+    CERT=/etc/poa-revocation/tls/fullchain.pem
+    CERT_KEY=/etc/poa-revocation/tls/privkey.pem
 else
-    set -- --agree-tos --register-unsafely-without-email
+    CERT=/etc/letsencrypt/live/$DOMAIN/fullchain.pem
+    CERT_KEY=/etc/letsencrypt/live/$DOMAIN/privkey.pem
+    if [ ! -f "$CERT" ]; then
+        # Сначала только порт 80 -- через него Let's Encrypt проверяет домен.
+        port80 > "$SITE"
+        nginx -t -q
+        systemctl reload nginx
+        if [ -n "$EMAIL" ]; then
+            set -- --agree-tos -m "$EMAIL"
+        else
+            set -- --agree-tos --register-unsafely-without-email
+        fi
+        # Ключ TLS сохраняется при продлении: носители закрепляют его отпечаток
+        # (SPKI) в описателе сервера, и новый ключ каждые 90 дней оборвал бы им связь.
+        certbot certonly --webroot -w "$ACME" -d "$DOMAIN" --non-interactive --reuse-key \
+            --deploy-hook "systemctl reload nginx" "$@"
+    fi
 fi
-# Ключ TLS сохраняется при продлении: носители закрепляют его отпечаток (SPKI)
-# в описателе сервера, и новый ключ каждые 90 дней оборвал бы им связь.
-set -- "$@" --reuse-key
-if [ -d "/etc/letsencrypt/live/$DOMAIN" ]; then
-    # Сертификат есть: только вписать его в конфигурацию, не выпуская заново
-    # (у Let's Encrypt на выпуск есть ограничения по частоте).
-    certbot --nginx -d "$DOMAIN" --reinstall --redirect --non-interactive "$@"
-else
-    certbot --nginx -d "$DOMAIN" --redirect --non-interactive "$@"
-fi
+{ port80; port443 "$CERT" "$CERT_KEY"; } > "$SITE"
+nginx -t -q
+systemctl reload nginx
 grep -q "listen 443" "$SITE" || { echo "TLS не настроен: в $SITE нет 443" >&2; exit 1; }
 
 echo "== запуск"

@@ -6,7 +6,7 @@
 # есть и когда они включаются.
 [Unit]
 Description=Ресурс отзыва переносных носителей
-After=network-online.target
+After=network-online.target postgresql.service
 Wants=network-online.target
 
 [Service]
@@ -15,10 +15,13 @@ ExecStart=/usr/local/sbin/poa-revocation-server.py \
     --key %d/revocation-key \
     --credentials %d \
     --state /var/lib/poa-revocation \
-    --db /var/lib/poa-revocation/media.sqlite \
+    --db ${POA_DB} \
     --admins /var/lib/poa-revocation/admins \
     --host 127.0.0.1 --port 8081
 
+# База -- PostgreSQL на этой же машине (install.sh пишет POA_DB в
+# poa-revocation.service.d/db.conf) или, для стенда, файл sqlite.
+Environment=POA_DB=/var/lib/poa-revocation/media.sqlite
 # База и список администраторов лежат в /var/lib, а не рядом с ключом: ключ
 # служба только читает, а это -- пишет. Список пишется потому, что первый
 # администратор заводится по одноразовому коду: сервер разворачивают раньше,
@@ -51,7 +54,8 @@ ProtectHome=yes
 PrivateTmp=yes
 PrivateDevices=yes
 NoNewPrivileges=yes
-RestrictAddressFamilies=AF_INET AF_INET6
+# AF_UNIX -- сокет PostgreSQL (вход по peer, без пароля).
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 SystemCallFilter=@system-service
 MemoryDenyWriteExecute=yes
 # Ключ и список читаются, но не пишутся: отзыв делается заменой файла снаружи,
