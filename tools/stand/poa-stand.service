@@ -1,0 +1,10 @@
+[Unit]
+Description=Стенд LIVE-2.0: адреса, цель, сервер доступа
+After=network-online.target nginx.service
+Wants=network-online.target
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/root/gui/stand-up.sh
+[Install]
+WantedBy=multi-user.target
