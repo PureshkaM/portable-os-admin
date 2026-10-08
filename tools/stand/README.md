@@ -22,6 +22,7 @@ Xvfb), скрипты сборки и записи — диагностика и
 | `/etc/nginx/sites-enabled/poa-stand` | `nginx-poa-stand.conf` | сервер на 8443 (TLS) |
 | `/etc/nginx/sites-enabled/poa-stand80` | `nginx-poa-stand80.conf` | порт 80 как в `install.sh` + режим «гостиничного портала» по флагу `/run/poa-stand-portal` |
 | `/root/gui/fake-portal.py` | `fake-portal.py` | страница портала на 127.0.0.1:8088 (запускать вручную) |
+| `/root/rutoken/` | `rutoken-probe.py` | Рутокен ЭЦП (проброшен в ВМ): библиотека Актива `lib/librtpkcs11ecp.so` (aarch64, в систему не ставилась), заголовки `include/`, зонд — `rutoken-probe.py info` (без PIN) / `check` (временные ключи на чипе, сверка с `poa_gost`); итоги — `docs/RUTOKEN.md` |
 
 Прочее на стенде: контейнеры администратора `/root/e8-run/{debian,redos}.container`
 (пароль `AdminContainer123`), фраза носителей `KioskTest12345`, пользователь целей
@@ -61,5 +62,8 @@ Xvfb), скрипты сборки и записи — диагностика и
 - **Место на диске** (59 ГБ): дистрибутив ≈1,1–2 ГБ, носитель-файл до 4 ГБ,
   сборке нужно ≈5 ГБ временно, контейнер nspawn с PostgreSQL ≈1,3 ГБ. 03.10 место
   кончилось посреди проверки кластера.
+- **Рутокен: неверный PIN тратит одну из 10 попыток.** `rutoken-probe.py check` без
+  `POA_TOKEN_PIN` пробует только заводской PIN и только если токен сам говорит, что он
+  заводской; после смены PIN — задавать явно.
 - Кириллица через `boot.sh type` (QEMU sendkey) не набирается — в загрузчике
   отвечать латиницей.
