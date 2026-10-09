@@ -205,3 +205,9 @@ ssh posvm 'cd /root/rutoken && python3 rutoken-probe.py check'     # PIN: POA_TO
   отвергает пакеты xrdp по выравниванию. Подробно — `SOLUTION.md`, раздел 11.
 - `p11-kit-client.so` экспортирует только `C_GetFunctionList`: зонд
   `rutoken-probe.py`, вызывающий функции по именам, с ним не работает.
+- **USB/IP** (`usbip-host`/`usbipd` → `vhci-hcd`, 09.10.2026): токен целиком, в сеансе
+  xrdp 20 механизмов ГОСТ, генерация пары и подпись со Стрибогом сходятся с
+  `poa_gost`. Нужен доступ к `pcscd` для удалённого сеанса: polkit Debian по умолчанию
+  его не даёт (`allow_any=no`). Для `access_card` `pcscd` передаёт в polkit имя
+  считывателя — по нему можно пускать к токену только его владельца
+  (`SOLUTION.md`, 11.7).
