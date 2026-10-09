@@ -22,7 +22,8 @@ Xvfb), скрипты сборки и записи — диагностика и
 | `/etc/nginx/sites-enabled/poa-stand` | `nginx-poa-stand.conf` | сервер на 8443 (TLS) |
 | `/etc/nginx/sites-enabled/poa-stand80` | `nginx-poa-stand80.conf` | порт 80 как в `install.sh` + режим «гостиничного портала» по флагу `/run/poa-stand-portal` |
 | `/root/gui/fake-portal.py` | `fake-portal.py` | страница портала на 127.0.0.1:8088 (запускать вручную) |
-| `/root/rutoken/` | `rutoken-probe.py` | Рутокен ЭЦП (проброшен в ВМ): библиотека Актива `lib/librtpkcs11ecp.so` (aarch64, в систему не ставилась), заголовки `include/`, зонд — `rutoken-probe.py info` (без PIN) / `check` (временные ключи на чипе, сверка с `poa_gost`); итоги — `docs/RUTOKEN.md` |
+| `/root/redws/` (`vm.sh start <0\|1>` / `stop` / `ssh`) | `usbip-token/` | ВМ рабочего места РЕД ОС 8 x86_64 (QEMU без KVM, SELinux enforcing; `rdpuser`, root по ключу `k`): xrdp на `127.0.0.1:13389`, ssh на `:10022`; `build.sh` + `config.sh` — сборка образа `disk2.img` из ISO и репозитория РЕД ОС; первая загрузка — `start 0` (переразметка), дальше `start 1` |
+| `/root/rutoken/` | `rutoken-probe.py` | Рутокен ЭЦП (проброшен в ВМ): библиотека Актива `lib/librtpkcs11ecp.so` (aarch64; x86_64 — `x64/`, в систему не ставилась), заголовки `include/`, зонд — `rutoken-probe.py info` (без PIN) / `check` (временные ключи на чипе, сверка с `poa_gost`); итоги — `docs/RUTOKEN.md` |
 
 Прочее на стенде: контейнеры администратора `/root/e8-run/{debian,redos}.container`
 (пароль `AdminContainer123`), фраза носителей `KioskTest12345`, пользователь целей
@@ -57,6 +58,11 @@ Xvfb), скрипты сборки и записи — диагностика и
   её тексте: использовать шаблон вида `"[g]ui.app import run"`.
 - **Не вкладывать heredoc с `EOF` в heredoc с `EOF`** — хвост выполнится как
   команды на маке.
+- **Образ диска монтировать только внутри `unshare -m --propagation private`.** 09.10.2026
+  привязки chroot (`--rbind` + `--make-rslave`) и сам образ утекли в пространства имён 11
+  служб (`ProtectHome` прячет там `/root`, снять по пути нельзя): `umount` на хосте ФС не
+  закрывал, следующий `mount` того же loop показывал старый кэш, а запись поверх при
+  работающей QEMU испортила ext4 образа. Проверка: `grep -l <путь> /proc/*/mountinfo`.
 - **`rm -rf` только по каталогам без монтирований** (проверка `/proc/mounts`);
   следы прерванной сборки убирать через «Обслуживание → Следы установок».
 - **Место на диске** (59 ГБ): дистрибутив ≈1,1–2 ГБ, носитель-файл до 4 ГБ,

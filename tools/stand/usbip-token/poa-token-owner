@@ -1,0 +1,23 @@
+#!/bin/sh
+# Помощник правила polkit 49-poa-token.rules (прототип, SOLUTION.md 11.7).
+#   poa-token-owner <считыватель>   — печатает владельца присоединённого считывателя или пусто
+#   poa-token-owner --has <user>    — печатает yes, если у пользователя есть присоединённый токен
+# Запись действует, только пока её порт vhci занят по данным ядра: после обрыва имя
+# считывателя может достаться другому токену. Выход всегда 0 (иначе polkit.spawn — исключение).
+MAP=/run/poa-token/map
+[ -r "$MAP" ] || exit 0
+live() {
+    [ -n "$1" ] || return 1
+    awk -v p="$1" 'FNR > 1 && $2 + 0 == p + 0 && $3 == "006" { f = 1 } END { exit !f }' \
+        /sys/devices/platform/vhci_hcd.*/status* 2>/dev/null
+}
+if [ "$1" = "--has" ]; then
+    for port in $(awk -F '\t' -v u="$2" '$1 == u { print $2 }' "$MAP"); do
+        live "$port" && { echo yes; exit 0; }
+    done
+else
+    row=$(awk -F '\t' -v r="$1" '$3 == r { print $1 "\t" $2 }' "$MAP" | tail -n 1)
+    user=$(printf '%s' "$row" | cut -f1); port=$(printf '%s' "$row" | cut -f2)
+    live "$port" && echo "$user"
+fi
+exit 0

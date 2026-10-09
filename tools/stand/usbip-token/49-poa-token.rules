@@ -1,0 +1,25 @@
+// Токен, присоединённый по USB/IP, — только сеансу его владельца (прототип, SOLUTION.md 11.7).
+// pcscd спрашивает access_pcsc при открытии контекста и access_card с именем считывателя.
+// Чужое и неизвестное правило не решает — действует политика по умолчанию.
+polkit.addRule(function (action, subject) {
+    var P = "org.debian.pcsc-lite.";
+    if (action.id != P + "access_pcsc" && action.id != P + "access_card") {
+        return polkit.Result.NOT_HANDLED;
+    }
+    var helper = "/usr/local/libexec/poa-token-owner";
+    var owner;
+    try {
+        if (action.id == P + "access_card") {
+            owner = polkit.spawn([helper, action.lookup("reader") || ""]).trim();
+        } else {
+            owner = polkit.spawn([helper, "--has", subject.user]).trim() == "yes" ? subject.user : "";
+        }
+    } catch (e) {
+        polkit.log("poa-token: помощник не ответил: " + e);
+        return polkit.Result.NOT_HANDLED;
+    }
+    if (owner == "") {
+        return polkit.Result.NOT_HANDLED;
+    }
+    return (owner == subject.user && subject.active) ? polkit.Result.YES : polkit.Result.NO;
+});

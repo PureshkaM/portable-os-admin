@@ -1,0 +1,176 @@
+#!/usr/bin/python3 -I
+"""Присоединение токена сотрудника к рабочему месту при входе в сеанс (прототип, SOLUTION.md 11.6–11.7).
+
+Вызывается `pam_exec` из PAM-стека xrdp-sesman от root:
+- open_session: с адреса носителя (PAM_RHOST) берёт через USB/IP устройства из белого списка,
+  присоединяет их и записывает, какие считыватели PC/SC появились, за пользователем (PAM_USER);
+- close_session: отсоединяет присоединённое для этого пользователя и стирает записи.
+По записям правило polkit пускает к считывателю только его владельца.
+"""
+import ctypes
+import fcntl
+import glob
+import ipaddress
+import os
+import re
+import subprocess
+import sys
+import syslog
+import time
+
+MAP_DIR = "/run/poa-token"
+MAP = MAP_DIR + "/map"            # строки: пользователь \t порт vhci \t имя считывателя
+ALLOWED_VIDS = {"0a89"}           # Актив (Рутокен); у носителя — тот же белый список
+READER_WAIT = 15                  # секунд ждать, пока pcscd увидит новое устройство
+SCARD_E_NO_READERS_AVAILABLE = 0x8010002E
+
+
+def log(msg):
+    syslog.syslog(syslog.LOG_NOTICE, msg)
+
+
+def readers():
+    lib = ctypes.CDLL("libpcsclite.so.1")
+    ctx = ctypes.c_long()
+    rv = lib.SCardEstablishContext(2, None, None, ctypes.byref(ctx)) & 0xFFFFFFFF
+    if rv:
+        raise RuntimeError(f"SCardEstablishContext: {rv:#x}")
+    try:
+        size = ctypes.c_ulong(0)
+        rv = lib.SCardListReaders(ctx, None, None, ctypes.byref(size)) & 0xFFFFFFFF
+        if rv == SCARD_E_NO_READERS_AVAILABLE:
+            return set()
+        if rv:
+            raise RuntimeError(f"SCardListReaders: {rv:#x}")
+        buf = ctypes.create_string_buffer(size.value)
+        lib.SCardListReaders(ctx, None, buf, ctypes.byref(size))
+        return {r.decode() for r in buf.raw[:size.value].split(b"\0") if r}
+    finally:
+        lib.SCardReleaseContext(ctx)
+
+
+def run(*args):
+    return subprocess.run(args, capture_output=True, text=True, timeout=30)
+
+
+def exported(host):
+    """busid устройств из белого списка, которые носитель отдаёт по USB/IP."""
+    out = run("usbip", "list", "-r", host).stdout
+    return [m.group(1) for m in re.finditer(r"^\s*([0-9]+-[0-9.]+):.*\(([0-9a-f]{4}):[0-9a-f]{4}\)", out, re.M)
+            if m.group(2) in ALLOWED_VIDS]
+
+
+def port_of(host, busid):
+    """Порт vhci: `usbip attach` записывает «адрес порт busid» в /var/run/vhci_hcd/port<N>."""
+    try:
+        names = os.listdir("/var/run/vhci_hcd")
+    except FileNotFoundError:
+        return None
+    for name in names:
+        try:
+            with open(f"/var/run/vhci_hcd/{name}") as fh:
+                fields = fh.read().split()
+        except OSError:
+            continue
+        if name.startswith("port") and fields[:1] == [host] and fields[2:3] == [busid]:
+            return name[4:]
+    return None
+
+
+def live_ports():
+    """Занятые порты vhci по данным ядра (sta 006). Запись /var/run/vhci_hcd — забота userspace
+    и при обрыве TCP не стирается, поэтому живость считается только отсюда."""
+    ports = set()
+    for name in glob.glob("/sys/devices/platform/vhci_hcd.*/status*"):
+        with open(name) as fh:
+            for line in fh.readlines()[1:]:
+                f = line.split()
+                if len(f) > 2 and f[2] == "006":
+                    ports.add(str(int(f[1])))
+    return ports
+
+
+def load():
+    try:
+        with open(MAP) as fh:
+            return [line.rstrip("\n").split("\t", 2) for line in fh if line.count("\t") == 2]
+    except FileNotFoundError:
+        return []
+
+
+def save(rows):
+    tmp = MAP + ".tmp"
+    with open(tmp, "w") as fh:
+        fh.writelines("\t".join(r) + "\n" for r in rows)
+    os.chmod(tmp, 0o644)
+    os.replace(tmp, MAP)
+
+
+def attach(user, host):
+    try:
+        host = str(ipaddress.ip_address(host.removeprefix("::ffff:")))
+    except ValueError:
+        log(f"poa-token: {user}: адрес носителя не IP ({host!r}) — токен не присоединяется")
+        return
+    live = live_ports()
+    rows = [r for r in load() if r[1] in live]   # записи отвалившихся устройств не наследуются
+    log(f"poa-token: {user}: вход с {host}")
+    for busid in exported(host):
+        before = readers()
+        res = run("usbip", "attach", "-r", host, "-b", busid)
+        if res.returncode:
+            log(f"poa-token: {user}: usbip attach {host} {busid}: {res.stderr.strip()}")
+            continue
+        port = port_of(host, busid)
+        new = set()
+        for _ in range(READER_WAIT * 2):
+            time.sleep(0.5)
+            new = readers() - before
+            if new:
+                break
+        if port is None:
+            log(f"poa-token: {user}: порт vhci для {busid} не найден — без записи доступа ни у кого нет")
+            continue
+        # имя считывателя и порт после отвала переиспользуются — старые записи с ними снимаются
+        rows = [r for r in rows if r[1] != port and r[2] not in new]
+        for reader in sorted(new):
+            rows.append([user, port, reader])
+        log(f"poa-token: {user}: {host} {busid} → порт {port}, считыватели {sorted(new) or 'не появились'}")
+    save(rows)
+
+
+def detach(user):
+    rows = load()
+    for port in sorted({r[1] for r in rows if r[0] == user and r[1]}):
+        res = run("usbip", "detach", "-p", port)
+        log(f"poa-token: {user}: отсоединён порт {port}" if res.returncode == 0
+            else f"poa-token: {user}: detach {port}: {res.stderr.strip()}")
+    save([r for r in rows if r[0] != user])
+
+
+def main():
+    syslog.openlog("poa-token", 0, syslog.LOG_AUTHPRIV)
+    os.environ["PATH"] = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"  # pam_exec даёт урезанный PATH
+    kind, user = os.environ.get("PAM_TYPE", ""), os.environ.get("PAM_USER", "")
+    if not user or kind not in ("open_session", "close_session"):
+        return 0
+    os.makedirs(MAP_DIR, mode=0o755, exist_ok=True)
+    if os.path.exists("/sys/fs/selinux/enforce"):
+        # polkit (policykit_t) не читает var_run_t; файлы внутри наследуют тип каталога.
+        # В эталонной конфигурации — semanage fcontext + tmpfiles.d, здесь — прототип.
+        run("chcon", "-R", "-t", "policykit_var_run_t", MAP_DIR)
+    with open(MAP_DIR + "/lock", "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if kind == "open_session":
+            attach(user, os.environ.get("PAM_RHOST", ""))
+        else:
+            detach(user)
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except Exception as exc:  # сеанс не должен падать из-за токена
+        syslog.syslog(syslog.LOG_ERR, f"poa-token: ошибка: {exc!r}")
+        sys.exit(0)

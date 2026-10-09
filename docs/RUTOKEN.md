@@ -211,3 +211,7 @@ ssh posvm 'cd /root/rutoken && python3 rutoken-probe.py check'     # PIN: POA_TO
   его не даёт (`allow_any=no`). Для `access_card` `pcscd` передаёт в polkit имя
   считывателя — по нему можно пускать к токену только его владельца
   (`SOLUTION.md`, 11.7).
+- **Только свой токен своему сеансу** (09.10.2026, Debian 13 и РЕД ОС 8 с SELinux):
+  связка `pam_exec` + правило polkit по паре «пользователь — считыватель» работает,
+  ГОСТ на чипе в сеансе xrdp — да. Особенности РЕД ОС: `99-pcscd.rules` пускает `wheel`
+  ко всем считывателям; polkit не читает `var_run_t`. Подробно — `SOLUTION.md`, 11.8.
