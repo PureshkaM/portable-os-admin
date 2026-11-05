@@ -19,6 +19,7 @@ from tkinter import ttk
 
 from tkinter import messagebox
 
+from .. import ADMIN_APP_NAME, SYSTEM_NAME
 from ..config import ConfigManager
 from ..container import AdminContainer, ContainerManager
 from ..session import AdminSession
@@ -29,7 +30,7 @@ from .elevate import elevate_or_exit
 class PortableOSAdminGUI(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
-        self.title("Portable OS Admin")
+        self.title(f"{ADMIN_APP_NAME} — {SYSTEM_NAME}")
         # Wider than before: the wizard now shows its step list alongside the
         # content instead of a bare progress bar, and the form needs the same
         # room it always did next to it.

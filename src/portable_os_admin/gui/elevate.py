@@ -34,6 +34,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from .. import ADMIN_APP_NAME
+
 #: Set in the privileged copy so it does not try to elevate a second time.
 ELEVATED_MARKER = "POA_ELEVATED"
 #: Escape hatch for automated runs and for development where polkit is not
@@ -324,7 +326,7 @@ def _report(message: str) -> None:
 
         root = tk.Tk()
         root.withdraw()
-        messagebox.showerror("Portable OS Admin", message)
+        messagebox.showerror(ADMIN_APP_NAME, message)
         root.destroy()
     except Exception:  # noqa: BLE001 - no display is a normal case here
         pass

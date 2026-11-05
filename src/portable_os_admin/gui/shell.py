@@ -39,6 +39,7 @@ from __future__ import annotations
 import tkinter as tk
 from tkinter import ttk
 
+from .. import ADMIN_APP_NAME, SYSTEM_NAME
 from . import theme
 
 #: Разделы в порядке работы, а не по алфавиту: сначала то, ради чего программу
@@ -70,7 +71,7 @@ class NavigationShell(ttk.Frame):
 
         ttk.Label(
             sidebar,
-            text="Переносные системы",
+            text=f"{ADMIN_APP_NAME} · {SYSTEM_NAME}",
             style="SidebarTitle.TLabel",
         ).pack(anchor="w", padx=theme.SPACE_MD, pady=(0, theme.SPACE_MD))
 

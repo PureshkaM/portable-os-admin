@@ -5,7 +5,7 @@
 # ответ от подмены, но по открытому каналу видно, какие носители у организации
 # есть и когда они включаются.
 [Unit]
-Description=Ресурс отзыва переносных носителей
+Description=Кокон — сервер доступа и отзыва системы «Шлейф»
 After=network-online.target postgresql.service
 Wants=network-online.target
 

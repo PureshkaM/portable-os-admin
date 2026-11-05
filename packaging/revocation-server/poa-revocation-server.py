@@ -577,7 +577,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Ресурс отзыва носителей")
+    parser = argparse.ArgumentParser(description="Кокон — сервер доступа и отзыва системы «Шлейф»")
     parser.add_argument("--key", required=True, type=pathlib.Path,
                         help="закрытый ключ отзыва в PEM: им подписываются ответы носителям")
     parser.add_argument("--db", required=True,

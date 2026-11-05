@@ -35,7 +35,7 @@ POLL_SECONDS = 2
 
 class ConnectWindow(Gtk.Window):
     def __init__(self) -> None:
-        super().__init__(title="Подключение")
+        super().__init__(title="Нить — подключение")
         self.set_default_size(560, 420)
         self.set_position(Gtk.WindowPosition.CENTER)
         self.stack = Gtk.Stack()

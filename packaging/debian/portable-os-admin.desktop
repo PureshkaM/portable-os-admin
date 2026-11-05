@@ -1,8 +1,8 @@
 [Desktop Entry]
 Type=Application
-Name=Portable OS Admin
-GenericName=Portable OS Admin Tool
-Comment=Create and administer a portable LUKS-encrypted OS on external media
+Name=Ткач
+GenericName=Администрирование переносных устройств
+Comment=Система «Шлейф»: создание и обслуживание устройств «Нить» с шифрованием LUKS
 Exec=portable-os-admin
 Icon=utilities-terminal
 Terminal=false

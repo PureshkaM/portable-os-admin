@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "portable-os-admin"
 version = "1.2.0"
-description = "Secure administrative application for creating and administering a portable operating system on external media (LUKS-encrypted, with recovery and admin container)"
+description = "Ткач — приложение администратора системы «Шлейф»: создание и обслуживание переносных устройств «Нить» с шифрованием LUKS и восстановлением доступа"
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }

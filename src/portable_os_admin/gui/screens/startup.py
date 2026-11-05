@@ -29,6 +29,7 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, ttk
 
+from ... import ADMIN_APP_NAME
 from .. import theme
 from ..elevate import invoking_user_home
 from ..widgets import MessageBar, add_field, error_guard
@@ -90,7 +91,7 @@ class StartupFrame(ttk.Frame):
         self.message_bar.pack(fill="x", pady=(theme.SPACE_MD, 0))
 
     def _render_choice(self) -> None:
-        ttk.Label(self.card, text="Контейнер администратора", style="Title.TLabel").pack(
+        ttk.Label(self.card, text=f"{ADMIN_APP_NAME} — контейнер администратора", style="Title.TLabel").pack(
             anchor="w", pady=(0, theme.SPACE_LG)
         )
 

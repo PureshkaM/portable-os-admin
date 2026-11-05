@@ -14,6 +14,7 @@ import shlex
 import shutil
 from abc import ABC, abstractmethod
 
+from ... import DEVICE_NAME
 from ...config.schema import ExtraUserConfig, InstallConfig
 from .. import revocation
 from .. import desktop_roles
@@ -768,7 +769,7 @@ WantedBy=multi-user.target
         """
 
     #: Заголовок меню: то, что человек видит при загрузке носителя.
-    GRUB_MENU_TITLE = "Portable OS GNU/Linux"
+    GRUB_MENU_TITLE = f"{DEVICE_NAME} GNU/Linux"
     #: Утилита переменных GRUB у семейства.
     GRUB_EDITENV = "grub-editenv"
 

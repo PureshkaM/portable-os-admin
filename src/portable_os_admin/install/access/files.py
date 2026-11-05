@@ -98,7 +98,7 @@ RestartSec=5
 def autostart_entry() -> str:
     return """[Desktop Entry]
 Type=Application
-Name=Подключение
+Name=Нить — подключение
 Exec=/usr/bin/python3 /usr/lib/poa-access/poa_connect.py
 NoDisplay=true
 X-GNOME-Autostart-enabled=true

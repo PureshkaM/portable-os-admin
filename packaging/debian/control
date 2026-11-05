@@ -29,7 +29,7 @@ Recommends: eatmydata,
  libarchive-tools | rpm,
  cpio
 Suggests: qemu-user-static, binfmt-support
-Description: Admin tool for portable LUKS-encrypted OS media
+Description: Tkach — administrator application for the Shleif system
  Creates and administers an encrypted admin container, builds install
  configurations, installs Debian or RedOS onto an external
  LUKS-encrypted medium, and manages its logs, exchange partition and

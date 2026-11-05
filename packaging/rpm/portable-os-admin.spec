@@ -1,7 +1,7 @@
 Name:           portable-os-admin
 Version:        1.2.0
 Release:        1%{?dist}
-Summary:        Admin tool for portable LUKS-encrypted OS media
+Summary:        Ткач — приложение администратора системы «Шлейф»
 
 License:        MIT
 URL:            https://github.com/PureshkaM/portable-os-admin
@@ -150,9 +150,9 @@ mkdir -p %{buildroot}/usr/share/applications
 cat > %{buildroot}/usr/share/applications/portable-os-admin.desktop <<'EOF'
 [Desktop Entry]
 Type=Application
-Name=Portable OS Admin
-GenericName=Portable OS Admin Tool
-Comment=Create and administer a portable LUKS-encrypted OS on external media
+Name=Ткач
+GenericName=Администрирование переносных устройств
+Comment=Система «Шлейф»: создание и обслуживание устройств «Нить» с шифрованием LUKS
 Exec=portable-os-admin
 Icon=utilities-terminal
 Terminal=false

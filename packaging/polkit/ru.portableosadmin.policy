@@ -13,11 +13,11 @@
 -->
 <policyconfig>
 
-  <vendor>Portable OS Admin</vendor>
+  <vendor>Шлейф</vendor>
 
   <action id="ru.portableosadmin.run">
-    <description>Администрирование переносной операционной системы</description>
-    <description xml:lang="en">Portable operating system administration</description>
+    <description>Ткач — администрирование системы «Шлейф»</description>
+    <description xml:lang="en">Tkach — Shleif system administration</description>
     <message>Приложение размечает и шифрует внешние носители, поэтому требует прав администратора</message>
     <message xml:lang="en">This application partitions and encrypts external media, so it requires administrator rights</message>
     <defaults>
