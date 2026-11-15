@@ -14,7 +14,7 @@
 ## Откуда взята версия
 
 Исходная папка: `/Users/maksimhripunov/ClaudeCode/portable-os-admin/`.
-Новая рабочая папка: `/Users/maksimhripunov/Codex/Шлейф/`.
+Новая рабочая папка: `/Users/maksimhripunov/Codex/Якорь/`.
 Репозиторий: <https://github.com/PureshkaM/portable-os-admin>.
 
 На момент переноса исходная папка не содержала незакоммиченных изменений.
