@@ -2,7 +2,7 @@
 
 Документация, которую никто не проверяет, расходится с кодом за две недели, и
 дальше вредит: администратор читает про поле, которого нет, или не находит
-того, которое есть. Поэтому полнота `README, раздел «Конфигурация»` — не вопрос
+того, которое есть. Поэтому полнота `docs/CONFIGURATION.md` — не вопрос
 добросовестности, а тест.
 """
 from __future__ import annotations
@@ -13,18 +13,13 @@ import re
 
 from portable_os_admin.config.schema import InstallConfig
 
-#: Справочник живёт разделом README, а не отдельным файлом: всё о самом
-#: проекте собрано в одном месте, и меняется отдельно только план работ.
-#: Тест читает именно этот раздел, а не весь файл, — иначе поле считалось бы
-#: описанным просто потому, что его имя встретилось где-то в архитектуре.
-_README = pathlib.Path(__file__).resolve().parents[1] / "README.md"
+#: Справочник вынесен из обзорного README. Проверяется только этот файл:
+#: упоминание поля в архитектуре или истории не заменяет его описания.
+_REFERENCE = pathlib.Path(__file__).resolve().parents[1] / "docs" / "CONFIGURATION.md"
 
 
 def _reference_text() -> str:
-    text = _README.read_text(encoding="utf-8")
-    start = text.index("\n# Конфигурация\n")
-    end = text.index("\n# Проверки, стенд и уроки\n", start)
-    return text[start:end]
+    return _REFERENCE.read_text(encoding="utf-8")
 
 
 def _fields(cls, prefix: str = "") -> list[str]:
@@ -48,7 +43,7 @@ def test_every_configuration_field_is_documented():
     missing = [name for name in _fields(InstallConfig) if f"`{name}`" not in text]
 
     assert not missing, (
-        "в README, раздел «Конфигурация» нет описания полей: " + ", ".join(missing)
+        "в docs/CONFIGURATION.md нет описания полей: " + ", ".join(missing)
         + ".\nЛибо опишите их, либо уберите из схемы — незадокументированное "
         "поле администратор не найдёт."
     )
