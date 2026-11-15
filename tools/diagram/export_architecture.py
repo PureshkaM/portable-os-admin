@@ -1,6 +1,5 @@
-"""Экспорт атласа через установленный draw.io Desktop, без дополнительных пакетов."""
+"""Экспорт листов атласа во внешний каталог без дублирования файлов в проекте."""
 import argparse
-import json
 from pathlib import Path
 import shutil
 import subprocess
@@ -9,39 +8,30 @@ import xml.etree.ElementTree as ET
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--png-dir', type=Path, help='Каталог PNG для визуальной проверки')
-    parser.add_argument('--only', nargs='*', help='Номера страниц для повторного экспорта')
+    parser.add_argument('output_dir', type=Path)
+    parser.add_argument('--format', choices=('svg', 'png'), default='svg')
+    parser.add_argument('--page', type=int, action='append', help='Номер листа, начиная с 1')
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[2]
-    folder = root / 'docs' / 'architecture'
+    atlas = root / 'docs/architecture/yakor-architecture.drawio'
+    count = len(ET.parse(atlas).getroot().findall('diagram'))
+    pages = args.page if args.page is not None else range(1, count + 1)
+    if any(i < 1 or i > count for i in pages):
+        parser.error(f'Номер листа должен быть от 1 до {count}')
     cli = shutil.which('drawio') or '/Applications/draw.io.app/Contents/MacOS/draw.io'
     if not Path(cli).is_file():
-        raise SystemExit('Нужен установленный draw.io Desktop; XML-исходники уже доступны.')
-    pages = json.loads((folder / 'manifest.json').read_text())
-    if args.png_dir:
-        args.png_dir.mkdir(parents=True, exist_ok=True)
-    for i, page in enumerate(pages, 1):
-        if args.only and page['slug'][:2] not in args.only:
-            continue
-        source = folder / 'diagrams' / (page['slug'] + '.drawio')
-        svg = folder / 'svg' / (page['slug'] + '.drawio.svg')
-        subprocess.run([cli, '--disable-gpu', '-x', '-f', 'svg', '-e', '-o', str(svg), str(source)],
-                       check=True, capture_output=True, timeout=60)
-        doc = ET.parse(svg).getroot()
-        assert '<mxfile' in doc.get('content', ''), f'Нет редактируемого XML: {svg}'
-        if args.png_dir:
-            subprocess.run([cli, '--disable-gpu', '-x', '-f', 'png', '-o',
-                            str(args.png_dir / (page['slug'] + '.png')), str(source)],
-                           check=True, capture_output=True, timeout=60)
-        print(f'{i}/{len(pages)} · {page["slug"]}', flush=True)
-    atlas = ET.Element('mxfile', host='Electron')
-    for page in pages:
-        doc = ET.parse(folder / 'diagrams' / (page['slug'] + '.drawio')).getroot()
-        diagram = doc.find('diagram')
-        diagram.set('id', page['slug'])
-        atlas.append(diagram)
-    ET.ElementTree(atlas).write(folder / 'shleif-architecture.drawio', encoding='utf-8', xml_declaration=True)
-    print('Экспорт завершён: SVG проверены парсером, встроенный XML присутствует.', flush=True)
+        raise SystemExit('Для экспорта нужен установленный draw.io Desktop')
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+    for i in pages:
+        output = args.output_dir / f'{i:02d}.drawio.{args.format}'
+        command = [cli, '--disable-gpu', '-x', '-f', args.format, '-p', str(i), '-o', str(output)]
+        if args.format == 'svg':
+            command.append('-e')
+        try:
+            subprocess.run([*command, str(atlas)], check=True, capture_output=True, timeout=60)
+        except subprocess.CalledProcessError as exc:
+            raise SystemExit(exc.stderr.decode(errors='replace') or exc.stdout.decode(errors='replace')) from exc
+        print(f'{i}/{count} · {output.name}', flush=True)
 
 
 if __name__ == '__main__':
