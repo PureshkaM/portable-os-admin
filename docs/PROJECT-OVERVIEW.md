@@ -65,7 +65,7 @@
 3. [ACCESS-PROTOCOL.md](ACCESS-PROTOCOL.md) — взаимодействие с сервером v3.
 4. [THREAT-MODEL.md](THREAT-MODEL.md), [RUTOKEN.md](RUTOKEN.md),
    [DELIVERY.md](DELIVERY.md) — угрозы, аппаратные токены и доставка системы.
-5. [Архив прежнего README](history/README-legacy.md), [PLAN.md](PLAN.md) — подробности ранних версий.
+5. [Архив прежнего README](history/README-legacy.md), [PLAN.md](history/PLAN.md) — подробности ранних версий.
    Здесь остаются описания, требующие сверки с новой архитектурой.
 
 Исторические отметки «проверено» в этих файлах относятся к прежним прогонам.

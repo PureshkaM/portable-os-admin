@@ -1,8 +1,8 @@
 # Выпуск 1.1.0
 
 Файл ведётся с 15.09.2026 и живёт до выхода 1.1.0. Соседние документы:
-[`../README.md`](../README.md) — о проекте, [`PLAN.md`](PLAN.md) — общий список
-задач, [`REVOCATION-SERVER.md`](REVOCATION-SERVER.md) — сервер отзыва.
+[`../README.md`](../../README.md) — о проекте, [`PLAN.md`](PLAN.md) — общий список
+задач, [`REVOCATION-SERVER.md`](../REVOCATION-SERVER.md) — сервер отзыва.
 
 ## Цель и границы
 

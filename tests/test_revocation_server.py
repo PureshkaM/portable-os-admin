@@ -6,7 +6,7 @@
 
 Подпись носителя делается `cryptography`, а на носителе -- `openssl pkeyutl
 -rawin`: обе дают чистую Ed25519 над байтами строки, это сверено при написании
-клиентской части (см. `docs/RELEASE-1.1.md`).
+клиентской части (см. `docs/history/RELEASE-1.1.md`).
 """
 from __future__ import annotations
 
