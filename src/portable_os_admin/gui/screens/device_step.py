@@ -1,15 +1,4 @@
-"""Выбор носителя — общий шаг мастера установки и мастера развёртывания.
-
-Вынесено в отдельный модуль не ради экономии строк. Это шаг, после которого
-носитель стирается, и вся его ценность в мелочах, добытых живыми прогонами:
-список съёмных устройств ненадёжен (флаг RM у многих флешек не выставлен),
-поэтому рядом всегда есть ручное поле; устройство описывается тем, что о нём
-говорит система, а не тем, что набрано в форме, иначе теряются точки
-монтирования — а установщик именно по ним отмонтирует носитель перед
-разметкой.
-
-Две копии такой проверки — это два места, где можно забыть исправить.
-"""
+"""Выбор носителя для записи образа. Сведения о диске читает операционная система."""
 from __future__ import annotations
 
 import os
@@ -39,11 +28,7 @@ def is_root() -> bool:
 
 
 class DeviceStepMixin:
-    """Шаг «Носитель» для мастера, у которого есть `message_bar`.
-
-    Требует от класса-хозяина двух атрибутов, заведённых до построения шага:
-    `device_path` и `device_size_gb` (обе строки, могут быть пустыми).
-    """
+    """Шаг выбора блочного устройства для мастера выпуска."""
 
     def _build_step_device(self, body: ttk.Frame) -> None:
         ttk.Button(body, text="Обновить список устройств", command=self._refresh_devices).pack(anchor="w")
@@ -82,8 +67,6 @@ class DeviceStepMixin:
             hint="например /dev/sdb -- заполняется автоматически при выборе строки выше, либо введите вручную",
             width=32,
         )
-        self.device_size_var = tk.StringVar(value=self.device_size_gb)
-        add_field(form, 2, "Размер устройства (ГБ):", self.device_size_var, hint="для проверки достаточности места", width=10)
 
         self._refresh_devices()
 
@@ -118,57 +101,22 @@ class DeviceStepMixin:
             return
         index = self.devices_table.index(selection[0])
         device = self._devices[index]
+        self._selected_row = device
         self.device_path_var.set(device.path)
-        self.device_size_var.set(f"{device.size_bytes / 1024**3:.1f}")
 
     def _save_step_device(self) -> None:
         self.device_path = self.device_path_var.get().strip()
-        self.device_size_gb = self.device_size_var.get().strip()
 
     def _validate_step_device(self) -> bool:
-        if not self.device_path:
-            self.message_bar.error("Укажите путь к устройству.")
+        self._selected_device = DeviceLister().describe(self.device_path)
+        if self._selected_device is None or self._selected_device.diskseq <= 0 or not self._selected_device.mounts_known:
+            self.message_bar.error(f"Не удалось определить диск {self.device_path}. Проверьте путь.")
             return False
-        try:
-            float(self.device_size_gb or "0")
-        except ValueError:
-            self.message_bar.error("Некорректный размер устройства.")
+        row = getattr(self, "_selected_row", None)
+        if row and row.path == self.device_path and row != self._selected_device:
+            self.message_bar.error("Устройство изменилось. Обновите список и выберите носитель заново.")
             return False
         return True
-
-    def _parsed_size_gb(self) -> float:
-        try:
-            return float(self.device_size_gb or "0")
-        except ValueError:
-            return 0.0
-
-    def _resolve_device(self, size_gb: float) -> BlockDevice:
-        """Описывает цель так, как её сейчас видит система, и только если
-        прочитать не удалось вовсе — по полям формы.
-
-        Устройство, собранное из одних текстовых полей (а раньше было именно
-        так), теряет свои точки монтирования, а установщик по ним отмонтирует
-        носитель перед переразметкой. Автомонтировщик рабочего стола цепляет
-        флешку сразу при подключении, поэтому выдуманное «точек монтирования
-        нет» означало разметку поверх живой файловой системы — ровно в той
-        ситуации, в которой этим мастером и пользуются. Заодно возвращается
-        настоящее число байт вместо округлённых гигабайт и настоящее имя
-        модели для записи в контейнере.
-        """
-        probed = DeviceLister().describe(self.device_path)
-        if probed is not None:
-            return probed
-        for device in getattr(self, "_devices", []):
-            if device.path == self.device_path:
-                return device
-        return BlockDevice(
-            name=self.device_path.rsplit("/", 1)[-1],
-            path=self.device_path,
-            size_bytes=int(size_gb * 1024**3),
-            model="(введено вручную)",
-            removable=True,
-            mountpoints=(),
-        )
 
 
 class TerminationGuardMixin:

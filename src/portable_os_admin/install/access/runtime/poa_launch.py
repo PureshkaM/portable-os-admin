@@ -4,13 +4,14 @@
 (`poa_connect.py`) только показывает то, что здесь решено.
 
 Пароль рабочего места не попадает ни в `argv` (его видно в `ps`), ни на диск:
-FreeRDP получает его через stdin (`/from-stdin`), окна VNC и SSH спрашивают его
+FreeRDP получает его через stdin (`/from-stdin`), окно VNC запрашивает его
 сами внутри своего протокола.
 """
 from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import socket
 
@@ -33,6 +34,10 @@ def ask(request: dict, path: str = SOCKET, timeout: float = 120.0) -> dict:
 #: Что сказать человеку на отказ службы или сервера. Коротко: окно не место
 #: для объяснения протокола, а позвонить администратору проще с ясной фразой.
 MESSAGES = {
+    "session_expired": "Срок допуска истёк. Введите новый код для входа.",
+    "assignment_changed": "Назначение изменилось. Войдите снова.",
+    "selection_changed": "Выбор рабочего места утратил силу. Повторите вход.",
+    "tunnel_lost": "Соединение с VPN прервано. Рабочая сеть закрыта.",
     "totp": "Неверный код. Дождитесь следующего кода в приложении и введите его.",
     "blocked": "Носитель заблокирован. Обратитесь к администратору.",
     "clone": "Обнаружена копия носителя. Носитель заблокирован — обратитесь к администратору.",
@@ -73,6 +78,10 @@ def client_command(target: dict) -> tuple[list[str], bool]:
     принтеры и USB не пробрасываются (их нет среди ключей -- в FreeRDP 3 они
     выключены по умолчанию), смарт-карта -- только если цель этого требует.
     """
+    if (not isinstance(target.get("host"), str)
+            or not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9._-]{0,252}", target["host"])
+            or type(target.get("port")) is not int or not 1 <= target["port"] <= 65535):
+        raise ValueError("Некорректный адрес рабочего места")
     kind = target["type"]
     if kind == "rdp":
         argv = [freerdp_binary(), f"/v:{target['host']}:{target['port']}",
@@ -84,13 +93,12 @@ def client_command(target: dict) -> tuple[list[str], bool]:
                 # EOF (живая загрузка 02.10.2026: ERRCONNECT_CONNECT_CANCELLED).
                 f"/d:{target.get('domain', '')}"]
         pin = target.get("pin", "")
-        if pin.startswith("sha256:"):
-            argv.append(f"/cert:fingerprint:sha256:{pin[len('sha256:'):]}")
+        if not re.fullmatch(r"sha256:[0-9a-fA-F]{64}", pin):
+            raise ValueError("Нужен отпечаток сертификата рабочего места")
+        argv.extend([f"/cert:fingerprint:sha256:{pin[7:]}", "-clipboard"])
         if target.get("smartcard"):
             argv.append("/smartcard")
         return argv, True
-    if kind == "ssh":
-        return ["python3", os.path.join(RUNTIME, "poa_ssh.py"), json.dumps(target)], False
     if kind == "vnc":
         return ["python3", os.path.join(RUNTIME, "poa_vnc.py"), json.dumps(target)], False
     raise ValueError(f"неизвестный тип цели: {kind}")

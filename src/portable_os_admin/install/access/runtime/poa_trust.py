@@ -29,6 +29,9 @@ import hashlib
 import json
 import time
 
+# Версия профиля сотрудника, запрещающего SSH и текстовый вход.
+EMPLOYEE_PROFILE = "graphical-v1"
+
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ed25519
 

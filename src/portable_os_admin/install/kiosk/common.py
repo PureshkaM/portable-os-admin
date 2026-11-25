@@ -289,8 +289,6 @@ def hardening_fstab_rows() -> list[tuple[str, str, str, str, str, str]]:
 #: о себе. Удалённый доступ к самому носителю не предусмотрен по замыслу:
 #: администратор работает с ним через собственный интерфейс программы.
 UNWANTED_SERVICES = (
-    "sshd.service",
-    "ssh.service",
     "avahi-daemon.service",
     "avahi-daemon.socket",
     "smbd.service",

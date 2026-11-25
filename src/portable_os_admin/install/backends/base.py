@@ -82,8 +82,6 @@ def maybe_eatmydata(argv: list[str]) -> list[str]:
 
 class InstallBackend(ABC):
     name: str
-    ssh_package: str = "openssh-server"
-    ssh_service: str = "ssh"
     sudo_group: str = "sudo"
     syslog_package: str = "rsyslog"
     #: Понимает ли семейство `keyscript=` в crypttab. Это интерфейс
@@ -431,7 +429,7 @@ class InstallBackend(ABC):
             packages += list(self.ACCESS_PACKAGES)
         return packages
 
-    #: Пакеты доступа (Э8): OpenVPN, FreeRDP, GTK-привязки для окон, VTE (SSH),
+    #: Пакеты доступа (Э8): OpenVPN, FreeRDP, GTK-привязки для окон,
     #: GtkVnc (VNC), криптография клиента. Имена у семейств свои -- Э0.
     ACCESS_PACKAGES: tuple[str, ...] = ()
 
@@ -883,6 +881,8 @@ echo "poa-boot: меню слотов A/B написано"
         machine instead of the medium being built."""
         return self.chroot(mount_root, "env", "SYSTEMD_OFFLINE=1", "systemctl", "enable", unit)
 
+    ssh_service = "ssh"
+
     def chroot_setup_commands(
         self, mount_root: str, config: InstallConfig, media_id: str = ""
     ) -> list[list[str]]:
@@ -899,6 +899,12 @@ echo "poa-boot: меню слотов A/B написано"
             self.chroot(mount_root, "useradd", "-m", "-s", account.shell, "-c", account.full_name, account.username),
             self.chroot(mount_root, "passwd", "-l", account.username),
         ]
+        # Унаследованный консольный образ используется для отдельного обслуживания.
+        if not config.kiosk.enabled and config.remote_access.enabled and config.remote_access.method == "openssh":
+            install_ssh = self.package_install_command(mount_root, ["openssh-server"])
+            if install_ssh is not None:
+                commands.append(install_ssh)
+            commands.append(self.systemctl_enable(mount_root, self.ssh_service))
         if account.sudo:
             commands.append(self.chroot(mount_root, "usermod", "-aG", self.sudo_group, account.username))
 
@@ -911,11 +917,6 @@ echo "poa-boot: меню слотов A/B написано"
         if pkg_cmd is not None:
             commands.append(pkg_cmd)
 
-        if config.remote_access.enabled and config.remote_access.method == "openssh":
-            ssh_pkg_cmd = self.package_install_command(mount_root, [self.ssh_package])
-            if ssh_pkg_cmd is not None:
-                commands.append(ssh_pkg_cmd)
-            commands.append(self.systemctl_enable(mount_root, self.ssh_service))
 
         commands.append(self.systemctl_enable(mount_root, "rsyslog"))
         commands.append(self.systemctl_enable(mount_root, "poa-boot-ok.service"))

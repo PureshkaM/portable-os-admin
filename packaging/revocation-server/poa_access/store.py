@@ -39,6 +39,13 @@ TABLES = (
     "CREATE TABLE IF NOT EXISTS targets ("
     " media_id TEXT NOT NULL, target_id TEXT NOT NULL, spec TEXT NOT NULL,"
     " PRIMARY KEY (media_id, target_id))",
+    "CREATE TABLE IF NOT EXISTS target_versions ("
+    " media_id TEXT NOT NULL, target_id TEXT NOT NULL, version INTEGER NOT NULL,"
+    " PRIMARY KEY (media_id, target_id))",
+    "CREATE TABLE IF NOT EXISTS employee_sessions ("
+    " media_id TEXT PRIMARY KEY, session_id TEXT, mfa_until INTEGER NOT NULL,"
+    " media_counter INTEGER NOT NULL, status TEXT NOT NULL, generation INTEGER NOT NULL DEFAULT 0,"
+    " target_id TEXT, revision TEXT, lease_until INTEGER)",
     "CREATE TABLE IF NOT EXISTS groups ("
     " id TEXT PRIMARY KEY, parent TEXT, distribution TEXT, allow_vm INTEGER)",
     "CREATE TABLE IF NOT EXISTS distributions ("

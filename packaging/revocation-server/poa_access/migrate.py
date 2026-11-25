@@ -20,7 +20,8 @@ from .store import Store
 #: Порядок не важен для ключей (внешних ключей нет), важен для читаемости.
 TABLES = ("media", "nonces", "access", "link_history", "activations", "nonces3", "certs",
           "targets", "groups", "distributions", "releases", "device_events", "server_log",
-          "admin_counters")
+          "admin_counters", "target_versions")
+# После переноса базы действующие рабочие допуски требуют нового MFA.
 #: Таблицы, чей порядок -- номер строки (sqlite rowid → PostgreSQL id).
 ORDERED = {"device_events": "rowid", "server_log": "id"}
 

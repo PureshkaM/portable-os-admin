@@ -64,12 +64,13 @@ def load_release(directory: str, anchors: list[dict], admin_secret: bytes) -> di
             return poa_trust.verify_document(anchors, document, "release")
         except poa_trust.TrustError as exc:
             raise MediaUpdateError(f"выпуск не прошёл проверку подписи: {exc}") from exc
-    verdict = distribution.verify_distribution(directory, admin_secret)
+    metadata = distribution.read_metadata(directory)
+    verdict = distribution.verify_distribution(directory, admin_secret, expected=metadata)
     if verdict.status != distribution.SIGNED_BY_THIS_CONTAINER:
         raise MediaUpdateError("дистрибутив не подписан этим контейнером, а корня организации нет")
     payload = document.get("release") or {}
-    metadata = distribution.read_metadata(directory)
-    if (payload.get("verity_root_hash") != metadata.verity_root_hash
+    if (payload.get("employee_profile") != metadata.employee_profile
+            or payload.get("verity_root_hash") != metadata.verity_root_hash
             or (payload.get("image") or {}).get("sha256") != metadata.sha256):
         raise MediaUpdateError("выпуск не совпадает с подписанным описанием дистрибутива")
     return payload
@@ -93,6 +94,8 @@ def plan(esp: str, boot: str, payload: dict) -> dict:
     good = env.get("poa_good") or "a"
     if good not in ("a", "b"):
         raise MediaUpdateError(f"poa_good={good!r} -- не слот")
+    if payload.get("employee_profile") != poa_trust.EMPLOYEE_PROFILE:
+        raise MediaUpdateError("Нужен заново собранный графический выпуск без SSH.")
     target = {"a": "b", "b": "a"}[good]
     try:
         current = _read_release(os.path.join(boot, f"slot-{good}", "release.json"))

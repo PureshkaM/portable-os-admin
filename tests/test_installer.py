@@ -32,9 +32,9 @@ def test_run_rejects_unvalidated_config(session, big_removable_device):
         installer.run(big_removable_device, config, b"user-passphrase", dry_run=True)
 
 
-def test_run_rejects_ineligible_device(session, make_config):
+def test_run_rejects_ineligible_device(session, make_employee_config):
     cfgm = ConfigManager()
-    config = make_config()
+    config = make_employee_config()
     cfgm.validate(config)
 
     tiny_device = BlockDevice(
@@ -45,9 +45,9 @@ def test_run_rejects_ineligible_device(session, make_config):
         installer.run(tiny_device, config, b"user-passphrase", dry_run=True)
 
 
-def test_successful_dry_run_produces_media_and_recovery_records(session, big_removable_device, make_config):
+def test_successful_dry_run_produces_media_and_recovery_records(session, big_removable_device, make_employee_config):
     cfgm = ConfigManager()
-    config = make_config()
+    config = make_employee_config()
     cfgm.validate(config)
     assert config.validation_status == "valid"
 
@@ -66,13 +66,13 @@ def test_successful_dry_run_produces_media_and_recovery_records(session, big_rem
     assert session.container.find_recovery(result.media_record.media_id, 7) is not None
 
 
-def _plan_argvs(session, make_config, target_os="debian", image_path=""):
+def _plan_argvs(session, make_employee_config, target_os="debian", image_path=""):
     cfgm = ConfigManager()
-    config = make_config("stick1", target_os)
+    config = make_employee_config("stick1", target_os)
     cfgm.validate(config)
     device = BlockDevice(
         name="sdb", path="/dev/sdb", size_bytes=32_000_000_000, model="Cruzer", removable=True,
-        mountpoints=("/media/user/flash",),
+        mountpoints=(),
     )
     result = OSInstaller(session).run(
         device, config, b"user-passphrase-123", image_path=image_path, dry_run=True
@@ -80,7 +80,7 @@ def _plan_argvs(session, make_config, target_os="debian", image_path=""):
     return [r.argv for r in result.plan.results], result
 
 
-def test_target_system_is_actually_written_onto_the_medium(session, make_config):
+def test_target_system_is_actually_written_onto_the_medium(session, make_employee_config):
     """Regression test for the defect that made this project useless in practice.
 
     The original pipeline formatted the LUKS container and then bootstrapped
@@ -93,7 +93,7 @@ def test_target_system_is_actually_written_onto_the_medium(session, make_config)
     ложится на открытый и смонтированный том носителя. Цепочка та же по смыслу:
     открыть -> создать ФС -> смонтировать -> только потом класть систему.
     """
-    argvs, _ = _plan_argvs(session, make_config)
+    argvs, _ = _plan_argvs(session, make_employee_config)
     flat = [" ".join(a) for a in argvs]
 
     bootstrap_idx = next(i for i, a in enumerate(argvs) if "debootstrap" in a)
@@ -110,12 +110,6 @@ def test_target_system_is_actually_written_onto_the_medium(session, make_config)
     # собрать -> упаковать -> открыть том -> ФС -> смонтировать -> положить образ
     assert bootstrap_idx < squash_idx < open_idx < mkfs_idx < mount_idx < image_idx
 
-    # the medium is unmounted first: a stick is automounted by the desktop the
-    # moment it is plugged in, and partitioning under a live filesystem corrupts it
-    umount_idx = flat.index("umount /media/user/flash")
-    parted_idx = next(i for i, a in enumerate(argvs) if a[0] in ("parted", "sgdisk", "wipefs"))
-    assert umount_idx < parted_idx
-
     # a bootable result needs a kernel, an initramfs that can unlock the root,
     # and a bootloader -- debootstrap/dnf install none of the three
     assert any("linux-image" in f for f in flat)
@@ -130,7 +124,7 @@ def test_target_system_is_actually_written_onto_the_medium(session, make_config)
     assert mount_root
 
 
-def test_dangling_resolver_symlink_is_removed_before_it_is_written(session, make_config):
+def test_dangling_resolver_symlink_is_removed_before_it_is_written(session, make_employee_config):
     """На РЕД ОС /etc/resolv.conf -- ссылка на стаб systemd-resolved, которого в
     неподнятом корне не существует, и запись по ней падает с «no such file or
     directory», указывая на файл, хотя каталог на месте.
@@ -139,7 +133,7 @@ def test_dangling_resolver_symlink_is_removed_before_it_is_written(session, make
     стоял с 27.08.2026, а сюда тот же код скопировали руками и без него. Прогон
     12.09.2026 умер на этом на шаге 11 из 19, когда носитель был уже стёрт.
     """
-    argvs, _ = _plan_argvs(session, make_config)
+    argvs, _ = _plan_argvs(session, make_employee_config)
     flat = [" ".join(a) for a in argvs]
 
     write = next(
@@ -151,7 +145,7 @@ def test_dangling_resolver_symlink_is_removed_before_it_is_written(session, make
     assert flat.index(removal) < flat.index(write)
 
 
-def test_install_labels_the_whole_tree_on_the_rhel_family(session, make_config):
+def test_install_labels_the_whole_tree_on_the_rhel_family(session, make_employee_config):
     """Метки мандатного контроля ставятся по всему корню, а не по нескольким
     каталогам.
 
@@ -163,7 +157,7 @@ def test_install_labels_the_whole_tree_on_the_rhel_family(session, make_config):
     дошла до регистрации машины и осталась чёрным экраном на восемнадцать
     минут.
     """
-    argvs, _ = _plan_argvs(session, make_config, target_os="redos")
+    argvs, _ = _plan_argvs(session, make_employee_config, target_os="redos")
     flat = [" ".join(a) for a in argvs]
 
     labelling = [line for line in flat if "setfiles" in line]
@@ -173,10 +167,10 @@ def test_install_labels_the_whole_tree_on_the_rhel_family(session, make_config):
     )
 
 
-def test_everything_opened_by_the_install_is_released_afterwards(session, make_config):
+def test_everything_opened_by_the_install_is_released_afterwards(session, make_employee_config):
     """A medium left mounted cannot be safely unplugged, and a LUKS mapping left
     open collides with the next install."""
-    argvs, _ = _plan_argvs(session, make_config)
+    argvs, _ = _plan_argvs(session, make_employee_config)
     mount_targets = [a[-1] for a in argvs if a[0] == "mount"]
     umounted = [a[-1] for a in argvs if a[0] == "umount"]
 
@@ -225,7 +219,7 @@ def test_locked_account_still_gets_a_way_to_log_in(session):
     assert "--autologin portable" in autologin
 
 
-def test_foreign_architecture_is_refused_only_when_the_machine_cannot_do_it(session, make_config, monkeypatch, tmp_path):
+def test_foreign_architecture_is_refused_only_when_the_machine_cannot_do_it(session, make_employee_config, monkeypatch, tmp_path):
     """Building for another architecture is allowed -- every chroot step runs
     under the emulator, which was verified by running it. What must still fail,
     and fail *before* the medium is erased, is starting on a machine where no
@@ -236,7 +230,7 @@ def test_foreign_architecture_is_refused_only_when_the_machine_cannot_do_it(sess
     from portable_os_admin.errors import InstallError
     from portable_os_admin.install import emulation
 
-    config = make_config()
+    config = make_employee_config()
     config.arch = "amd64" if platform.machine() in ("aarch64", "arm64") else "arm64"
     ConfigManager().validate(config)
     device = BlockDevice(
@@ -248,12 +242,12 @@ def test_foreign_architecture_is_refused_only_when_the_machine_cannot_do_it(sess
         OSInstaller(session).run(device, config, b"user-passphrase-123", dry_run=True)
 
 
-def test_the_log_volume_is_encrypted_and_formatted_inside(session, make_config):
+def test_the_log_volume_is_encrypted_and_formatted_inside(session, make_employee_config):
     """The same shape of defect as the original one: a partition can be
     LUKS-formatted and then have its filesystem written onto the *raw*
     partition, which silently destroys the header and leaves an unusable
     volume. Order and target are what this pins down."""
-    argvs, _ = _plan_argvs(session, make_config)
+    argvs, _ = _plan_argvs(session, make_employee_config)
 
     def device_of(argv):
         # cryptsetup takes options before the device, so the position varies
@@ -280,23 +274,23 @@ def test_the_log_volume_is_encrypted_and_formatted_inside(session, make_config):
         assert not any(a[0].startswith("mkfs") and a[-1] == partition for a in argvs)
 
 
-def test_each_service_volume_also_holds_the_administrator_key(session, make_config):
+def test_each_service_volume_also_holds_the_administrator_key(session, make_employee_config):
     """Two keyslots per service volume is the whole mechanism: the medium opens
     them from a key file on its own encrypted root, the administrator opens
     them with a key that exists only in the administrator container."""
-    argvs, _ = _plan_argvs(session, make_config)
+    argvs, _ = _plan_argvs(session, make_employee_config)
     added = [a for a in argvs if a[0] == "cryptsetup" and "luksAddKey" in a]
     # По одному administrator-ключу на каждый служебный том плюс коды
     # восстановления на системном: их столько, сколько keyslot остаётся после
     # слотов машин, потому что каждый расходуется безвозвратно.
-    recovery = len(machine_binding.recovery_keyslots(make_config()))
+    recovery = len(machine_binding.recovery_keyslots(make_employee_config()))
     assert len(added) == recovery + 1  # служебный том один -- журналы
 
 
-def test_the_boot_key_file_lands_on_the_encrypted_root(session, make_config):
+def test_the_boot_key_file_lands_on_the_encrypted_root(session, make_employee_config):
     """It must be inside the LUKS root -- reachable only after the user's
     passphrase has already unlocked it -- and readable by root alone."""
-    argvs, result = _plan_argvs(session, make_config)
+    argvs, result = _plan_argvs(session, make_employee_config)
     flat = [" ".join(a) for a in argvs]
     key_writes = [line for line in flat if line.startswith("<write-file>") and "etc/poa/service.key" in line]
     assert key_writes, "no key file written; the medium could not open its own volumes at boot"
@@ -329,12 +323,12 @@ def test_crypttab_opens_the_service_volumes_from_that_key_file(session):
         assert "nofail" in line
 
 
-def test_the_medium_record_keeps_the_key_and_the_volume_uuids(session, make_config):
+def test_the_medium_record_keeps_the_key_and_the_volume_uuids(session, make_employee_config):
     """Without these the volumes can never be opened from an administrator
     machine again -- there is no second copy of that key anywhere."""
     import base64
 
-    _, result = _plan_argvs(session, make_config)
+    _, result = _plan_argvs(session, make_employee_config)
     record = result.media_record
     assert record.service_key_b64
     assert len(base64.b64decode(record.service_key_b64)) >= 32
@@ -342,14 +336,14 @@ def test_the_medium_record_keeps_the_key_and_the_volume_uuids(session, make_conf
     assert not record.exchange_luks_uuid  # разметка v3: тома обмена нет
 
 
-def test_service_volumes_are_closed_when_the_install_ends(session, make_config):
-    argvs, _ = _plan_argvs(session, make_config)
+def test_service_volumes_are_closed_when_the_install_ends(session, make_employee_config):
+    argvs, _ = _plan_argvs(session, make_employee_config)
     opened = {a[3] for a in argvs if a[0] == "cryptsetup" and "luksOpen" in a}
     closed = {a[-1] for a in argvs if a[0] == "cryptsetup" and "luksClose" in a}
     assert opened <= closed, f"left open: {opened - closed}"
 
 
-def test_installing_from_the_network_needs_a_repository_and_a_release(session, make_config):
+def test_installing_from_the_network_needs_a_repository_and_a_release(session, make_employee_config):
     """A local image is the intended source; the network is the fallback. It
     has to be chosen deliberately -- an empty image plus an empty mirror is a
     mistake, and saying so beats debootstrap failing on an empty URL."""
@@ -358,7 +352,7 @@ def test_installing_from_the_network_needs_a_repository_and_a_release(session, m
 
     installer = OSInstaller.__new__(OSInstaller)
     installer._progress = _Progress(None)
-    config = make_config()
+    config = make_employee_config()
     config.mirror = ""
 
     with pytest.raises(InstallError, match="сетевого репозитория"):
@@ -371,12 +365,12 @@ def test_installing_from_the_network_needs_a_repository_and_a_release(session, m
         )
 
 
-def test_installing_from_the_network_uses_the_configured_mirror(session, make_config):
+def test_installing_from_the_network_uses_the_configured_mirror(session, make_employee_config):
     from portable_os_admin.install.image_source import MountedImage
 
     installer = OSInstaller.__new__(OSInstaller)
     installer._progress = _Progress(None)
-    config = make_config()
+    config = make_employee_config()
     config.mirror = "https://mirror.example.org/debian"
     config.release = "trixie"
 
@@ -391,7 +385,7 @@ def test_installing_from_the_network_uses_the_configured_mirror(session, make_co
     assert release == "trixie"
 
 
-def test_without_an_image_the_release_has_to_come_from_the_configuration(session, make_config):
+def test_without_an_image_the_release_has_to_come_from_the_configuration(session, make_employee_config):
     """With an image the release is read off it, which is what keeps version
     numbers out of configurations. Without one there is nowhere else to get it,
     so the configuration must say -- and if it does not, that is worth an error
@@ -401,7 +395,7 @@ def test_without_an_image_the_release_has_to_come_from_the_configuration(session
 
     installer = OSInstaller.__new__(OSInstaller)
     installer._progress = _Progress(None)
-    config = make_config()
+    config = make_employee_config()
     config.mirror = "https://mirror.example.org/debian"
     config.release = ""
 
@@ -415,14 +409,14 @@ def test_without_an_image_the_release_has_to_come_from_the_configuration(session
         )
 
 
-def test_the_image_is_visible_from_inside_the_chroot(session, make_config):
+def test_the_image_is_visible_from_inside_the_chroot(session, make_employee_config):
     """debootstrap points the target's sources.list at the URL it was given --
     file:///mnt/poa-image-<id> -- and that path exists only on the
     administrator's machine. Without a bind mount into the target tree,
     apt-get inside the chroot finds no packages at all and the medium ends up
     with no kernel and no bootloader. Found by running an install from a local
     image to the end for the first time."""
-    argvs, _ = _plan_argvs(session, make_config, image_path="/images/debian.iso")
+    argvs, _ = _plan_argvs(session, make_employee_config, image_path="/images/debian.iso")
 
     binds = [a for a in argvs if a[0] == "mount" and "--bind" in a and "poa-image-" in a[-1]]
     assert binds, "the image is never made visible inside the chroot"
@@ -437,12 +431,12 @@ def test_the_image_is_visible_from_inside_the_chroot(session, make_config):
     assert bind_idx < refresh_idx, "the image is mounted after apt has already looked for packages"
 
 
-def test_apt_in_the_chroot_is_told_where_the_packages_are(session, make_config):
+def test_apt_in_the_chroot_is_told_where_the_packages_are(session, make_employee_config):
     """After a bootstrap from a local image the target's sources.list is empty:
     debootstrap writes it for an http mirror and not for a file:// one. Checked
     on the medium after a real run, where the consequence was "Unable to locate
     package linux-image-amd64" for every boot package."""
-    argvs, _ = _plan_argvs(session, make_config, image_path="/images/debian.iso")
+    argvs, _ = _plan_argvs(session, make_employee_config, image_path="/images/debian.iso")
     flat = [" ".join(a) for a in argvs]
 
     write_idx = next(i for i, line in enumerate(flat) if line.startswith("<write-file>") and line.endswith("/etc/apt/sources.list"))
@@ -463,7 +457,7 @@ def test_a_local_image_is_trusted_explicitly_because_it_carries_no_signature():
     assert "[trusted=yes]" not in text
 
 
-def test_medium_is_not_reported_as_erased_when_nothing_was_written(session, make_config):
+def test_medium_is_not_reported_as_erased_when_nothing_was_written(session, make_employee_config):
     """Regression: the interface announced an erased medium on every failure.
 
     Several failures land before the first write -- a device too small, an
@@ -472,7 +466,7 @@ def test_medium_is_not_reported_as_erased_when_nothing_was_written(session, make
     costs them the data they then do not try to recover.
     """
     cfgm = ConfigManager()
-    config = make_config()
+    config = make_employee_config()
     cfgm.validate(config)
 
     tiny_device = BlockDevice(
@@ -488,9 +482,9 @@ def test_medium_is_not_reported_as_erased_when_nothing_was_written(session, make
     assert installer.medium_modified is False, "носитель объявлен изменённым, хотя запись не начиналась"
 
 
-def test_a_dry_run_never_claims_the_medium_was_touched(session, big_removable_device, make_config):
+def test_a_dry_run_never_claims_the_medium_was_touched(session, big_removable_device, make_employee_config):
     cfgm = ConfigManager()
-    config = make_config()
+    config = make_employee_config()
     cfgm.validate(config)
 
     installer = OSInstaller(session)
@@ -595,15 +589,15 @@ _PUBLIC_KEY = (
 )
 
 
-def _revoking_config(make_config):
-    config = make_config()
+def _revoking_config(make_employee_config):
+    config = make_employee_config()
     config.revocation.enabled = True
     config.revocation.url = "https://revoke.example.org"
     ConfigManager().validate(config)
     return config
 
 
-def test_the_install_path_writes_the_revocation_key(session, big_removable_device, make_config):
+def test_the_install_path_writes_the_revocation_key(session, big_removable_device, make_employee_config):
     """Оба пути записи носителя обязаны положить ключ ресурса отзыва.
 
     До 13.09.2026 его писал только путь развёртывания. Носитель, собранный
@@ -611,7 +605,7 @@ def test_the_install_path_writes_the_revocation_key(session, big_removable_devic
     без ключа: проверка при каждой загрузке писала «нет открытого ключа» и
     выходила. Найдено осмотром собранного носителя, не тестом.
     """
-    config = _revoking_config(make_config)
+    config = _revoking_config(make_employee_config)
     session.container.data.revocation_public_key_pem = _PUBLIC_KEY
 
     result = OSInstaller(session).run(
@@ -625,11 +619,11 @@ def test_the_install_path_writes_the_revocation_key(session, big_removable_devic
 
 
 def test_a_container_without_the_resource_key_refuses_to_write_a_medium(
-    session, big_removable_device, make_config
+    session, big_removable_device, make_employee_config
 ):
     """Молчаливый носитель хуже отказа: он выглядит защищённым и не проверяет
     ничего."""
-    config = _revoking_config(make_config)
+    config = _revoking_config(make_employee_config)
 
     with pytest.raises(Exception) as error:
         OSInstaller(session).run(
@@ -638,7 +632,7 @@ def test_a_container_without_the_resource_key_refuses_to_write_a_medium(
     assert "ресурс" in str(error.value).lower()
 
 
-def test_the_medium_gets_the_revocation_service_switched_on(session, big_removable_device, make_config):
+def test_the_medium_gets_the_revocation_service_switched_on(session, big_removable_device, make_employee_config):
     """Файлы без автозапуска -- это проверка, которой не бывает.
 
     Носитель РЕД ОС 14.09.2026 уехал со скриптом отзыва и открытым ключом, но
@@ -646,7 +640,7 @@ def test_the_medium_gets_the_revocation_service_switched_on(session, big_removab
     журнале носителя не было ни строчки. Включение живёт там же, где запись
     файлов, и потому одинаково работает на обоих путях.
     """
-    config = _revoking_config(make_config)
+    config = _revoking_config(make_employee_config)
     session.container.data.revocation_public_key_pem = _PUBLIC_KEY
 
     result = OSInstaller(session).run(
@@ -663,13 +657,13 @@ def test_the_medium_gets_the_revocation_service_switched_on(session, big_removab
     assert any("timers.target.wants" in line for line in links)
 
 
-def test_every_medium_gets_its_own_device_key(session, big_removable_device, make_config):
+def test_every_medium_gets_its_own_device_key(session, big_removable_device, make_employee_config):
     """Закрытая часть -- на носитель, открытая -- в запись носителя.
 
     Без ключа носителя сервер отвечает на его запрос 403, и сеанс киоска не
     открывается никогда.
     """
-    config = _revoking_config(make_config)
+    config = _revoking_config(make_employee_config)
     session.container.data.revocation_public_key_pem = _PUBLIC_KEY
 
     installer = OSInstaller(session)
@@ -705,3 +699,21 @@ def test_host_binds_into_the_chroot_do_not_propagate_back_to_the_host():
             assert mounts[index + 1] == ["mount", "--make-rslave", argv[-1]]
     dev = mounts.index(["mount", "--make-rslave", "/b/root/dev"])
     assert dev < mounts.index(["mount", "--bind", "/dev/pts", "/b/root/dev/pts"])
+
+
+def test_changed_disk_stops_the_deployment_before_partitioning(session, make_employee_config, monkeypatch):
+    from dataclasses import replace
+    from unittest.mock import Mock
+    from portable_os_admin.install.devices import DeviceLister
+
+    device = BlockDevice("sdb", "/dev/sdb", 32_000_000_000, "Test", True, (), diskseq=21, mounts_known=True)
+    installer = OSInstaller(session)
+    installer._progress = Mock()
+    monkeypatch.setattr("portable_os_admin.install.installer.busy_holders", lambda path: [])
+    monkeypatch.setattr(DeviceLister, "describe", lambda self, path: replace(device, diskseq=22))
+    monkeypatch.setattr(installer.disk_manager, "apply", Mock())
+
+    with pytest.raises(DeviceNotEligibleError):
+        installer._prepare_medium(device, make_employee_config(), Mock(), b"test", Mock(), Mock(), False, device.path)
+    installer.disk_manager.apply.assert_not_called()
+    assert not installer.medium_modified

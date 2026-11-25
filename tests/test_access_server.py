@@ -16,6 +16,7 @@ import pathlib
 import secrets
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 from cryptography import x509
@@ -206,11 +207,23 @@ class Device:
                                          "status": {"virt": virt, "serial": serial}})
 
     def confirm(self, link: str):
-        vpn_key = ec.generate_private_key(ec.SECP256R1())
-        pem = vpn_key.public_key().public_bytes(serialization.Encoding.PEM,
-                                                serialization.PublicFormat.SubjectPublicKeyInfo)
-        return self.post("/v3/session/confirm", {"link": link, "vpn": {
-            "provider": "openvpn", "public_key": pem.decode("ascii")}})
+        return self.post("/v3/session/confirm", {"link": link, "nonce": secrets.token_hex(16)})
+
+    def selection_request(self, catalog, generation=1, index=0):
+        key = ec.generate_private_key(ec.SECP256R1())
+        pem = key.public_key().public_bytes(serialization.Encoding.PEM,
+                                            serialization.PublicFormat.SubjectPublicKeyInfo)
+        entry = catalog["targets"][index]
+        params = {"session": catalog["session"], "generation": generation,
+                  "target_id": entry["id"], "revision": entry["revision"]}
+        return {**params, "nonce": secrets.token_hex(16),
+                "vpn": {"provider": "openvpn", "public_key": pem.decode("ascii")}}
+
+    def choose(self, catalog, generation=1, index=0):
+        request = self.selection_request(catalog, generation, index)
+        status, body = self.post("/v3/session/select", request)
+        assert status == 200, body
+        return {key: request[key] for key in ("generation", "target_id", "revision", "session")}, body["grant"]
 
     def login(self):
         status, body = self.session()
@@ -242,18 +255,115 @@ def device(server):
 
 
 # -- обычный путь ---------------------------------------------------------------
-def test_login_issues_a_signed_day_long_certificate_for_this_medium(server, device):
-    server.admin_cmd("targets", media=MEDIA, targets=[{
-        "id": "ws-1", "name": "РМ", "type": "rdp", "host": "10.0.0.5", "port": 3389,
-        "user": "ivanov", "domain": "CORP", "pin": "sha256:" + "a" * 64}])
+def configure_workplaces(server):
+    targets = [{"id": name, "name": name, "type": "rdp", "host": host, "port": 3389,
+                "pin": "sha256:" + "a" * 64} for name, host in [("alpha", "10.0.0.5"), ("beta", "10.0.0.6")]]
+    assert server.admin_cmd("targets", media=MEDIA, targets=targets)[0] == 200
+    assert server.admin_cmd("vpn", remotes=[{"host": "gw.test", "port": 1194, "proto": "udp"}])[0] == 200
+    return targets
+
+
+def test_login_returns_a_signed_catalog_and_selection_grants_one_workplace(server, device):
+    configure_workplaces(server)
     body = device.login()
-    grant = body["grant"]
-    server.sign_key.public_key().verify(canon.unb64(body["signature"]), canon.canonical(grant))
-    cert = x509.load_pem_x509_certificate(grant["vpn"]["cert"].encode())
+    catalog = body["grant"]
+    server.sign_key.public_key().verify(canon.unb64(body["signature"]), canon.canonical(catalog))
+    assert "vpn" not in catalog and "target" not in catalog
+    assert {entry["id"] for entry in catalog["targets"]} == {"alpha", "beta"}
+    assert all("host" not in entry for entry in catalog["targets"])
+    params, selected = device.choose(catalog)
+    assert selected["target"]["id"] == "alpha"
+    assert 0 < selected["not_after"] - selected["server_time"] <= 300
+    cert = x509.load_pem_x509_certificate(selected["vpn"]["cert"].encode())
     assert cert.subject.rfc4514_string() == f"CN={MEDIA}"
-    lifetime = cert.not_valid_after_utc - cert.not_valid_before_utc
-    assert 24 * 3600 <= lifetime.total_seconds() <= 24 * 3600 + 600
-    assert grant["targets"][0]["host"] == "10.0.0.5"
+    status, renewed = device.post("/v3/session/renew", {**params, "nonce": secrets.token_hex(16)})
+    assert status == 200 and "vpn" not in renewed["grant"]
+    assert renewed["grant"]["revision"] == params["revision"]
+    device.choose(catalog, generation=2, index=1)
+    status, _ = device.post("/v3/session/renew", {**params, "nonce": secrets.token_hex(16)})
+    assert status == 409
+
+
+def test_active_revision_changes_end_mfa_and_other_target_changes_refresh_catalog(server, device):
+    targets = configure_workplaces(server)
+    params, _ = device.choose(device.login()["grant"])
+    other = {**targets[1], "port": 3390}
+    server.admin_cmd("targets", media=MEDIA, targets=[targets[0], other])
+    status, body = device.post("/v3/session/renew", {**params, "nonce": secrets.token_hex(16)})
+    assert status == 200 and body["grant"]["targets"][1]["version"] == 2
+    server.admin_cmd("targets", media=MEDIA, targets=[other])
+    server.admin_cmd("targets", media=MEDIA, targets=[targets[0], other])
+    status, body = device.post("/v3/session/renew", {**params, "nonce": secrets.token_hex(16)})
+    assert (status, body["error"]) == (409, "assignment_changed")
+    status, _ = device.post("/v3/session/catalog", {"session": params["session"], "nonce": secrets.token_hex(16)})
+    assert status == 403
+
+
+def test_legacy_ssh_assignments_leave_graphical_workplaces_available(server, device):
+    targets = configure_workplaces(server)
+    legacy = {**targets[0], "type": "ssh", "id": "old-console", "port": 22}
+    assert server.admin_cmd("targets", media=MEDIA, targets=targets + [legacy])[0] == 400
+    with server.handler.store.tx() as db:
+        db.execute("INSERT INTO targets (media_id, target_id, spec) VALUES (?, ?, ?)",
+                   (MEDIA, legacy["id"], json.dumps(legacy)))
+    assert [t["id"] for t in server.admin_cmd("get_targets", media=MEDIA)[1]["targets"]] == ["alpha", "beta"]
+    catalog = device.login()["grant"]
+    assert [entry["id"] for entry in catalog["targets"]] == ["alpha", "beta"]
+    request = device.selection_request(catalog)
+    status, _ = device.post("/v3/session/select", {**request, "target_id": legacy["id"]})
+    assert status == 409
+    device.choose(catalog)
+
+
+def test_expired_workplace_cannot_resume_or_switch_without_mfa(server, device):
+    configure_workplaces(server)
+    params, _ = device.choose(device.login()["grant"])
+    with server.handler.store.tx() as db:
+        db.execute("UPDATE employee_sessions SET lease_until = 1 WHERE media_id = ?", (MEDIA,))
+    status, body = device.post("/v3/session/renew", {**params, "nonce": secrets.token_hex(16)})
+    assert (status, body["error"]) == (401, "session_expired")
+    status, _ = device.post("/v3/session/select", {**params, "generation": 2, "nonce": secrets.token_hex(16)})
+    assert status == 403
+
+
+def test_only_one_choice_is_committed_for_a_generation(server, device):
+    configure_workplaces(server)
+    catalog = device.login()["grant"]
+    requests = [device.selection_request(catalog, index=i) for i in (0, 1)]
+    with ThreadPoolExecutor(2) as pool:
+        results = list(pool.map(lambda obj: device.post("/v3/session/select", obj), requests))
+    assert sorted(status for status, _ in results) == [200, 409]
+    with server.handler.store.tx() as db:
+        committed = db.execute("SELECT target_id FROM employee_sessions WHERE media_id = ?", (MEDIA,)).fetchone()
+        assert committed["target_id"] == next(body["grant"]["target_id"] for code, body in results if code == 200)
+
+
+def test_workplace_needs_its_current_assignment_and_its_own_mfa_session(server, device):
+    configure_workplaces(server)
+    catalog = device.login()["grant"]
+    request = device.selection_request(catalog)
+    status, _ = device.post("/v3/session/select", {**request, "target_id": "unassigned"})
+    assert status == 409
+    status, _ = device.post("/v3/session/select", {**request, "revision": "0" * 64})
+    assert status == 409
+    status, _ = device.post("/v3/session/select", {**request, "session": "0" * 32})
+    assert status == 403
+    with server.handler.store.tx() as db:
+        assert db.execute("SELECT COUNT(*) FROM certs").fetchone()[0] == 0
+
+
+def test_released_workplace_can_be_changed_and_revoked_device_cannot_renew(server, device):
+    configure_workplaces(server)
+    catalog = device.login()["grant"]
+    params, _ = device.choose(catalog)
+    status, _ = device.post("/v3/session/release", {**params, "nonce": secrets.token_hex(16)})
+    assert status == 200
+    status, _ = device.post("/v3/session/renew", {**params, "nonce": secrets.token_hex(16)})
+    assert status == 409
+    params, _ = device.choose(catalog, generation=2, index=1)
+    server.handler.db.put(MEDIA, server.admin_id, "revoked", 2, None)
+    status, _ = device.post("/v3/session/renew", {**params, "nonce": secrets.token_hex(16)})
+    assert status == 403
 
 
 def test_nothing_is_granted_before_the_new_link_is_confirmed(server, device):
@@ -275,7 +385,8 @@ def test_a_copy_used_after_the_owner_logged_in_is_a_clone(server, device):
 
 def test_a_copy_that_logs_in_first_is_caught_when_the_owner_returns(server, device):
     copy = device.copy()
-    grant = copy.login()["grant"]
+    configure_workplaces(server)
+    _, grant = copy.choose(copy.login()["grant"])
     status, body = device.session()
     assert (status, body) == (409, {"error": "clone"})
     # Сертификат, выданный копии, отозван и виден шлюзу в CRL.

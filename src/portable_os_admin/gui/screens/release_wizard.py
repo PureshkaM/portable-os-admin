@@ -39,7 +39,7 @@ from __future__ import annotations
 import os
 import tkinter as tk
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, ttk
 
 from ...admin import MediaReleaseService
 from ...config.schema import InstallConfig
@@ -123,7 +123,6 @@ class ReleaseWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
 
         # -- общее
         self.device_path = ""
-        self.device_size_gb = "16"
         self.passphrase = ""
         self.generated_passphrase: str | None = None
         self.media_name = ""
@@ -446,7 +445,7 @@ class ReleaseWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
             self.metadata = None
             self.message_bar.error(str(exc))
             return False
-        verdict = distribution.verify_distribution(directory, self.app.container.admin_secret)
+        verdict = distribution.verify_distribution(directory, self.app.container.admin_secret, expected=metadata)
         if not self._accept_signature(verdict):
             self.metadata = None
             self.signature_verdict = None
@@ -462,40 +461,11 @@ class ReleaseWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
         return True
 
     def _accept_signature(self, verdict) -> bool:
-        """Решает по вердикту подписи, можно ли идти дальше.
-
-        Свой -- молча. Испорченный -- отказ без вариантов: подпись или описание
-        изменены, и продолжать тут не с чем. Неподписанный и чужой -- на
-        усмотрение администратора, но только явным согласием: дистрибутивы
-        1.0.0 подписи не имеют, а чужой ключ может быть ключом коллеги, и
-        отличить его от ключа злоумышленника программа не может -- открытых
-        ключей других контейнеров у неё нет.
-        """
+        """К выдаче допускается дистрибутив с проверенной подписью его описания."""
         if verdict.status == distribution.SIGNED_BY_THIS_CONTAINER:
             return True
-        if verdict.status == distribution.INVALID:
-            self.message_bar.error(
-                f"Дистрибутив отклонён: {verdict.reason}. Соберите его заново."
-            )
-            return False
-        if verdict.status == distribution.FOREIGN:
-            title = "Дистрибутив подписан другим ключом"
-            text = (
-                f"Подпись сделана не ключом этого контейнера (отпечаток {verdict.fingerprint}).\n\n"
-                "Если его собрал другой администратор — сверьте отпечаток с ним. "
-                "Подменённый дистрибутив выглядит точно так же.\n\n"
-                "Записать его на носитель?"
-            )
-        else:
-            title = "Дистрибутив не подписан"
-            text = (
-                "Подтвердить, что этот дистрибутив собран вами, нечем: так выглядят "
-                "и собранные версией 1.0.0, и подменённые.\n\n"
-                "Записать его на носитель?"
-            )
-        if messagebox.askyesno(title, text, icon="warning", default="no", parent=self):
-            return True
-        self.message_bar.error(f"{title}. Выберите другой или соберите заново.")
+        reason = verdict.reason or "требуется проверяемая подпись открытого контейнера"
+        self.message_bar.error(f"Дистрибутив отклонён: {reason}. Соберите его заново.")
         return False
 
     def _build_step_unknown(self, body: ttk.Frame) -> None:
@@ -1033,7 +1003,9 @@ class ReleaseWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
         else:
             self._describe_image_target(body)
 
-        device = self._resolve_device(self._parsed_size_gb())
+        device = getattr(self, "_selected_device", None)
+        if device and device.path != self.device_path:
+            device = None
         self._confirmed_device = device
 
         warning = ttk.LabelFrame(body, text=" Носитель будет полностью очищен ")
@@ -1041,15 +1013,16 @@ class ReleaseWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
         ttk.Label(
             warning,
             text=(
-                f"{device.path}"
-                + (f"  ·  {device.model}" if device.model else "")
-                + f"  ·  {device.size_bytes / 1024**3:.1f} ГБ"
+                f"{device.path}  ·  {device.model}  ·  {device.size_bytes / 1024**3:.1f} ГБ"
+                if device else f"{self.device_path}  ·  диск не определён"
             ),
             font=theme.FONT_SECTION,
             justify="left",
         ).pack(anchor="w", padx=10, pady=(8, 2))
 
-        if device.partitions:
+        if device and (device.wwn or device.serial):
+            ttk.Label(warning, text=f"Идентификатор диска: {device.wwn or device.serial}").pack(anchor="w", padx=10)
+        if device and device.partitions:
             ttk.Label(
                 warning,
                 text="Сейчас на носителе, всё это будет уничтожено безвозвратно:",
@@ -1060,20 +1033,20 @@ class ReleaseWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
                 ttk.Label(warning, text="    • " + partition.describe(), justify="left").pack(
                     anchor="w", padx=10
                 )
-        else:
+        elif device:
             ttk.Label(
                 warning,
                 text="Разделов на носителе не обнаружено — он будет размечен заново.",
                 justify="left",
             ).pack(anchor="w", padx=10)
 
-        if device.active_mountpoints:
+        if device and device.active_mountpoints:
             ttk.Label(
                 warning,
                 text=(
                     "Носитель сейчас смонтирован ("
                     + ", ".join(device.active_mountpoints)
-                    + ") — он будет отмонтирован автоматически."
+                    + "). Отмонтируйте его и выберите заново."
                 ),
                 foreground=DANGER_COLOR,
                 wraplength=theme.TEXT_WRAP,
@@ -1200,7 +1173,8 @@ class ReleaseWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
         if button is None or not button.winfo_exists():
             return
         matches = self.confirm_device_var.get().strip() == (self.device_path or "")
-        button.configure(state=("normal" if matches else "disabled"))
+        device = self._confirmed_device
+        button.configure(state=("normal" if matches and device and not device.is_mounted else "disabled"))
 
     # -- работа ------------------------------------------------------------
     def _log(self, text: str) -> None:
@@ -1299,9 +1273,10 @@ class ReleaseWizardFrame(DeviceStepMixin, TerminationGuardMixin, WizardFrame):
                 )
                 return
 
-        device = getattr(self, "_confirmed_device", None) or self._resolve_device(
-            self._parsed_size_gb()
-        )
+        device = self._confirmed_device
+        if device is None or device.path != confirm_device or device.is_mounted:
+            self.message_bar.error("Выберите свободный носитель и подтвердите его повторно.")
+            return
 
         self._running = True
         self._install_signal_guard()

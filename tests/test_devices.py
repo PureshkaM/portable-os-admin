@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 import pytest
 
 from portable_os_admin.errors import DeviceNotEligibleError
@@ -116,7 +118,7 @@ def test_a_non_removable_device_is_refused_unless_the_stand_hatch_is_open(monkey
 
     disk = BlockDevice(
         name="loop0", path="/dev/loop0", size_bytes=32_000_000_000,
-        model="", removable=False, mountpoints=(),
+        model="", removable=False, mountpoints=(), kind="loop", loop_file=(1, 123),
     )
 
     monkeypatch.delenv(devices_module.ALLOW_NON_REMOVABLE, raising=False)
@@ -186,3 +188,85 @@ def test_describe_reads_a_loop_device_with_its_partitions_and_mountpoints():
     assert device.size_bytes == 17_179_869_184
     assert len(device.partitions) == 2
     assert "/mnt/poa-esp" in device.active_mountpoints
+
+def test_manual_path_preserves_fixed_disk_type(monkeypatch):
+    entry = FAKE_LSBLK_OUTPUT["blockdevices"][1]
+    monkeypatch.setattr(DeviceLister, "_lsblk_json", lambda self, path: {"blockdevices": [entry]})
+    disk = DeviceLister().describe(entry["path"])
+    assert disk and not disk.removable
+    monkeypatch.setenv("POA_ALLOW_NON_REMOVABLE", "1")
+    with pytest.raises(DeviceNotEligibleError):
+        check_install_eligible(disk, 1)
+
+
+@pytest.mark.parametrize("entries", [[], [FAKE_LSBLK_OUTPUT["blockdevices"][0]] * 2,
+                                     [FAKE_LSBLK_OUTPUT["blockdevices"][1]]])
+def test_manual_selection_requires_one_exact_disk(monkeypatch, entries):
+    monkeypatch.setattr(DeviceLister, "_lsblk_json", lambda self, path: {"blockdevices": entries})
+    assert DeviceLister().describe("/dev/sdb") is None
+
+
+@pytest.mark.parametrize("changes", [{"diskseq": 73}, {"diskseq": 0}, {"mounts_known": False},
+                                      {"size_bytes": 1}, {"serial": "another"}, {"mountpoints": ("/",)}])
+def test_changed_or_incomplete_device_cannot_be_written(monkeypatch, changes):
+    selected = BlockDevice("sdb", "/dev/sdb", 32_000_000_000, "Cruzer", True, (),
+                           serial="original", diskseq=72, mounts_known=True)
+    monkeypatch.setattr(DeviceLister, "describe", lambda self, path: replace(selected, **changes))
+    with pytest.raises(DeviceNotEligibleError):
+        DeviceLister().recheck_for_write(selected, selected.path)
+
+
+def test_only_the_confirmed_loop_backing_file_can_be_used(monkeypatch):
+    selected = BlockDevice("loop1", "/dev/loop1", 32_000_000_000, "", False, (), kind="loop",
+                           diskseq=30, mounts_known=True, loop_file=(1, 123))
+    monkeypatch.setattr(DeviceLister, "describe", lambda self, path: selected)
+    monkeypatch.setenv("POA_ALLOW_NON_REMOVABLE", "1")
+    assert DeviceLister().recheck_for_write(selected, selected.path) == selected
+    check_install_eligible(selected, 1)
+    with pytest.raises(DeviceNotEligibleError):
+        DeviceLister().recheck_for_write(replace(selected, loop_file=(1, 124)), selected.path)
+    with pytest.raises(DeviceNotEligibleError):
+        DeviceLister().recheck_for_write(selected, "/dev/loop2")
+
+
+def test_only_one_writer_holds_a_disk_and_retry_releases_it(tmp_path):
+    from portable_os_admin.install.devices import reserve_writer
+
+    disk = BlockDevice("sdb", "/dev/sdb", 1, "", True, (), diskseq=71)
+    with reserve_writer(disk, tmp_path):
+        with pytest.raises(DeviceNotEligibleError):
+            with reserve_writer(disk, tmp_path):
+                pytest.fail("две записи получили одну блокировку")
+    with reserve_writer(disk, tmp_path):
+        pass
+
+
+def test_kernel_checks_the_connection_on_the_opened_disk(monkeypatch):
+    import stat
+    import struct
+    from types import SimpleNamespace
+    from portable_os_admin.install import devices
+
+    disk = BlockDevice("sdb", "/dev/sdb", 1, "", True, (), diskseq=72)
+    closed = []
+
+    def open_exclusive(path, flags):
+        assert path == disk.path
+        assert flags & devices.os.O_EXCL
+        assert flags & devices.os.O_ACCMODE == devices.os.O_RDONLY
+        return 91
+
+    monkeypatch.setattr(devices.os, "open", open_exclusive)
+    monkeypatch.setattr(devices.os, "fstat", lambda fd: SimpleNamespace(st_mode=stat.S_IFBLK))
+    monkeypatch.setattr(devices.os, "close", closed.append)
+    monkeypatch.setattr(devices.fcntl, "ioctl", lambda *args: struct.pack("=Q", disk.diskseq + 1))
+    with pytest.raises(DeviceNotEligibleError):
+        devices.check_kernel_device(disk)
+    assert closed == [91]
+
+
+def test_mounted_system_disk_stops_before_any_write_even_on_the_stand(monkeypatch):
+    monkeypatch.setenv("POA_ALLOW_NON_REMOVABLE", "1")
+    disk = BlockDevice("sdb", "/dev/sdb", 32_000_000_000, "", True, ("/",), diskseq=41)
+    with pytest.raises(DeviceNotEligibleError):
+        check_install_eligible(disk, 1)

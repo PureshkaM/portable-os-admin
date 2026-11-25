@@ -161,6 +161,8 @@ class BuiltinConfigValidator:
         # implemented it: the install configured a remote-access method only for
         # "openssh", so choosing vpn produced a config that validated, installed
         # cleanly, and left the medium with no remote access whatsoever.
+        if remote.enabled and config.kiosk.enabled:
+            errors.append("входящий SSH запрещён для носителя сотрудника")
         if remote.enabled and remote.method != "openssh":
             errors.append(
                 f"неподдерживаемый метод удалённого доступа: {remote.method!r} "
@@ -221,6 +223,15 @@ class BuiltinConfigValidator:
         if kiosk is None or not kiosk.enabled:
             return errors
 
+        disallowed = {"openssh-server", "openssh-client", "openssh-clients", "ssh", "dropbear", "dropbear-bin",
+                      "mate-terminal", "gnome-terminal", "xfce4-terminal", "konsole", "xterm"}
+        requested = set(config.packages)
+        for group in ("base", "boot", "desktop", "kiosk"):
+            requested.update(getattr(config.package_sets, group))
+        forbidden = requested & disallowed
+        if forbidden:
+            errors.append("пакеты текстового или SSH-доступа запрещены в киоске: " + ", ".join(sorted(forbidden)))
+
         # Which families have the mode is a property of the backend, not a list
         # repeated here, so adding a backend cannot leave this check stale.
         try:
@@ -248,7 +259,7 @@ class BuiltinConfigValidator:
         # после выдачи.
         #
         # С доступом (LIVE-2.0, Э8) приложение у пользователя есть всегда --
-        # окно «Подключение» и клиенты RDP/VNC/SSH ставятся вместе с ним.
+        # окно «Подключение» и клиенты RDP/VNC ставятся вместе с ним.
         from ..install.access.files import is_enabled as access_enabled
 
         if not config.packages and not access_enabled(config):

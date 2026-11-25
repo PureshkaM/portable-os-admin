@@ -11,18 +11,16 @@
 никакого правила polkit, чтобы запустить `poa-vpn@<сеанс>.service`, а окну
 не нужно никаких прав вовсе. Правило polkit из плана упразднено этим.
 
-Команды:
-
-* `status` -- активирован ли носитель, состояние VPN, срок доступа, цели;
-* `activate {code}` -- активация; ответ -- строка otpauth для QR (показывается
-  один раз, семя на носителе не хранится: TOTP -- фактор телефона);
-* `login {totp}` -- вход, запись звена, сертификат, подъём VPN; ответ -- цели;
-* `check` -- доступность целей по TCP (не отвечает / отклонила / доступна);
-* `disconnect` -- опустить VPN.
+После MFA окно получает каталог. Команда select принимает только идентификатор
+места. Служба открывает подтверждённое направление до истечения допуска
+и запускает клиент от имени пользователя киоска. Менять цель и продлевать
+правила может только служба.
 """
 from __future__ import annotations
 
 import base64
+import collections
+import re
 import http.client
 import json
 import os
@@ -39,6 +37,7 @@ import urllib.parse
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import poa_client  # noqa: E402
 import poa_firewall  # noqa: E402
+import poa_launch  # noqa: E402
 import poa_trust  # noqa: E402
 
 CONFIG = os.environ.get("POA_ACCESS_CONFIG", "/etc/poa/access.json")
@@ -87,7 +86,15 @@ class Service:
         self.clock = clock
         self.state = poa_client.State(config["state"])
         self.lock = threading.Lock()
+        self.catalog: dict | None = None
+        self.entry: dict | None = None
         self.grant: dict | None = None
+        self.generation = 0
+        self.next_renew = 0.0
+        self.tunnel_ready = False
+        self.work_process = None
+        self.work_result = ""
+        self.last_error = ""
         self.session_id = ""
         #: Последний результат пробы портала: state -- open/portal/offline.
         self.portal: dict = {"state": "unknown", "url": ""}
@@ -188,14 +195,29 @@ class Service:
                                  poa_client.FileSigner(self.config["device_key"]), keys)
 
     # -- команды ----------------------------------------------------------
+    def _revoked(self) -> bool:
+        return any(os.path.exists(path) for path in (
+            "/run/poa/media-revoked", "/var/lib/poa/media-revoked"))
+
+    def _may_work(self) -> None:
+        if self._revoked():
+            raise poa_client.AccessError(403, "blocked")
+
     def status(self) -> dict:
+        self.enforce()
         data = self.state.load()
         return {
             "activated": bool(data.get("activated")),
+            "authenticated": self.catalog is not None,
             "vpn": self.vpn_state(),
+            "active": self.entry["id"] if self.entry else None,
+            "generation": self.generation,
+            "working": self.work_process is not None,
+            "result": self.work_result,
+            "reason": self.last_error,
             "not_after": (self.grant or {}).get("not_after"),
-            "targets": (self.grant or {}).get("targets", []),
-            "authorized": os.path.exists("/run/poa/authorized"),
+            "targets": (self.catalog or {}).get("targets", []),
+            "authorized": not self._revoked() and os.path.exists(self.config.get("authorized", AUTHORIZED)),
             "update": self.update_state(),
             "portal": self.portal.get("state", "unknown"),
         }
@@ -213,33 +235,131 @@ class Service:
         return {"otpauth": uri}
 
     def login(self, totp_code: str) -> dict:
-        key_pem, vpn_request = self._vpn_key()
+        self._invalidate("")
+        self._may_work()
         try:
-            grant = self.client().login(self.state, totp_code, self._status(), vpn_request)
+            catalog = self.client().login(self.state, totp_code, self._status())
         except poa_client.AccessError as exc:
             if exc.code == 426:
-                # Выпуск ниже обязательного: без обновления входа не будет --
-                # загрузка начинается сразу, окно скажет «идёт обновление».
                 self.start_update((exc.body or {}).get("release"))
             raise
+        self._may_work()
         self.start_update(self.state.load().get("release"))
         data = self.state.load()
         if not data.get("activated"):
             self.state.save({**data, "activated": True})
-        self._fix_clock(grant.get("server_time"))
-        self.grant = grant
-        # Прежний сеанс закрывается до открытия экрана: закрытие очищает
-        # наборы шлюзов и целей. Наоборот (как было до 02.10.2026) экран
-        # открывался и тут же запирался -- openvpn получал EPERM на каждый пакет.
-        self.disconnect()
-        if self.firewall is not None:
-            # Стадия «выдан доступ»: открываются шлюзы, потом -- цели в туннеле.
-            self.firewall.allow_gateways(grant["vpn"].get("remotes", []))
-            self.firewall.allow_targets(grant.get("targets", []))
-        self._vpn_up(grant["vpn"], key_pem)
+        self._fix_clock(catalog.get("server_time"))
+        self.catalog = catalog
+        self.generation = 0
         self.flush_events()
         self.refresh_descriptor()
-        return {"targets": grant.get("targets", []), "not_after": grant.get("not_after")}
+        return {"targets": catalog["targets"]}
+
+    def refresh_catalog(self) -> dict:
+        self._may_work()
+        if not self.catalog:
+            raise poa_client.AccessError(401, "session_expired")
+        try:
+            result = self.client().catalog(self.catalog["session"])
+        except poa_client.AccessError as exc:
+            if 400 <= exc.code < 500:
+                self._invalidate(exc.reason)
+            raise
+        self.catalog["targets"] = result["targets"]
+        return {"targets": result["targets"]}
+
+    def select(self, target_id: str) -> dict:
+        self.enforce()
+        self._may_work()
+        if not self.catalog:
+            raise poa_client.AccessError(401, "session_expired")
+        if self.entry and not self.disconnect()["authenticated"]:
+            raise poa_client.AccessError(401, "session_expired")
+        entry = next((e for e in self.catalog["targets"] if e["id"] == target_id), None)
+        if entry is None:
+            raise poa_client.AccessError(403, "unknown_target")
+        self.generation += 1
+        key_pem, request = self._vpn_key()
+        try:
+            token = self.firewall.begin_request() if self.firewall else None
+            grant = self.client().select(self.catalog["session"], entry, self.generation, request)
+            self._may_work()
+            # Параметры из подписанного ответа проверяются до открытия сети.
+            poa_launch.client_command(grant["target"])
+            self.session_id = os.urandom(6).hex()
+            config = openvpn_config(grant["vpn"], key_pem.decode("ascii"),
+                                    grant["vpn"].get("gateway_name") or self.config.get("gateway_name", ""),
+                                    self.interface)
+            self.entry, self.grant = entry, grant
+            self.catalog["targets"] = grant["targets"]
+            self._apply_grant(grant, token)
+            self._vpn_up(config)
+            self._may_work()
+            if poa_client.boottime() >= grant["_deadline"]:
+                raise poa_client.AccessError(401, "session_expired")
+        except poa_client.AccessError as exc:
+            if exc.reason == "assignment_changed" and not self.grant:
+                self.refresh_catalog()
+            else:
+                self._invalidate(exc.reason)
+            raise
+        except Exception:
+            self._invalidate("selection_failed")
+            raise
+        self.work_result = self.last_error = ""
+        return {"target": {k: grant["target"].get(k, "") for k in ("id", "name", "type", "user", "domain")},
+                "generation": self.generation}
+
+    @property
+    def interface(self) -> str:
+        return "tun" + self.session_id
+
+    def _apply_grant(self, answer: dict, token: int | None) -> None:
+        self._may_work()
+        if self.firewall:
+            self.firewall.open_session(self.grant["vpn"]["remotes"], self.grant["target"],
+                                       self.interface, answer["_deadline"], token)
+        self.grant.update(_deadline=answer["_deadline"], not_after=answer["not_after"])
+        self.next_renew = poa_client.boottime() + 60
+
+    def enforce(self) -> None:
+        if self.catalog and self._revoked():
+            self._invalidate("blocked")
+        elif self.grant and poa_client.boottime() >= self.grant["_deadline"]:
+            self._invalidate("session_expired")
+        elif self.grant:
+            up = self.vpn_state() == "up"
+            if self.tunnel_ready and not up:
+                self._invalidate("tunnel_lost")
+            else:
+                self.tunnel_ready = up
+
+    def maintain(self) -> None:
+        self.enforce()
+        if not self.grant or not self.work_process or poa_client.boottime() < self.next_renew:
+            return
+        try:
+            token = self.firewall.begin_request() if self.firewall else None
+            answer = self.client().renew(self.catalog["session"], self.entry, self.generation)
+            if poa_client.boottime() >= self.grant["_deadline"]:
+                raise poa_client.AccessError(401, "session_expired")
+            self._apply_grant(answer, token)
+            self.catalog["targets"] = answer["targets"]
+        except poa_client.AccessError as exc:
+            if exc.code >= 500 or exc.reason.startswith("network"):
+                self.next_renew = poa_client.boottime() + 5
+            else:
+                self._invalidate(exc.reason)
+        except (OSError, http.client.HTTPException):
+            self.next_renew = poa_client.boottime() + 5
+        except Exception:
+            self._invalidate("selection_failed")
+
+    def watch_session(self) -> None:
+        while True:
+            with self.lock:
+                self.maintain()
+            time.sleep(1)
 
     def flush_events(self) -> None:
         """Журнал событий -- на сервер при каждом входе (Э20). Удаляется только
@@ -254,20 +374,84 @@ class Service:
         except Exception:  # noqa: BLE001 -- журнал не должен ронять вход
             pass
 
-    def check(self) -> dict:
-        result = {}
-        for target in (self.grant or {}).get("targets", []):
-            result[target["id"]] = probe(target["host"], int(target["port"]))
-        return {"reachability": result}
+    def start_work(self, generation, display: str, password: str) -> dict:
+        self.enforce()
+        self._may_work()
+        if (type(generation) is not int or not isinstance(password, str)
+                or len(password) > 4096 or any(c in password for c in ("\n", "\r", "\0"))):
+            raise poa_client.AccessError(400, "bad_request")
+        if (not self.grant or generation != self.generation or self.work_process
+                or self.vpn_state() != "up"):
+            raise poa_client.AccessError(409, "selection_changed")
+        account = pwd.getpwnam(self.config["kiosk_user"])
+        if not account.pw_uid or not re.fullmatch(r":[0-9]+(\.[0-9]+)?", display):
+            raise poa_client.AccessError(403, "forbidden")
+        target = self.grant["target"]
+        argv, needs_password = poa_launch.client_command(target)
+        unit = f"poa-work-{self.session_id}"
+        command = ["systemd-run", "--quiet", "--collect", "--wait", "--pipe",
+                   "--service-type=exec", f"--unit={unit}", f"--uid={account.pw_uid}",
+                   "-p", "BindsTo=poa-accessd.service", "-p", "After=poa-accessd.service",
+                   "-p", "NoNewPrivileges=yes", f"--setenv=DISPLAY={display}",
+                   f"--setenv=HOME={account.pw_dir}", f"--setenv=XAUTHORITY={account.pw_dir}/.Xauthority",
+                   "--", *argv]
+        proc = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT)
+        self.work_process = proc
+
+        def finish():
+            tail = collections.deque(maxlen=50)
+            try:
+                with proc.stdin:
+                    if needs_password:
+                        proc.stdin.write(password.encode("utf-8") + b"\n")
+            except OSError:
+                pass
+            with proc.stdout:
+                for raw in proc.stdout:
+                    tail.append(raw.decode("utf-8", "replace").rstrip())
+            result = proc.wait()
+            with self.lock:
+                if self.work_process is proc:
+                    self.work_process = None
+                    self.work_result = poa_launch.session_error(target["type"], result, list(tail))
+                    self.disconnect()
+
+        threading.Thread(target=finish, daemon=True).start()
+        return {"started": True}
+
+    def _close_local(self) -> None:
+        try:
+            if self.firewall:
+                self.firewall.close_session()
+        finally:
+            self.entry = self.grant = None
+            self.tunnel_ready = False
+            if self.session_id:
+                if self.work_process:
+                    self.run(["systemctl", "stop", f"poa-work-{self.session_id}.service"], check=False)
+                self.work_process = None
+                self.run(["systemctl", "stop", f"poa-vpn@{self.session_id}.service"], check=False)
+                shutil.rmtree(os.path.join(VPN_RUN, self.session_id), ignore_errors=True)
+                self.session_id = ""
+
+    def _invalidate(self, reason: str) -> None:
+        self.catalog = None
+        self.last_error = reason
+        self._close_local()
 
     def disconnect(self) -> dict:
-        if self.firewall is not None:
-            self.firewall.close_session()
-        if self.session_id:
-            self.run(["systemctl", "stop", f"poa-vpn@{self.session_id}.service"], check=False)
-            shutil.rmtree(os.path.join(VPN_RUN, self.session_id), ignore_errors=True)
-            self.session_id = ""
-        return {}
+        active = self.entry is not None
+        self._close_local()
+        if active and self.catalog:
+            try:
+                result = self.client().release(self.catalog["session"], self.generation)
+                self.catalog["targets"] = result["targets"]
+            except (poa_client.AccessError, OSError, http.client.HTTPException):
+                # Без подтверждения выхода состояние сеанса на сервере неизвестно.
+                self.catalog = None
+                self.last_error = "session_expired"
+        return {"authenticated": self.catalog is not None}
 
     # -- внутреннее -------------------------------------------------------
     def _info(self) -> dict:
@@ -373,16 +557,12 @@ class Service:
         if isinstance(server_time, int) and abs(self.clock() - server_time) > CLOCK_SKEW:
             self.run(["date", "-u", "-s", f"@{server_time}"], check=False)
 
-    def _vpn_up(self, vpn: dict, key_pem: bytes) -> None:
-        if vpn.get("provider") != "openvpn":
-            raise poa_client.AccessError(0, "provider_not_supported")
-        self.session_id = os.urandom(8).hex()
+    def _vpn_up(self, config: str) -> None:
         directory = os.path.join(VPN_RUN, self.session_id)
         os.makedirs(directory, mode=0o700)
         os.chmod(VPN_RUN, 0o700)
         with open(os.path.join(directory, "client.conf"), "w", encoding="ascii") as handle:
-            handle.write(openvpn_config(vpn, key_pem.decode("ascii"),
-                                        vpn.get("gateway_name") or self.config.get("gateway_name", "")))
+            handle.write(config)
         os.chmod(os.path.join(directory, "client.conf"), 0o600)
         if shutil.which("restorecon"):
             self.run(["restorecon", os.path.dirname(VPN_RUN)], check=False)
@@ -399,26 +579,44 @@ class Service:
         # Юнит активен сразу после запуска openvpn, задолго до туннеля; окно,
         # поверив этому, проверяло цели в пустоту («не отвечает», живая
         # загрузка 02.10.2026). Поднят -- когда путь к цели лежит через tun.
-        targets = (self.grant or {}).get("targets", [])
-        if not targets:
-            return "up"
-        addresses = poa_firewall.resolve4(targets[0]["host"])
+        addresses = poa_firewall.resolve4(self.grant["target"]["host"])
         if not addresses:
             return "connecting"
         route = self.run(["ip", "-o", "route", "get", addresses[0]],
                          check=False, capture_output=True, text=True)
-        return "up" if " dev tun" in (route.stdout or "") else "connecting"
+        fields = (route.stdout or "").split()
+        if "dev" in fields:
+            index = fields.index("dev") + 1
+            if index < len(fields) and fields[index] == self.interface:
+                return "up"
+        return "connecting"
 
 
-def openvpn_config(vpn: dict, key_pem: str, gateway_name: str) -> str:
+def openvpn_config(vpn: dict, key_pem: str, gateway_name: str, interface: str) -> str:
     """Конфигурация клиента: всё внутри файла, ключ -- только в /run."""
-    remotes = "\n".join(
-        f"remote {r['host']} {r['port']} {'udp' if r['proto'] == 'udp' else 'tcp-client'}"
-        for r in vpn["remotes"])
-    verify = f"verify-x509-name {gateway_name} name\n" if gateway_name else ""
-    tc2 = f"<tls-crypt-v2>\n{vpn['tls_crypt_v2']}</tls-crypt-v2>\n" if vpn.get("tls_crypt_v2") else ""
+    name = r"[a-zA-Z0-9][a-zA-Z0-9._-]{0,252}"
+    if (vpn.get("provider") != "openvpn" or not re.fullmatch(name, gateway_name)
+            or not re.fullmatch(r"tun[0-9a-f]{12}", interface)):
+        raise ValueError("Не задан проверяемый профиль шлюза")
+    lines = []
+    for r in vpn["remotes"]:
+        if (not re.fullmatch(name, r["host"]) or r["proto"] not in ("udp", "tcp")
+                or type(r["port"]) is not int or not 1 <= r["port"] <= 65535):
+            raise ValueError("Некорректный адрес шлюза")
+        lines.append(f"remote {r['host']} {r['port']} {'udp' if r['proto'] == 'udp' else 'tcp-client'}")
+    if not lines:
+        raise ValueError("Не задан адрес шлюза")
+    for field, label in (("ca", "CERTIFICATE"), ("cert", "CERTIFICATE"),
+                         ("tls_crypt_v2", "OpenVPN tls-crypt-v2 client key")):
+        if field == "tls_crypt_v2" and not vpn.get(field):
+            continue
+        if not re.fullmatch(f"-----BEGIN {label}-----\n[A-Za-z0-9+/=\n]+-----END {label}-----\n?", vpn[field]):
+            raise ValueError("Повреждены реквизиты шлюза")
+    remotes = "\n".join(lines)
+    verify = f"verify-x509-name {gateway_name} name\n"
+    tc2 = f"<tls-crypt-v2>\n{vpn['tls_crypt_v2'].rstrip()}\n</tls-crypt-v2>\n" if vpn.get("tls_crypt_v2") else ""
     return (
-        "client\ndev tun\n" + remotes + "\n"
+        f"client\ndev {interface}\ndev-type tun\n" + remotes + "\n"
         "remote-cert-tls server\n" + verify +
         "tls-version-min 1.3\n"
         "data-ciphers AES-256-GCM:CHACHA20-POLY1305\n"
@@ -508,8 +706,13 @@ def handle(service: Service, conn: socket.socket, allowed_uid: int | None) -> No
                     answer = service.activate(str(request.get("code", "")))
                 elif command == "login":
                     answer = service.login(str(request.get("totp", "")))
-                elif command == "check":
-                    answer = service.check()
+                elif command == "catalog":
+                    answer = service.refresh_catalog()
+                elif command == "select":
+                    answer = service.select(request.get("id"))
+                elif command == "start":
+                    answer = service.start_work(request.get("generation"), request.get("display", ""),
+                                                request.get("password", ""))
                 elif command == "disconnect":
                     answer = service.disconnect()
                 elif command == "portal":
@@ -541,10 +744,15 @@ def keep_server_open(firewall: "poa_firewall.Firewall", host: str, stop=None) ->
 
 def main() -> int:
     config = load_config()
-    uid = pwd.getpwnam(config["kiosk_user"]).pw_uid if config.get("kiosk_user") else None
+    uid = pwd.getpwnam(config["kiosk_user"]).pw_uid
+    if not uid:
+        raise ValueError("Пользователь киоска не может быть root")
     firewall = poa_firewall.Firewall()
     threading.Thread(target=keep_server_open, args=(firewall, config["endpoint"]), daemon=True).start()
     service = Service(config, firewall=firewall)
+    firewall.close_session()
+    firewall.bind_client(uid)
+    threading.Thread(target=service.watch_session, daemon=True).start()
     threading.Thread(target=service.watch_portal, daemon=True).start()
     serve(service, allowed_uid=uid)
     return 0

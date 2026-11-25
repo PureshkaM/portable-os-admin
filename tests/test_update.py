@@ -59,7 +59,7 @@ class Server:
 
 
 def _payload(serial, family="debian", files=FILES):
-    body = {"kind": "poa-release", "format": 1, "serial": serial, "name": "x", "family": family,
+    body = {"employee_profile": "graphical-v1", "kind": "poa-release", "format": 1, "serial": serial, "name": "x", "family": family,
             "arch": "amd64", "layout": 3, "verity_root_hash": "ab" * 32}
     for name, data in files.items():
         body[KEYS[name]] = {"file": name, "sha256": hashlib.sha256(data).hexdigest(), "size": len(data)}

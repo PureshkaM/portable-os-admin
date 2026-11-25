@@ -28,7 +28,7 @@ VPN_UNIT_PATH = "etc/systemd/system/poa-vpn@.service"
 UPDATE_UNIT_PATH = "etc/systemd/system/poa-image-update.service"
 AUTOSTART_PATH = "etc/xdg/autostart/poa-connect.desktop"
 RUNTIME_FILES = ("poa_client.py", "poa_accessd.py", "poa_launch.py", "poa_connect.py",
-                 "poa_qr.py", "poa_ssh.py", "poa_vnc.py", "poa_events.py", "poa_firewall.py",
+                 "poa_qr.py", "poa_vnc.py", "poa_events.py", "poa_firewall.py",
                  "poa_trust.py", "poa_gost.py", "poa_update.py", "poa_portal.py")
 FIREWALL_SERVICE_NAME = "poa-firewall.service"
 FIREWALL_SERVICE_PATH = f"etc/systemd/system/{FIREWALL_SERVICE_NAME}"
@@ -48,12 +48,16 @@ def is_enabled(config: InstallConfig) -> bool:
 def service_unit() -> str:
     return """[Unit]
 Description=Служба доступа к рабочему месту (poa-accessd)
-After=network.target
+After=network.target poa-firewall.service
+Requires=poa-firewall.service
 RequiresMountsFor=/var/lib/poa
+ConditionPathExists=!/var/lib/poa/media-revoked
+ConditionPathExists=!/run/poa/media-revoked
 
 [Service]
 Type=simple
 ExecStart=/usr/bin/python3 /usr/lib/poa-access/poa_accessd.py
+ExecStopPost=/usr/bin/python3 -c "import sys; sys.path.insert(0, '/usr/lib/poa-access'); import poa_firewall; poa_firewall.Firewall().close_session()"
 Restart=on-failure
 RestartSec=2
 # Ключ носителя, звено и ключ VPN -- только у этой службы.
@@ -85,7 +89,8 @@ IOSchedulingClass=idle
 def vpn_unit() -> str:
     return """[Unit]
 Description=VPN-сеанс носителя %i
-After=network-online.target
+BindsTo=poa-accessd.service
+After=network-online.target poa-accessd.service
 
 [Service]
 Type=simple
@@ -151,6 +156,22 @@ def image_files(config: InstallConfig) -> dict[str, tuple[str, int | None]]:
         for name in RUNTIME_FILES
     }
     files[SERVICE_PATH] = (service_unit(), 0o644)
+    files["etc/systemd/system/sleep.target.d/poa-access.conf"] = (
+        "[Unit]\nRequires=poa-access-sleep.service\nAfter=poa-access-sleep.service\n", 0o644)
+    files["etc/systemd/system/poa-access-sleep.service"] = ("""[Unit]
+Description=Закрыть рабочую сеть перед сном
+Before=sleep.target
+Conflicts=poa-accessd.service
+After=poa-accessd.service
+StopWhenUnneeded=yes
+ConditionPathExists=/etc/poa/access.json
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/python3 -c "import sys; sys.path.insert(0, '/usr/lib/poa-access'); import poa_firewall; poa_firewall.Firewall().close_session()"
+ExecStop=/usr/bin/systemctl --no-block start poa-accessd.service
+""", 0o644)
     files[VPN_UNIT_PATH] = (vpn_unit(), 0o644)
     files[UPDATE_UNIT_PATH] = (update_unit(), 0o644)
     files[AUTOSTART_PATH] = (autostart_entry(), 0o644)

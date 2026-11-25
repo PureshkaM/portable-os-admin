@@ -18,7 +18,7 @@ KEYS = {"rootfs.squashfs": "image", "rootfs.verity": "verity", "vmlinuz": "kerne
 
 
 def _payload(serial, family="debian"):
-    body = {"kind": "poa-release", "format": 1, "serial": serial, "name": "kiosk", "family": family,
+    body = {"employee_profile": "graphical-v1", "kind": "poa-release", "format": 1, "serial": serial, "name": "kiosk", "family": family,
             "arch": "amd64", "layout": 3, "verity_root_hash": "ab" * 32}
     for name, data in FILES.items():
         body[KEYS[name]] = {"file": name, "sha256": hashlib.sha256(data).hexdigest(), "size": len(data)}

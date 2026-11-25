@@ -252,6 +252,18 @@ def test_the_installer_writes_a_distribution_signed_by_this_container(
     assert result.media_record.media_id
 
 
+def test_previous_or_unverified_profile_stops_before_writing(session, kiosk_config, big_device, tmp_path):
+    directory = _deployable(tmp_path / "dist", kiosk_config)
+    installer = OSInstaller(session)
+    with pytest.raises(InstallError, match="подпись"):
+        installer.deploy_distribution(big_device, str(directory), b"passphrase", dry_run=True)
+    _edit_metadata(directory, employee_profile="")
+    distribution.sign_distribution(str(directory), session.container.admin_secret)
+    with pytest.raises(InstallError, match="графический"):
+        installer.deploy_distribution(big_device, str(directory), b"passphrase", dry_run=True)
+    assert not installer.medium_modified
+
+
 def test_a_distribution_signed_by_this_container_verifies(tmp_path):
     archive = _built_distribution(tmp_path)
     path = distribution.sign_distribution(str(tmp_path), SECRET)
@@ -516,6 +528,7 @@ def test_deploying_generates_the_encryption_afresh(session, kiosk_config, big_de
     metadata.sha256 = distribution.sha256_of(str(archive))
     _as_v3(metadata)
     distribution.write_metadata(str(directory), metadata)
+    distribution.sign_distribution(str(directory), session.container.admin_secret)
 
     result = OSInstaller(session).deploy_distribution(
         big_device, str(directory), b"user-passphrase", dry_run=True, confirm_device="/dev/sdb"
@@ -568,6 +581,7 @@ def test_service_volumes_are_mounted_before_the_system_is_copied(
     metadata.sha256 = distribution.sha256_of(str(archive))
     _as_v3(metadata)
     distribution.write_metadata(str(directory), metadata)
+    distribution.sign_distribution(str(directory), session.container.admin_secret)
 
     result = OSInstaller(session).deploy_distribution(
         big_device, str(directory), b"user-passphrase", dry_run=True, confirm_device="/dev/sdb"
@@ -602,6 +616,7 @@ def test_two_deployments_get_different_identities(session, kiosk_config, big_dev
     metadata.sha256 = distribution.sha256_of(str(archive))
     _as_v3(metadata)
     distribution.write_metadata(str(directory), metadata)
+    distribution.sign_distribution(str(directory), session.container.admin_secret)
 
     installer = OSInstaller(session)
     first = installer.deploy_distribution(
@@ -731,6 +746,7 @@ def test_a_distribution_without_a_bootloader_is_refused_before_the_medium_is_tou
     _as_v3(metadata)
     metadata.has_bootloader = False
     distribution.write_metadata(str(directory), metadata)
+    distribution.sign_distribution(str(directory), session.container.admin_secret)
 
     installer = OSInstaller(session)
     with pytest.raises(InstallError) as excinfo:
@@ -759,6 +775,7 @@ def test_the_progress_counter_matches_the_real_number_of_steps(session, kiosk_co
     _as_v3(metadata)
     metadata.has_bootloader = True
     distribution.write_metadata(str(directory), metadata)
+    distribution.sign_distribution(str(directory), session.container.admin_secret)
 
     seen = []
     OSInstaller(session).deploy_distribution(

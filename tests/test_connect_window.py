@@ -48,24 +48,11 @@ def test_rdp_without_domain_still_passes_an_empty_one_and_tls_is_per_target():
     assert "/sec:tls" in tls and "/sec:nla" not in tls
 
 
-def test_ssh_and_vnc_open_our_own_windows():
-    for kind in ("ssh", "vnc"):
-        argv, needs_password = launch.client_command({**RDP, "type": kind, "port": 22})
-        assert argv[1].endswith(f"poa_{kind}.py") and not needs_password
-
-
-def test_ssh_window_disables_escapes_forwarding_and_pins_the_host_key():
-    ssh = _load("poa_ssh") if _has_vte() else None
-    if ssh is None:
-        pytest.skip("нет VTE")
-    argv = ssh.ssh_argv({**RDP, "type": "ssh", "port": 2222}, "/tmp/kh")
-    joined = " ".join(argv)
-    for option in ("EscapeChar=none", "ForwardAgent=no", "ForwardX11=no",
-                   "PermitLocalCommand=no", "ClearAllForwardings=yes",
-                   "StrictHostKeyChecking=yes", "UserKnownHostsFile=/tmp/kh"):
-        assert option in joined
-    line = ssh.known_hosts_line({**RDP, "port": 2222, "pin": "ssh-ed25519 AAAA"})
-    assert line == "[10.0.0.5]:2222 ssh-ed25519 AAAA\n"
+def test_graphical_client_opens_and_text_target_is_rejected():
+    argv, needs_password = launch.client_command({**RDP, "type": "vnc", "port": 5900})
+    assert argv[1].endswith("poa_vnc.py") and not needs_password
+    with pytest.raises(ValueError, match="тип цели"):
+        launch.client_command({**RDP, "type": "ssh", "port": 22})
 
 
 def test_messages_are_human():
@@ -73,16 +60,6 @@ def test_messages_are_human():
     assert "Возможна атака" in launch.explain({"error": "tls_pin"})
     assert "Нет связи" in launch.explain({"error": "network: timed out"})
     assert launch.reachability_text("silent").startswith("Рабочее место не отвечает")
-
-
-def _has_vte() -> bool:
-    try:
-        import gi
-        gi.require_version("Vte", "2.91")
-        from gi.repository import Vte  # noqa: F401
-        return True
-    except (ImportError, ValueError):
-        return False
 
 
 def _fake_service(path: str, answers: dict) -> None:
@@ -145,7 +122,6 @@ def test_a_normal_end_of_session_is_not_an_error():
     # Ниже 128 -- отключение, выход из системы, простой: окно говорит «Сеанс завершён».
     assert launch.session_error("rdp", 0, NO_ANSWER) == ""
     assert launch.session_error("rdp", 12, []) == ""
-    assert launch.session_error("ssh", 255, NO_ANSWER) == ""
 
 
 def test_own_wrappers_name_the_reason_themselves():

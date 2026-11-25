@@ -12,6 +12,7 @@ README, раздел «Архитектура»).
 from __future__ import annotations
 
 import base64
+import contextlib
 import importlib.resources
 import os
 import tempfile
@@ -40,7 +41,7 @@ from .command_runner import BOOTSTRAP_TIMEOUT, CommandPlan, CommandResult, Comma
 from . import distribution, overlay
 from . import integrity
 from . import medium
-from .devices import BlockDevice, busy_holders, check_install_eligible
+from .devices import BlockDevice, DeviceLister, busy_holders, check_install_eligible, check_kernel_device, reserve_writer
 from .disk import (
     DiskManager,
     MediaIdentity,
@@ -410,7 +411,9 @@ class OSInstaller:
             raise ConfigValidationError(
                 ["установка запрещена: файл конфигурации не прошёл проверку"]
             )
-        self.check_possible(device, config, require_unmounted=False)
+        if not config.kiosk.enabled or config.remote_access.enabled:
+            raise ConfigValidationError(["для выдачи сотруднику требуется графический киоск без SSH"])
+        self.check_possible(device, config)
         work = tempfile.mkdtemp(prefix="poa-build-", dir=BUILD_WORK_ROOT)
         try:
             built = self.build_distribution(
@@ -673,7 +676,7 @@ class OSInstaller:
         payload = {
             "kind": "poa-release", "format": 1, "serial": metadata.release_serial,
             "name": metadata.name, "family": metadata.target_os, "arch": metadata.arch,
-            "layout": 3, "kernel_version": version,
+            "layout": 3, "kernel_version": version, "employee_profile": metadata.employee_profile,
             "image": entry(metadata.archive), "verity": entry(metadata.verity),
             "kernel": entry("vmlinuz"), "initrd": entry("initrd.img"),
             "verity_root_hash": metadata.verity_root_hash,
@@ -747,20 +750,24 @@ class OSInstaller:
         self._progress.step("Проверка дистрибутива")
         # `_metadata` -- только пробный прогон установки с образа (Э10): сборка
         # там ничего не пишет, и читать подпись и описание неоткуда.
-        verdict = (distribution.verify_distribution(directory, self.session.container.admin_secret)
+        if _metadata is not None and not dry_run:
+            raise InstallError("Для записи требуется подписанное описание выпуска на диске.")
+        metadata = _metadata or distribution.read_metadata(directory)
+        verdict = (distribution.verify_distribution(directory, self.session.container.admin_secret, expected=metadata)
                    if _metadata is None else None)
-        if verdict is not None and verdict.status == distribution.INVALID:
-            raise InstallError(
-                f"подпись дистрибутива не прошла проверку: {verdict.reason}.\n"
-                "Носитель не изменён."
-            )
+        if verdict is not None and verdict.status != distribution.SIGNED_BY_THIS_CONTAINER:
+            raise InstallError(f"подпись дистрибутива не подтверждена ключом контейнера: {verdict.reason or verdict.status}")
         if accepted_signature is not None and verdict is not None and verdict != accepted_signature:
             raise InstallError(
                 "подпись дистрибутива изменилась после того, как запись была "
                 "подтверждена.\nНоситель не изменён."
             )
-        metadata = _metadata or distribution.read_metadata(directory)
         config = InstallConfig.from_dict(metadata.config)
+        from .access.runtime.poa_trust import EMPLOYEE_PROFILE
+
+        if (metadata.employee_profile != EMPLOYEE_PROFILE or metadata.profile != "kiosk"
+                or config.profile != "kiosk" or not config.kiosk.enabled or config.remote_access.enabled):
+            raise InstallError("Для выдачи нужен заново собранный графический выпуск без SSH и текстового входа.")
         backend = get_backend(config.target_os)
         # Версии оболочек приехали вместе с дистрибутивом: образа здесь уже нет.
         self._image = _DeployedImage(metadata.desktop_versions or {})
@@ -792,26 +799,27 @@ class OSInstaller:
                 "выбрасывала, — пересоберите его.\nНоситель не изменён."
             )
 
-        self.check_possible(device, config, require_unmounted=False)
+        self.check_possible(device, config)
 
         identity = self._new_identity(device, config)
         layout = identity.layout
         plan = CommandPlan(device=device.path)
         state = _TeardownState()
 
-        try:
-            self._deploy(
-                device, config, backend, identity, user_passphrase, plan, state,
-                directory=directory, metadata=metadata,
-                dry_run=dry_run, confirm_device=confirm_device,
-            )
-        except Exception as exc:  # noqa: BLE001 - re-raised below
-            self._teardown(layout, state, plan, dry_run=dry_run, confirm_device=confirm_device)
-            if isinstance(exc, InstallError):
-                raise
-            raise InstallError(f"установка прервана: {exc}") from exc
-        else:
-            self._teardown(layout, state, plan, dry_run=dry_run, confirm_device=confirm_device)
+        with contextlib.nullcontext() if dry_run else reserve_writer(device):
+            try:
+                self._deploy(
+                    device, config, backend, identity, user_passphrase, plan, state,
+                    directory=directory, metadata=metadata,
+                    dry_run=dry_run, confirm_device=confirm_device,
+                )
+            except Exception as exc:  # noqa: BLE001 - re-raised below
+                self._teardown(layout, state, plan, dry_run=dry_run, confirm_device=confirm_device)
+                if isinstance(exc, InstallError):
+                    raise
+                raise InstallError(f"установка прервана: {exc}") from exc
+            else:
+                self._teardown(layout, state, plan, dry_run=dry_run, confirm_device=confirm_device)
 
         media_record, recovery_records = self._save_records(
             identity, device, config, media_name, media_owner
@@ -1555,11 +1563,15 @@ class OSInstaller:
         run = lambda argv, **kw: self._run(argv, plan, dry_run, confirm_device, **kw)  # noqa: E731
         layout = identity.layout
 
-        self._progress.step("Отключение носителя от системы")
-        self._unmount_medium(device, plan, dry_run, confirm_device)
+        self._progress.step("Проверка выбранного носителя")
         self._refuse_if_busy(device, dry_run)
+        if not dry_run:
+            device = DeviceLister().recheck_for_write(device, confirm_device)
+            self.check_possible(device, config)
 
         self._progress.step("Очистка носителя и создание разделов")
+        if not dry_run:
+            check_kernel_device(device)
         # Set immediately before the first destructive command, not after: if
         # partitioning itself fails halfway, the medium has still been written
         # to and saying otherwise would be worse than saying nothing.
@@ -2081,9 +2093,7 @@ class OSInstaller:
     def _refuse_if_busy(self, device: BlockDevice, dry_run: bool) -> None:
         """Отказывается писать на носитель, который держит кто-то ещё.
 
-        Проверка стоит после размонтирования и до первой разрушающей команды:
-        размонтировать своё -- наша работа, а вот чужой процесс, пишущий в то
-        же устройство, -- причина остановиться.
+        Проверка выполняется до первой разрушающей команды.
 
         Цена ошибки известна: прогон 04.09.2026 писал носитель одновременно с
         оставшейся запущенной виртуальной машиной. Все восемнадцать шагов
@@ -2102,13 +2112,6 @@ class OSInstaller:
             "Запись в четыре руки испортит его молча -- закройте то, что его держит, "
             "и повторите. Открытые тома можно освободить на экране «Обслуживание»."
         )
-
-    def _unmount_medium(self, device: BlockDevice, plan: CommandPlan, dry_run: bool, confirm_device: str | None) -> None:
-        """Desktop automounters mount a stick's partitions the moment it is
-        plugged in; partitioning underneath a live filesystem corrupts it, so
-        every mountpoint on the device is released first."""
-        for mountpoint in device.active_mountpoints:
-            self._run(["umount", mountpoint], plan, dry_run, confirm_device)
 
     def _teardown(
         self, layout: MediaLayout, state: "_TeardownState", plan: CommandPlan, *, dry_run: bool, confirm_device: str | None

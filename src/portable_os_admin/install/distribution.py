@@ -169,6 +169,7 @@ class DistributionMetadata:
     #: Profile the root was built as; a console root has no kiosk restrictions
     #: in it and cannot be turned into a kiosk by deployment alone.
     profile: str = "console"
+    employee_profile: str = ""
     desktop_environment: str = ""
     #: Версии оболочек образа, из которого собран этот корень: {"mate": "1.28.2"}.
     #:
@@ -231,12 +232,15 @@ class DistributionMetadata:
         archive: str = ARCHIVE_NAME,
         desktop_versions: dict | None = None,
     ) -> "DistributionMetadata":
+        from .access.runtime.poa_trust import EMPLOYEE_PROFILE
+
         return cls(
             name=config.name,
             target_os=config.target_os,
             release=release,
             arch=arch,
-            profile=config.profile,
+            profile="kiosk" if config.kiosk.enabled else "console",
+            employee_profile=EMPLOYEE_PROFILE if config.kiosk.enabled and not config.remote_access.enabled else "",
             desktop_environment=config.kiosk.desktop_environment if config.kiosk.enabled else "",
             desktop_versions=dict(desktop_versions or {}),
             config=config.to_dict(),
@@ -405,6 +409,7 @@ class SignatureVerdict:
     fingerprint: str = ""
     #: Почему `invalid` -- для сообщения администратору.
     reason: str = ""
+    metadata_sha256: str = ""
 
 
 def signing_key(admin_secret: bytes):
@@ -513,7 +518,8 @@ def _parse_signature(text: str) -> tuple[str, bytes] | None:
     return fingerprint, signature
 
 
-def verify_distribution(directory: str, admin_secret: bytes) -> SignatureVerdict:
+def verify_distribution(directory: str, admin_secret: bytes, *,
+                        expected: DistributionMetadata | None = None) -> SignatureVerdict:
     """Проверяет подпись дистрибутива ключом открытого контейнера.
 
     Архив здесь не хешируется: это гигабайты, а вызывается проверка из
@@ -529,6 +535,8 @@ def verify_distribution(directory: str, admin_secret: bytes) -> SignatureVerdict
     except (OSError, ValueError) as exc:
         return SignatureVerdict(INVALID, reason=f"описание не читается: {exc}")
 
+    if expected is not None and DistributionMetadata.from_dict(metadata) != expected:
+        return SignatureVerdict(INVALID, reason="описание изменилось после чтения")
     archive = os.path.join(directory, str(metadata.get("archive") or ARCHIVE_NAME))
     checksum = checksum_path(archive)
     if os.path.isfile(checksum):
@@ -567,7 +575,8 @@ def verify_distribution(directory: str, admin_secret: bytes) -> SignatureVerdict
             fingerprint=fingerprint,
             reason="подпись не сходится: описание дистрибутива изменено после подписи",
         )
-    return SignatureVerdict(SIGNED_BY_THIS_CONTAINER, fingerprint=fingerprint)
+    return SignatureVerdict(SIGNED_BY_THIS_CONTAINER, fingerprint=fingerprint,
+                            metadata_sha256=hashlib.sha256(signed_bytes(metadata)).hexdigest())
 
 
 def sanitise_commands(root: str) -> list[list[str]]:

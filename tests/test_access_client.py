@@ -92,7 +92,7 @@ def _dist(tmp_path, serial, family="debian", signed=True):
     directory.mkdir()
     for name in ("rootfs.squashfs", "rootfs.verity", "vmlinuz", "initrd.img"):
         (directory / name).write_bytes(name.encode() * 10)
-    release = {"serial": serial, "family": family, "arch": "amd64", "layout": 3}
+    release = {"employee_profile": "graphical-v1", "serial": serial, "family": family, "arch": "amd64", "layout": 3}
     document = {"release": release, **({"signer": {"cert": {}}} if signed else {})}
     (directory / "release.json").write_text(json.dumps(document))
     return str(directory)
@@ -163,10 +163,8 @@ def test_target_pins_are_normalized_or_refused(tmp_path):
     with pytest.raises(access_actions.AccessActionError):
         access_actions.normalize_pin("rdp", "sha256:abc")
 
-    assert access_actions.normalize_pin("ssh", "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5 root@debian\n") == \
-        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5"
     with pytest.raises(access_actions.AccessActionError):
-        access_actions.normalize_pin("ssh", "просто текст")
+        access_actions.normalize_pin("ssh", "ssh-ed25519 AAAA")
 
     key = ec.generate_private_key(ec.SECP256R1())
     name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "10.99.0.1")])

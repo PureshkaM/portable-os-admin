@@ -255,6 +255,7 @@ def _deployed_commands(session, config, device, tmp_path):
         True, distribution.VERITY_NAME, "ab" * 32)
     metadata.release_serial = 1_800_000_000
     distribution.write_metadata(str(directory), metadata)
+    distribution.sign_distribution(str(directory), session.container.admin_secret)
 
     result = OSInstaller(session).deploy_distribution(
         device, str(directory), b"user-passphrase", dry_run=True, confirm_device="/dev/sdb"
@@ -509,6 +510,7 @@ def test_the_medium_gets_the_scripts_that_could_not_be_in_the_image(
         True, distribution.VERITY_NAME, "ab" * 32)
     metadata.release_serial = 1_800_000_000
     distribution.write_metadata(str(directory), metadata)
+    distribution.sign_distribution(str(directory), session.container.admin_secret)
 
     result = OSInstaller(session).deploy_distribution(
         big_device, str(directory), b"user-passphrase", dry_run=True, confirm_device="/dev/sdb"

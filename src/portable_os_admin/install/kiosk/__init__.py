@@ -201,7 +201,11 @@ def chroot_commands(mount_root: str, config: InstallConfig, backend) -> list[lis
     )
     commands.append(["sh", "-c", f"{shlex.join(disable_getty)} || true"])
 
-    for unit in ("getty@.service", "serial-getty@.service", "autovt@.service"):
+    # РЕД ОС может включать OpenSSH в базовую группу. Даже сокетная
+    # активация и экземпляр на соединение должны остаться закрытыми.
+    for unit in ("getty@.service", "serial-getty@.service", "autovt@.service",
+                 "console-getty.service", "container-getty@.service", "debug-shell.service",
+                 "ssh.service", "sshd.service", "ssh.socket", "sshd.socket", "sshd@.service", "ssh@.service"):
         commands.append(
             backend.chroot(mount_root, "env", "SYSTEMD_OFFLINE=1", "systemctl", "mask", unit)
         )
@@ -215,5 +219,11 @@ def chroot_commands(mount_root: str, config: InstallConfig, backend) -> list[lis
         )
         commands.append(["sh", "-c", f"{shlex.join(masking)} || true"])
 
+    # Удаление в chroot собранного выпуска охватывает в том числе программы,
+    # которые менеджер пакетов поставил по зависимостям.
+    commands.append(backend.chroot(mount_root, "rm", "-f", "/usr/bin/ssh", "/usr/bin/scp", "/usr/bin/sftp",
+                                   "/usr/sbin/sshd", "/usr/bin/dbclient", "/usr/sbin/dropbear",
+                                   "/usr/bin/mate-terminal", "/usr/bin/xterm", "/usr/bin/gnome-terminal",
+                                   "/usr/bin/xfce4-terminal", "/usr/bin/konsole", "/usr/bin/x-terminal-emulator"))
     commands.append(backend.chroot(mount_root, "/bin/sh", f"/{APPLY_SCRIPT_PATH}"))
     return commands

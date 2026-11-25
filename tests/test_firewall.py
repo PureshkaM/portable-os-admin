@@ -32,7 +32,9 @@ def test_everything_is_closed_by_default():
 
 
 def test_targets_are_reachable_only_through_the_tunnel():
-    assert 'oifname "tun*" ip daddr . th dport @target4 accept' in fw.RULESET
+    assert 'oifname . ip daddr . tcp dport @target4 accept' in fw.RULESET
+    assert 'iifname . ip saddr . tcp sport @target4 accept' in fw.RULESET
+    assert "ct state established,related accept" not in fw.RULESET
 
 
 def test_stages_fill_and_empty_the_sets(monkeypatch):
@@ -40,14 +42,17 @@ def test_stages_fill_and_empty_the_sets(monkeypatch):
                                                       "10.0.0.5": ["10.0.0.5"]}.get(host, []))
     rec = Recorder()
     firewall = fw.Firewall(runner=rec)
-    firewall.allow_gateways([{"host": "vpn.example", "port": 1194, "proto": "udp"},
-                             {"host": "vpn.example", "port": 443, "proto": "tcp"}])
-    firewall.allow_targets([{"host": "10.0.0.5", "port": 3389}])
+    firewall.open_session([{"host": "vpn.example", "port": 1194, "proto": "udp"}],
+                          {"host": "10.0.0.5", "port": 3389}, "tun123", fw.boottime() + 60, 123)
+    assert "198.51.100.1 . udp . 1194 timeout " in rec.scripts[0]
+    assert '"tun123" . 10.0.0.5 . 3389 timeout ' in rec.scripts[0]
+    assert "offset 123 @requests jump work_in" in rec.scripts[0]
     firewall.close_session()
-    assert "198.51.100.1 . udp . 1194, 198.51.100.1 . tcp . 443" in rec.scripts[0]
-    assert "10.0.0.5 . 3389" in rec.scripts[1]
-    assert rec.scripts[2].strip() == "flush set inet poa gateway4"
-    assert rec.scripts[3].strip() == "flush set inet poa target4"
+    assert rec.scripts[1].splitlines() == ["flush set inet poa gateway4", "flush set inet poa target4",
+                                           "flush set inet poa requests"]
+    firewall.quarantine()
+    assert "flush chain inet poa work_in" in rec.scripts[2]
+    assert "flush chain inet poa work_out" in rec.scripts[2]
 
 
 @pytest.mark.skipif(shutil.which("nft") is None, reason="нет nft")
@@ -61,8 +66,7 @@ def test_the_ruleset_is_accepted_by_nft(tmp_path):
 
 def test_server_is_open_on_its_own_port_and_80_for_the_probe(monkeypatch):
     """Сервер не обязательно на 443 (стенд -- 8443): экран берёт порт из адреса."""
-    monkeypatch.setattr(fw, "resolve4", lambda host: ["10.0.2.2"])
     rec = Recorder()
     fw.Firewall(runner=rec).allow_server("10.0.2.2", 8443)
-    assert "10.0.2.2 . 80, 10.0.2.2 . 8443" in rec.scripts[0]
-    assert "ip daddr . tcp dport @server4 accept" in fw.RULESET
+    assert "10.0.2.2 . 80, 10.0.2.2 . 8443" in rec.scripts[-1]
+    assert "ip daddr . tcp dport @server4" in fw.RULESET

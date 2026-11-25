@@ -1,13 +1,13 @@
 """Шлюз сеанса: приложения киоска открываются только после «ok» сервера.
 
 Живёт отдельно от службы отзыва намеренно. Служба работает от root, ходит в
-сеть и умеет уничтожить носитель; шлюз запускается пользователем на каждый
+сеть и закрывает рабочий доступ; шлюз запускается пользователем на каждый
 щелчок по ярлыку, ничего не решает сам и лишь читает файл, который пишет
 служба. Разные права, разная частота, разная цена ошибки.
 """
 from __future__ import annotations
 
-from .paths import AUTHORIZED_FILE, NOTIFY_APP
+from .paths import AUTHORIZED_FILE, NOTIFY_APP, REVOKED_FILE, REVOKED_RUNTIME_FILE
 
 
 def gate_script() -> str:
@@ -30,6 +30,7 @@ def gate_script() -> str:
 AUTHORIZED={AUTHORIZED_FILE}
 
 authorized() {{
+    [ ! -e "{REVOKED_FILE}" ] && [ ! -e "{REVOKED_RUNTIME_FILE}" ] || return 1
     [ -f "$AUTHORIZED" ] || return 1
     [ "$(cat "$AUTHORIZED" 2>/dev/null)" = "$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)" ]
 }}

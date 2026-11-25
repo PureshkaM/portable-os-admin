@@ -4,8 +4,8 @@
 
 * выдаёт код активации -- он показывается один раз и передаётся пользователю
   другим каналом, не вместе с носителем;
-* задаёт рабочие места: тип (RDP, VNC, SSH), адрес, порт, пользователь, домен,
-  отпечаток (сертификат RDP, CA VNC, ключ хоста SSH), нужна ли смарт-карта;
+* задаёт рабочие места: тип (RDP, VNC), адрес, порт, пользователь, домен,
+  отпечаток (сертификат RDP, CA VNC), нужна ли смарт-карта;
 * снимает блокировку (после клона или исчерпанных попыток TOTP);
 * видит события носителя с сервера, уже расшифрованные.
 
@@ -20,8 +20,8 @@ from ...admin import access_actions
 from .. import theme
 from ..widgets import Column, data_table, run_in_background
 
-TYPES = ("rdp", "vnc", "ssh")
-DEFAULT_PORTS = {"rdp": 3389, "vnc": 5900, "ssh": 22}
+TYPES = ("rdp", "vnc")
+DEFAULT_PORTS = {"rdp": 3389, "vnc": 5900}
 COLUMNS = (
     Column("name", "Имя", 160, 100, stretch=True),
     Column("type", "Тип", 50, 45),
@@ -185,7 +185,7 @@ class TargetDialog(tk.Toplevel):
         form.pack(fill="both", expand=True)
         labels = (("name", "Имя"), ("type", "Тип"), ("host", "Адрес"), ("port", "Порт"),
                   ("user", "Пользователь"), ("domain", "Домен"),
-                  ("pin", "Отпечаток (RDP: sha256:…; SSH: ssh-ed25519 …; VNC: CA в PEM)"))
+                  ("pin", "Отпечаток SHA-256 для RDP или сертификат CA в PEM для VNC"))
         for row, (key, title) in enumerate(labels):
             ttk.Label(form, text=title).grid(row=row, column=0, sticky="w")
             if key == "type":
@@ -210,7 +210,7 @@ class TargetDialog(tk.Toplevel):
         self.vars["port"].set(str(DEFAULT_PORTS[self.vars["type"].get()]))
 
     def _pin_from_file(self) -> None:
-        """Сертификат CA (VNC) или `ssh_host_*_key.pub` (SSH) -- файлом: PEM
+        """Сертификат CA (VNC) читается из файла. PEM
         в однострочное поле не вставить, не потеряв переводы строк."""
         path = filedialog.askopenfilename(parent=self, title="Отпечаток цели")
         if not path:

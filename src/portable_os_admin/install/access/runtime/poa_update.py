@@ -199,6 +199,8 @@ class Updater:
             raise UpdateError(f"выпуск не прошёл проверку подписи: {exc}") from exc
         if int(payload.get("serial", 0)) != int(info["serial"]) or int(payload["serial"]) <= self.serial:
             raise UpdateError("номер выпуска не тот, что назначен, или не новее текущего")
+        if payload.get("employee_profile") != poa_trust.EMPLOYEE_PROFILE:
+            raise UpdateError("Нужен заново собранный графический выпуск без SSH.")
         current = self.current_release()
         for field in ("family", "arch", "layout"):
             if payload.get(field) != current.get(field):

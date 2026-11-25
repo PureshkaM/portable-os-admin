@@ -19,11 +19,14 @@ from ..errors import (
     ContainerAlreadyExistsError,
     ContainerAuthenticationError,
     ContainerCorruptedError,
+    ContainerError,
     MediaNotRegisteredError,
     WeakPasswordError,
 )
 from .models import (
     ACTION_ERASED,
+    ACTION_PUBLISHED,
+    ACTION_PUBLISH_FAILED,
     ACTION_RESTORED,
     ACTION_REVOKED,
     STATUS_ACTIVE,
@@ -141,19 +144,42 @@ class AdminContainer:
         )
         return record
 
-    def restore_media(self, media_id: str) -> MediaRecord:
-        """Снять отметку отзыва.
+    def note_confirmed_revocation(self, media_id: str) -> bool:
+        """Запомнить подтверждённое сервером состояние, в том числе в старой копии карточки."""
+        record = self.find_media(media_id)
+        if record is None:
+            raise MediaNotRegisteredError(f"Носитель {media_id} отсутствует в контейнере")
+        if record.is_revoked and any(
+            e.action == ACTION_PUBLISHED and e.details == "revoked" for e in self.journal_for(media_id)
+        ):
+            return False
+        if not record.is_revoked:
+            self.revoke_media(media_id, "Отзыв зарегистрирован на сервере")
+        self.record_event(ACTION_PUBLISHED, media_id, "revoked")
+        return True
 
-        Отзыв -- решение человека, а человек ошибается: отозвать можно не ту
-        строку, а сотрудник, которого «уволили», может вернуться из отпуска.
-        Причина отзыва при этом стирается, а журнал остаётся: состояние
-        показывает, как есть сейчас, история -- как было.
-        """
+    def can_cancel_local_revocation(self, media_id: str) -> bool:
+        record = self.find_media(media_id)
+        if record is None or not record.is_revoked or self.data.revocation_server_url.strip():
+            return False
+        for entry in self.journal_for(media_id):
+            if entry.action == ACTION_ERASED:
+                return False
+            if (entry.action in (ACTION_PUBLISHED, ACTION_PUBLISH_FAILED)
+                    and entry.details.split(":", 1)[0] == "revoked"):
+                return False
+        return True
+
+    def restore_media(self, media_id: str) -> MediaRecord:
+        """Отменить локальную пометку до попытки публикации."""
         record = self.find_media(media_id)
         if record is None:
             raise MediaNotRegisteredError(
                 f"сведения о носителе не найдены в контейнере (media_id={media_id})"
             )
+        if not self.can_cancel_local_revocation(media_id):
+            raise ContainerError("Снятие отметки доступно только для локального неопубликованного отзыва."
+                                 " Для возврата отозванного носителя в работу требуется перевыпуск.")
         record.status = STATUS_ACTIVE
         record.revoked_at = ""
         record.revoked_reason = ""

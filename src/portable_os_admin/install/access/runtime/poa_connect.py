@@ -5,8 +5,8 @@
 1. нет сети -- окно ждёт; сеть выбирается значком в панели;
 2. сервер ответил подписанным «ok» (`/run/poa/authorized`) -- появляется поле
    кода; при первом запуске -- активация (код от администратора, затем QR);
-3. код TOTP -- служба получает доступ, поднимает VPN;
-4. проверка рабочих мест; одно -- сразу пароль, несколько -- список;
+3. код TOTP открывает каталог;
+4. выбор одного места, проверка допуска и подключение VPN;
 5. сеанс на весь экран; после него -- «Подключиться снова» без нового кода,
    пока жив доступ.
 
@@ -14,7 +14,6 @@
 """
 from __future__ import annotations
 
-import collections
 import os
 import subprocess
 import sys
@@ -45,7 +44,8 @@ class ConnectWindow(Gtk.Window):
         outer.pack_start(self.update_label, False, False, 0)
         outer.pack_start(self.stack, True, True, 0)
         self.add(outer)
-        self.message = ""
+        self.generation = None
+        self.working = False
         self.targets: list[dict] = []
         self.qr_modules = None
         self.connect("destroy", Gtk.main_quit)
@@ -99,7 +99,6 @@ class ConnectWindow(Gtk.Window):
 
         self.totp_entry = Gtk.Entry(placeholder_text="123456", max_length=6)
         self.totp_entry.connect("activate", self._on_login)
-        self.totp_entry.connect("activate", self._on_login)
         login_button = Gtk.Button(label="Войти")
         login_button.connect("clicked", self._on_login)
         self.totp_error = self._label()
@@ -114,13 +113,13 @@ class ConnectWindow(Gtk.Window):
         self.targets_error = self._label()
         # Место могли включить позже, чем пользователь вошёл: перепроверка
         # без нового TOTP, пока жив доступ к VPN.
-        recheck = Gtk.Button(label="Проверить снова")
-        recheck.connect("clicked", lambda *_: self._show_targets())
+        recheck = Gtk.Button(label="Обновить список")
+        recheck.connect("clicked", lambda *_: self._refresh_targets())
         self._page("targets", self._label("Рабочее место", big=True), self.targets_box,
                    self.targets_error, recheck)
 
         again = Gtk.Button(label="Подключиться снова")
-        again.connect("clicked", lambda *_: self._show_targets())
+        again.connect("clicked", lambda *_: self._refresh_targets())
         self.again_title = self._label("Сеанс завершён.", big=True)
         self.again_error = self._label()
         self._page("again", self.again_title, self.again_error, again)
@@ -139,7 +138,7 @@ class ConnectWindow(Gtk.Window):
                 "Сеть просит войти через свою страницу." if portal else
                 "Подключитесь к сети значком в панели. Ждём ответа сервера…")
             self.portal_button.set_visible(portal)
-        elif status.get("vpn") == "up" and status.get("targets"):
+        elif status.get("authenticated"):
             self.targets = status["targets"]
             self._show_targets()
         else:
@@ -148,6 +147,10 @@ class ConnectWindow(Gtk.Window):
 
     def _poll_update(self) -> bool:
         status = poa_launch.ask({"cmd": "status"}, timeout=5)
+        if self.working and not status.get("working"):
+            self.working = False
+            self._session_over(status.get("result") or (poa_launch.explain({"error": status["reason"]})
+                                                       if status.get("reason") else ""))
         text = poa_launch.update_text(status.get("update") or {})
         self.update_label.set_text(text)
         self.update_label.set_visible(bool(text))
@@ -189,67 +192,73 @@ class ConnectWindow(Gtk.Window):
                 self.stack.set_visible_child_name("totp")
                 return
             self.targets = answer.get("targets", [])
-            self._wait_vpn_then_targets()
+            self._show_targets()
         self._background({"cmd": "login", "totp": code}, done)
 
-    def _wait_vpn_then_targets(self, deadline: float | None = None) -> None:
-        deadline = deadline or time.time() + 60
-        status = poa_launch.ask({"cmd": "status"}, timeout=5)
-        if status.get("vpn") == "up":
+    def _refresh_targets(self) -> None:
+        self.stack.set_visible_child_name("busy")
+
+        def done(answer):
+            if answer.get("error"):
+                self.totp_error.set_text(poa_launch.explain(answer))
+                self.stack.set_visible_child_name("totp")
+                return
+            self.targets = answer["targets"]
             self._show_targets()
-        elif time.time() > deadline:
-            self.totp_error.set_text("Не удалось подключиться к сети компании.")
-            self.stack.set_visible_child_name("totp")
-        else:
-            GLib.timeout_add_seconds(2, lambda: self._wait_vpn_then_targets(deadline) and False)
+        self._background({"cmd": "catalog"}, done)
 
     def _show_targets(self) -> None:
         for child in self.targets_box.get_children():
             self.targets_box.remove(child)
-        reach = poa_launch.ask({"cmd": "check"}, timeout=30).get("reachability", {})
-        usable = []
-        for target in self.targets:
-            state = reach.get(target["id"], "silent")
-            button = Gtk.Button(label=target.get("name") or target["host"])
-            button.set_sensitive(state == "up")
-            button.connect("clicked", lambda _b, t=target: self._open(t))
+        self.targets_error.set_text("" if self.targets else "Нет назначенных рабочих мест.")
+        for entry in self.targets:
+            button = Gtk.Button(label=entry["name"] or entry["id"])
+            button.connect("clicked", lambda _b, i=entry["id"]: self._select(i))
             self.targets_box.pack_start(button, False, False, 0)
-            note = poa_launch.reachability_text(state)
-            if note:
-                self.targets_box.pack_start(self._label(note), False, False, 0)
-            if state == "up":
-                usable.append(target)
         self.targets_box.show_all()
         self.stack.set_visible_child_name("targets")
-        if len(self.targets) == 1 and len(usable) == 1:
-            self._open(usable[0])
 
-    def _open(self, target: dict) -> None:
-        argv, needs_password = poa_launch.client_command(target)
-        password = None
-        if needs_password:
-            password = self._ask_password(target)
-            if password is None:
+    def _select(self, target_id: str) -> None:
+        self.busy_label.set_text("Подключаемся к выбранному месту…")
+        self.stack.set_visible_child_name("busy")
+
+        def done(answer):
+            if answer.get("error") == "assignment_changed":
+                self._refresh_targets()
                 return
-        self.hide()
+            if answer.get("error"):
+                self.totp_error.set_text(poa_launch.explain(answer))
+                self.stack.set_visible_child_name("totp")
+                return
+            self.generation = answer["generation"]
+            self._wait_for_target(answer["target"], time.monotonic() + 60)
+        self._background({"cmd": "select", "id": target_id}, done)
 
-        def run():
-            # Вывод клиента читается всегда -- иначе причина отказа терялась,
-            # и окно говорило «Сеанс завершён» на любой исход. Хранятся
-            # последние строки в памяти: пароль в вывод не попадает, а на
-            # диск (пусть и в RAM) журнал клиента не нужен.
-            process = subprocess.Popen(argv, stdin=subprocess.PIPE if password is not None else None,
-                                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-            if password is not None:
-                process.stdin.write(password.encode("utf-8") + b"\n")
-                process.stdin.close()
-            tail = collections.deque(maxlen=200)
-            for raw in process.stdout:
-                tail.append(raw.decode("utf-8", "replace").rstrip())
-            process.wait()
-            reason = poa_launch.session_error(target["type"], process.returncode, list(tail))
-            GLib.idle_add(self._session_over, reason)
-        threading.Thread(target=run, daemon=True).start()
+    def _wait_for_target(self, target: dict, deadline: float) -> bool:
+        status = poa_launch.ask({"cmd": "status"}, timeout=5)
+        if status.get("active") != target["id"] or status.get("generation") != self.generation:
+            self._session_over(poa_launch.explain({"error": status.get("reason") or "selection_changed"}))
+        elif status["vpn"] == "up":
+            password = self._ask_password(target) if target["type"] == "rdp" else ""
+            if password is None:
+                poa_launch.ask({"cmd": "disconnect"})
+                self._refresh_targets()
+                return False
+            def done(answer):
+                if not answer.get("started"):
+                    poa_launch.ask({"cmd": "disconnect"})
+                    self._session_over(poa_launch.explain(answer))
+                    return
+                self.working = True
+                self.hide()
+            self._background({"cmd": "start", "generation": self.generation,
+                              "display": os.environ.get("DISPLAY", ":0"), "password": password}, done)
+        elif time.monotonic() >= deadline:
+            poa_launch.ask({"cmd": "disconnect"})
+            self._session_over("Не удалось подключиться к сети рабочего места.")
+        else:
+            GLib.timeout_add_seconds(2, self._wait_for_target, target, deadline)
+        return False
 
     def _open_portal(self) -> None:
         # Окно портала работает под другим пользователем -- ему нужен доступ
@@ -263,7 +272,7 @@ class ConnectWindow(Gtk.Window):
     def _session_over(self, reason: str = "") -> None:
         self.again_title.set_markup(
             f"<big>{'Подключение не удалось.' if reason else 'Сеанс завершён.'}</big>")
-        self.again_error.set_text(reason)
+        self.again_error.set_text(reason or "Блокировка удалённого рабочего места не подтверждена.")
         self.show_all()
         self.stack.set_visible_child_name("again")
 

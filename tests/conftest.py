@@ -52,6 +52,17 @@ def make_config():
 
 
 @pytest.fixture
+def make_employee_config(make_config):
+    def make(name="stick1", target_os="debian"):
+        config = make_config(name, target_os)
+        config.profile = "kiosk"
+        config.kiosk.enabled = True
+        config.packages = ["mate-calc"]
+        return config
+    return make
+
+
+@pytest.fixture
 def container(tmp_path):
     """Открытый контейнер администратора -- хранилище конфигураций.
 

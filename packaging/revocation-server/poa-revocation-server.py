@@ -7,9 +7,9 @@
 
 Три стороны, и все подписаны:
 
-**Носитель спрашивает.** `GET /v2/state`, всё в заголовках: идентификатор,
-случайное число, сведения о себе и подпись строки `poa-ask <id> <nonce> <info>`
-ключом носителя. В ответ -- `poa-state <id> <nonce> <состояние>` и подпись
+**Носитель спрашивает.** `GET /v3/media-state`, всё в заголовках: идентификатор,
+случайное число, сведения о себе и подпись строки `poa-ask-v3 <id> <nonce> <info>`
+ключом носителя. В ответ -- `poa-state-v3 <id> <nonce> <состояние>` и подпись
 ключом отзыва. Случайное число подписывается вместе с ответом, поэтому
 вчерашний ответ сегодня не подойдёт; а подпись запроса не даёт постороннему
 узнать состояние носителя и отметить его живым. Всё, что не прошло проверку,
@@ -196,9 +196,20 @@ class Database:
         return dict(row) if row else None
 
     def put(self, media_id: str, owner: str, state: str, counter: int,
-            device_key: str | None) -> None:
-        """Заводит или меняет запись. `device_key=None` -- ключ остаётся прежним."""
+            device_key: str | None) -> int:
+        """Проверка владельца, номера и запись занимают одну транзакцию на всех узлах."""
         with self.database.tx() as db:
+            current = db.execute("SELECT owner, counter, state FROM media WHERE media_id = ?",
+                                 (media_id,)).fetchone()
+            if current is None and device_key is None:
+                return 400
+            if current is not None:
+                if current["owner"] != owner:
+                    return 403
+                if current["counter"] >= counter:
+                    return 409
+                if current["state"] == "revoked" and state == "ok":
+                    return 410
             db.execute(
                 "INSERT INTO media (media_id, owner, state, counter, updated_at, device_key)"
                 " VALUES (?, ?, ?, ?, ?, ?)"
@@ -208,17 +219,21 @@ class Database:
                 " device_key = COALESCE(excluded.device_key, media.device_key)",
                 (media_id, owner, state, counter, utc_now_iso(), device_key),
             )
+            return 201 if current is None else 204
 
     def remember_contact(self, media_id: str, nonce: str, version: str,
-                         machine: str) -> bool:
-        """Запоминает число запроса и связь носителя. False -- число уже было.
+                         machine: str, verified_key: str) -> str | None:
+        """Фиксирует контакт и выдаёт состояние из одной транзакции.
 
-        Одной транзакцией: повтор не должен ни пройти, ни сдвинуть время
-        последней связи. Заодно забываются числа старше срока -- чистка при
-        каждом успешном запросе дёшева и не требует отдельного таймера.
+        Подпись уже проверена вне транзакции. Сверяем ключ снова, чтобы его
+        смена между чтением и фиксацией контакта потребовала нового запроса.
         """
         now = int(time.time())
         with self.database.tx() as db:
+            record = db.execute("SELECT state, device_key FROM media WHERE media_id = ?",
+                                (media_id,)).fetchone()
+            if record is None or record["device_key"] != verified_key or record["state"] not in STATES:
+                return None
             db.execute("DELETE FROM nonces WHERE seen_at < ?", (now - NONCE_TTL_SECONDS,))
             inserted = db.execute(
                 "INSERT INTO nonces (media_id, nonce, seen_at) VALUES (?, ?, ?)"
@@ -226,12 +241,12 @@ class Database:
                 (media_id, nonce, now),
             ).rowcount
             if inserted != 1:
-                return False
+                return None
             db.execute(
                 "UPDATE media SET last_seen = ?, version = ?, machine = ? WHERE media_id = ?",
                 (utc_now_iso(), version, machine, media_id),
             )
-        return True
+            return record["state"]
 
 
 class BadLength(Exception):
@@ -251,12 +266,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
     #: многопоточный, и два одновременных знакомства с одним кодом иначе
     #: прошли бы оба -- оба прочитали код раньше, чем первый его удалил.
     enroll_lock = threading.Lock()
-    #: Та же гонка у команд про носитель: «прочитать запись -- сверить владельца
-    #: и номер -- записать». Без блокировки два одновременных выпуска одного
-    #: идентификатора разными администраторами оба видели бы «записи нет», и
-    #: второй переписал бы состояние записи, владелец которой -- первый.
-    media_lock = threading.Lock()
-
     # -- общее -------------------------------------------------------------
     def _read_body(self, limit: int = 4096) -> bytes:
         """Тело запроса. Кривой `Content-Length` -- BadLength, а не 500."""
@@ -316,6 +325,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._send(200, pem, content_type="application/x-pem-file")
             return
         if parsed.path == "/v2/state":
+            # Старый образ исполнял «revoked» как стирание томов.
+            self._forbidden()
+            return
+        if parsed.path == "/v3/media-state":
             self._device_asks()
             return
         if parsed.path == "/state":
@@ -369,7 +382,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
         try:
             signature = base64.b64decode(signature_b64, validate=True)
-            device_key.verify(signature, f"poa-ask {media} {nonce} {info}".encode("ascii"))
+            device_key.verify(signature, f"poa-ask-v3 {media} {nonce} {info}".encode("ascii"))
         except Exception:
             print(f"отклонено: подпись запроса носителя {media} не сходится", flush=True)
             self._forbidden()
@@ -378,13 +391,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
         # Число запоминается только после проверки подписи: иначе посторонний
         # забивал бы таблицу мусором, а то и занимал бы числа настоящего носителя.
         version, machine = matched.group(1), matched.group(2)
-        if not self.db.remember_contact(media, nonce, version, machine):
-            print(f"отклонено: повтор числа носителя {media}", flush=True)
+        state = self.db.remember_contact(media, nonce, version, machine, record["device_key"])
+        if state is None:
+            print(f"отклонено: состояние или запрос носителя {media} устарели", flush=True)
             self._forbidden()
             return
 
-        state = record["state"]
-        message = f"poa-state {media} {nonce} {state}"
+        message = f"poa-state-v3 {media} {nonce} {state}"
         signature = base64.b64encode(self.key.sign(message.encode("ascii")))
         # Ответ на конкретное случайное число: кэшировать его нельзя ни на
         # секунду, иначе посредник отдаст носителю чужой ответ.
@@ -432,7 +445,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
         device_routes = {"/v3/nonce": v3.nonce, "/v3/activate": v3.activate,
                          "/v3/session": v3.session, "/v3/session/confirm": v3.confirm,
-                         "/v3/events": v3.events}
+                         "/v3/session/catalog": v3.current_catalog,
+                         "/v3/session/select": v3.select_target, "/v3/session/renew": v3.renew,
+                         "/v3/session/release": v3.release_selection, "/v3/events": v3.events}
         if parsed.path in device_routes:
             device_routes[parsed.path](self)
             return
@@ -474,41 +489,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return
             device_key = parts[4]
 
-        with self.media_lock:
-            record = self.db.record_of(media)
-            if record is None:
-                # Неизвестный носитель -- это его выпуск. Владельцем становится
-                # тот, кто его создал, и дальше распоряжаться им может только он.
-                # Без ключа носителя запись не заводится: такой носитель не
-                # сможет подписать запрос и всё равно получал бы только 403.
-                if device_key is None:
-                    self.send_error(400, "device key required")
-                    return
-                self.db.put(media, key_id, state, counter, device_key)
-                print(f"заведён носитель {media}: владелец {key_id}, состояние {state}",
-                      flush=True)
-                self._send(201)
-                return
-
-            owner, previous = record["owner"], record["counter"]
-            if owner != key_id:
-                # Администраторов несколько, и чужие носители -- не его дело:
-                # иначе один снимал бы отзыв, поставленный другим.
-                print(f"отклонено: {key_id} не владелец носителя {media} (владелец {owner})",
-                      flush=True)
-                self.send_error(403, "not the owner")
-                return
-            if counter <= previous:
-                print(f"отклонено: номер {counter} не больше прежнего {previous}", flush=True)
-                self.send_error(409, "stale counter")
-                return
-
-            # Пятое поле у существующей записи -- перевыпуск носителя с тем же
-            # идентификатором: новый ключ, прежний идентификатор и владелец.
-            self.db.put(media, owner, state, counter, device_key)
-        replaced = ", ключ заменён" if device_key and device_key != record["device_key"] else ""
-        print(f"носитель {media}: состояние {state} (номер {counter}){replaced}", flush=True)
-        self._send(204)
+        code = self.db.put(media, key_id, state, counter, device_key)
+        if code in (400, 403, 409, 410):
+            reasons = {400: "device key required", 403: "not the owner", 409: "stale counter",
+                       410: "revoked identity requires reissue"}
+            self.send_error(code, reasons[code])
+            return
+        print(f"носитель {media}: владелец {key_id}, состояние {state}, номер {counter}", flush=True)
+        self._send(code)
 
     def do_PUT(self) -> None:  # noqa: N802 - имя задано базовым классом
         parsed = urllib.parse.urlparse(self.path)

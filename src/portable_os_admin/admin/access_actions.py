@@ -26,6 +26,8 @@ def issue_activation(container, media_id: str) -> str:
 
 
 def set_targets(container, media_id: str, targets: list[dict]) -> int:
+    if any(target.get("type") not in ("rdp", "vnc") for target in targets):
+        raise AccessActionError("Носителю можно назначить только графическое рабочее место.")
     count = client(container).set_targets(media_id, targets)
     container.record_event("access_targets", media_id, f"рабочих мест: {count}")
     return count
@@ -35,7 +37,6 @@ def normalize_pin(kind: str, text: str) -> str:
     """Отпечаток цели в том виде, в каком его ждёт носитель, или ошибка.
 
     * RDP -- `sha256:<64 hex>`; принимается и с двоеточиями, и заглавными;
-    * SSH -- `тип ключ` без комментария (строка из `ssh_host_*_key.pub`);
     * VNC -- сертификат CA в PEM. Поле в диалоге однострочное, и вставленный
       PEM теряет переводы строк, поэтому тело собирается заново и проверяется
       разбором сертификата: битый PEM здесь лучше, чем отказ VNC у
@@ -52,15 +53,6 @@ def normalize_pin(kind: str, text: str) -> str:
         if not re.fullmatch(r"[0-9a-f]{64}", digest):
             raise AccessActionError("RDP: нужен отпечаток sha256 сертификата — 64 шестнадцатеричных знака")
         return f"sha256:{digest}"
-    if kind == "ssh":
-        parts = text.split()
-        if len(parts) < 2 or not parts[0].startswith(("ssh-", "ecdsa-")):
-            raise AccessActionError("SSH: нужен открытый ключ хоста вида «ssh-ed25519 AAAA…»")
-        try:
-            base64.b64decode(parts[1], validate=True)
-        except (binascii.Error, ValueError) as exc:
-            raise AccessActionError("SSH: ключ хоста не похож на base64") from exc
-        return f"{parts[0]} {parts[1]}"
     if kind == "vnc":
         from cryptography import x509
 
@@ -78,7 +70,7 @@ def normalize_pin(kind: str, text: str) -> str:
 
 
 def get_targets(container, media_id: str) -> list[dict]:
-    return client(container).get_targets(media_id)
+    return [target for target in client(container).get_targets(media_id) if target.get("type") in ("rdp", "vnc")]
 
 
 def unblock(container, media_id: str) -> None:
@@ -218,6 +210,10 @@ def publish_distribution(container, directory: str, dist_id: str, progress=None)
             "выпуск не подписан: рабочий ключ контейнера не заверен корнем организации "
             "(Обслуживание → Корень), а неподписанный выпуск носитель не примет")
     release = document["release"]
+    from ..install.access.runtime.poa_trust import EMPLOYEE_PROFILE
+
+    if release.get("employee_profile") != EMPLOYEE_PROFILE:
+        raise AccessActionError("Для публикации требуется заново собранный графический выпуск без SSH.")
     api = client(container)
     known = {d["id"]: d for d in api.overview()["distributions"]}
     line = known.get(dist_id)

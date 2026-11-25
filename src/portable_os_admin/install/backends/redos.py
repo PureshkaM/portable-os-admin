@@ -11,7 +11,7 @@ generic RHEL assumptions:
 - `@core` is a real package group in both releases' comps.xml, so the
   bootstrap command below is valid as written.
 - `openssh-server` is a mandatory package in the core/base groups on both
-  releases, confirming `ssh_package`/`ssh_service` below.
+  releases. The employee kiosk masks the service during image assembly.
 - Layout under each release is `x86_64/os` (base), `x86_64/updates`,
   `x86_64/extras` -- if a caller supplies `config.mirror` it is passed
   through as-is via `--repofrompath`, so it must already point at one such
@@ -45,7 +45,6 @@ from .base import RECOVERY_DIR, RECOVERY_INITRAMFS_DIR, InstallBackend
 
 class RedOSInstallBackend(InstallBackend):
     name = "redos"
-    ssh_package = "openssh-server"
     ssh_service = "sshd"
     sudo_group = "wheel"
     # `keyscript=` -- интерфейс cryptsetup-initramfs, которого в RHEL нет.
@@ -535,8 +534,8 @@ class RedOSInstallBackend(InstallBackend):
         return arguments
 
     #: Пакеты доступа (Э8), имена сверены по образам (Э0).
-    ACCESS_PACKAGES = ("openvpn", "freerdp", "python3-gobject", "gtk3", "vte291", "gtk-vnc2", "gvnc", "webkit2gtk4.1",
-                       "python3-cryptography", "openssh-clients")
+    ACCESS_PACKAGES = ("openvpn", "freerdp", "python3-gobject", "gtk3", "gtk-vnc2", "gvnc", "webkit2gtk4.1",
+                       "python3-cryptography")
 
     #: Политика Sequoia для dnf сборки, если подключены сетевые репозитории.
     #:

@@ -31,6 +31,8 @@ DEVICE_KEY_PATH = "etc/poa/device.key"
 #: исчезает с перезагрузкой; `boot_id` в файле -- вторая страховка.
 STATE_DIR = "/run/poa"
 AUTHORIZED_FILE = f"{STATE_DIR}/authorized"
+REVOKED_RUNTIME_FILE = f"{STATE_DIR}/media-revoked"
+REVOKED_FILE = "/var/lib/poa/media-revoked"
 
 #: Как часто спрашивать сервер. Пять минут -- решение пользователя 15.09.2026.
 POLL_INTERVAL = "5min"

@@ -491,7 +491,7 @@ def test_no_terminal_or_control_centre_is_installed(target_os):
         "mate-system-monitor",
         "caja-open-terminal",
         "gparted",
-        "xterm",
+        "xterm", "openssh-server", "openssh-client", "openssh-clients", "gir1.2-vte-2.91", "vte291",
         # The distribution's desktop metapackages, each of which drags the
         # above back in.
         "mate-desktop-environment",
@@ -1062,7 +1062,7 @@ def test_services_the_kiosk_never_asked_for_are_masked():
         for argv in get_backend("redos").chroot_setup_commands("/mnt/t", make_kiosk_config())
     ]
 
-    for unit in ("sshd.service", "avahi-daemon.service", "smbd.service"):
+    for unit in ("sshd.service", "ssh.socket", "sshd@.service", "debug-shell.service", "avahi-daemon.service", "smbd.service"):
         assert any(f"mask {unit}" in c for c in flat), unit
     # Отсутствие службы в образе — норма, а не повод уронить сборку.
     assert all("|| true" in c for c in flat if "avahi" in c)

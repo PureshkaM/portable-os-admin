@@ -6,9 +6,13 @@ canned JSON without a real block device or even a Linux host.
 """
 from __future__ import annotations
 
-import os
-
+import contextlib
+import fcntl
+import glob
 import json
+import os
+import stat
+import struct
 import subprocess
 from dataclasses import dataclass
 
@@ -58,6 +62,14 @@ class BlockDevice:
     removable: bool
     mountpoints: tuple[str, ...]
     partitions: tuple[Partition, ...] = ()
+
+    kind: str = "disk"
+    serial: str = ""
+    wwn: str = ""
+    # Linux меняет diskseq при повторном подключении, даже если имя /dev прежнее.
+    diskseq: int = 0
+    mounts_known: bool = False
+    loop_file: tuple[int, int] | None = None
 
     @property
     def is_mounted(self) -> bool:
@@ -152,14 +164,14 @@ def busy_holders(path: str) -> "list[str]":
     # на нём: у `/sys/block/loop0/holders` в этот момент пусто, а у
     # `/sys/block/loop0/loop0p3/holders` -- нет. Проверено 04.09.2026: первая
     # версия этой функции открытый том не замечала вовсе.
+    targets = {os.path.realpath(path)}
     holder_dirs = [f"/sys/block/{name}/holders"]
     try:
-        holder_dirs += [
-            f"/sys/block/{name}/{entry}/holders"
-            for entry in sorted(os.listdir(f"/sys/block/{name}"))
-            if entry.startswith(name)
-        ]
-    except OSError:
+        for entry in os.listdir(f"/sys/block/{name}"):
+            if os.path.isfile(f"/sys/block/{name}/{entry}/partition"):
+                holder_dirs.append(f"/sys/block/{name}/{entry}/holders")
+                targets.add(f"/dev/{entry}")
+    except FileNotFoundError:
         pass
     for holders_dir in holder_dirs:
         try:
@@ -167,17 +179,40 @@ def busy_holders(path: str) -> "list[str]":
                 description = f"/dev/{holder} (том или устройство поверх носителя)"
                 if description not in found:
                     found.append(description)
-        except OSError:
+        except FileNotFoundError:
             continue
 
-    # Для loop-устройства -- ещё и файл, который оно отдаёт.
-    targets = {os.path.realpath(path)}
+    # Два loop-устройства могут ссылаться на один inode, в том числе через разные имена файла.
     backing = f"/sys/block/{name}/loop/backing_file"
-    try:
+    if os.path.exists(backing):
         with open(backing, encoding="utf-8") as handle:
-            targets.add(handle.read().strip())
-    except OSError:
-        pass
+            image_path = handle.read().rstrip("\n")
+        image_stat = os.stat(image_path)
+        targets.add(image_path)
+        for other in glob.glob("/sys/block/loop*/loop/backing_file"):
+            if other == backing:
+                continue
+            try:
+                with open(other, encoding="utf-8") as handle:
+                    other_path = handle.read().rstrip("\n")
+                if os.path.samestat(image_stat, os.stat(other_path)):
+                    found.append(f"{other_path} уже подключён к {other.split('/')[3]}")
+            except FileNotFoundError:
+                continue  # loop успели отключить
+
+    files, block_devices = set(), set()
+    for target in targets:
+        try:
+            info = os.stat(target)
+        except FileNotFoundError:
+            continue
+        if stat.S_ISBLK(info.st_mode):
+            block_devices.add(info.st_rdev)
+        else:
+            files.add((info.st_dev, info.st_ino))
+
+    if not files and not block_devices:
+        return found
 
     for entry in os.listdir("/proc"):
         if not entry.isdigit():
@@ -185,14 +220,16 @@ def busy_holders(path: str) -> "list[str]":
         fd_dir = f"/proc/{entry}/fd"
         try:
             descriptors = os.listdir(fd_dir)
-        except OSError:
-            continue  # процесс уже закончился или чужой
+        except (FileNotFoundError, ProcessLookupError):
+            continue  # процесс уже завершился
         for descriptor in descriptors:
             try:
-                target = os.path.realpath(os.path.join(fd_dir, descriptor))
-            except OSError:
+                info = os.stat(os.path.join(fd_dir, descriptor))
+            except (FileNotFoundError, ProcessLookupError):
                 continue
-            if target not in targets:
+            if (info.st_dev, info.st_ino) not in files and not (
+                stat.S_ISBLK(info.st_mode) and info.st_rdev in block_devices
+            ):
                 continue
             try:
                 with open(f"/proc/{entry}/comm", encoding="utf-8") as handle:
@@ -208,114 +245,88 @@ def busy_holders(path: str) -> "list[str]":
 
 
 class DeviceLister:
-    LSBLK_COLUMNS = "NAME,PATH,SIZE,MODEL,RM,TRAN,TYPE,FSTYPE,LABEL,UUID,MOUNTPOINTS"
+    LSBLK_COLUMNS = "NAME,PATH,SIZE,MODEL,RM,TRAN,TYPE,FSTYPE,LABEL,UUID,MOUNTPOINTS,SERIAL,WWN"
 
     def list_removable(self) -> list[BlockDevice]:
-        data = self._lsblk_json()
-        devices = []
-        for entry in data.get("blockdevices", []):
-            if entry.get("type") != "disk":
-                continue
-            # lsblk's own RM ("removable") bit is frequently wrong for real USB
-            # sticks -- many controllers/enclosures report RM=0 even though the
-            # disk is plainly hot-pluggable. Treat "connected over USB" (TRAN)
-            # as an equally valid signal so a real flash drive isn't silently
-            # dropped from the list just because RM lied.
-            if not _truthy(entry.get("rm")) and (entry.get("tran") or "").strip().lower() != "usb":
-                continue
-            devices.append(
-                BlockDevice(
-                    name=entry.get("name", ""),
-                    path=entry.get("path") or f"/dev/{entry.get('name', '')}",
-                    size_bytes=int(entry.get("size") or 0),
-                    model=(entry.get("model") or "").strip(),
-                    removable=True,
-                    mountpoints=collect_mountpoints(entry),
-                    partitions=collect_partitions(entry),
-                )
-            )
-        return devices
+        return [d for d in self.list_all() if d.removable]
 
     def list_all(self) -> list[BlockDevice]:
-        """Все блочные устройства с их разделами, без отбора по съёмности.
+        return [
+            self._device(entry) for entry in self._lsblk_json()["blockdevices"]
+            if entry.get("type") in ("disk", "loop")
+        ]
 
-        Нужно для узнавания своих носителей: там вопрос не «можно ли на это
-        писать», а «не наш ли это носитель», и отсеивать по признаку съёмности
-        значит терять ровно те случаи, ради которых узнавание и заводилось.
-        Кардридер, о котором в `list_removable` сказано, что он врёт про RM,
-        врёт и здесь -- только теперь ценой не отказа записи, а неузнанной
-        флешки. Плюс носитель, подключённый через `losetup`, -- это стенд, на
-        котором проверяют саму программу.
+    @staticmethod
+    def _device(entry: dict) -> BlockDevice:
+        name = entry["name"]
+        sys_device = f"/sys/class/block/{name}"
+        try:
+            with open(f"{sys_device}/diskseq", encoding="ascii") as handle:
+                diskseq = int(handle.read())
+        except (OSError, ValueError):
+            diskseq = 0
+        loop_file = None
+        kind = entry["type"]
+        if kind == "loop":
+            try:
+                with open(f"{sys_device}/loop/backing_file", encoding="utf-8") as handle:
+                    backing = os.stat(handle.read().rstrip("\n"))
+                if stat.S_ISREG(backing.st_mode):
+                    loop_file = (backing.st_dev, backing.st_ino)
+            except OSError:
+                pass
 
-        Ничего не пишется и не открывается: читаются заголовки, которые lsblk
-        и так показывает всем.
-        """
-        data = self._lsblk_json()
-        devices = []
-        for entry in data.get("blockdevices", []):
-            if entry.get("type") not in ("disk", "loop"):
-                continue
-            devices.append(
-                BlockDevice(
-                    name=entry.get("name", ""),
-                    path=entry.get("path") or f"/dev/{entry.get('name', '')}",
-                    size_bytes=int(entry.get("size") or 0),
-                    model=(entry.get("model") or "").strip(),
-                    removable=_truthy(entry.get("rm")),
-                    mountpoints=collect_mountpoints(entry),
-                    partitions=collect_partitions(entry),
-                )
+        def mounts_reported(node: dict) -> bool:
+            return isinstance(node.get("mountpoints"), list) and all(
+                mounts_reported(child) for child in node.get("children") or []
             )
-        return devices
+
+        removable = kind == "disk" and (
+            _truthy(entry.get("rm")) or (entry.get("tran") or "").strip().lower() == "usb"
+        )
+        return BlockDevice(
+            name=name, path=entry["path"], size_bytes=int(entry.get("size") or 0),
+            model=(entry.get("model") or "").strip(), removable=removable,
+            mountpoints=collect_mountpoints(entry), partitions=collect_partitions(entry),
+            kind=kind, diskseq=diskseq, serial=(entry.get("serial") or "").strip(),
+            wwn=(entry.get("wwn") or "").strip(), loop_file=loop_file,
+            mounts_known=mounts_reported(entry),
+        )
 
     def find(self, path: str) -> BlockDevice | None:
-        """Re-reads one device's current state by path, so a caller can verify
-        (rather than assume) that something like an unmount actually took."""
+        """Reads a listed removable device by path."""
         for device in self.list_removable():
             if device.path == path:
                 return device
         return None
 
     def describe(self, path: str) -> BlockDevice | None:
-        """Reads one device by path, bypassing the removable filter.
-
-        This is for a path the user typed in by hand -- which is precisely the
-        case where the removable heuristics already failed, so re-applying them
-        would just refuse the device again. What matters is that the caller
-        gets the device's *real* size and, above all, its real mountpoints: a
-        device object invented from a text field has none, and the installer's
-        unmount preflight would then silently do nothing and partition over a
-        live filesystem.
-
-        Whether the device is an acceptable install target remains the caller's
-        decision (and the user's, via the repeat-the-path confirmation).
-        """
+        """Describe a whole disk or loop device at its canonical device path."""
+        if not path.startswith("/dev/"):
+            return None
         try:
-            data = self._lsblk_json(path)
-        except (subprocess.SubprocessError, OSError, ValueError):
+            entries = self._lsblk_json(path)["blockdevices"]
+            if len(entries) != 1:
+                return None
+            entry = entries[0]
+            if entry.get("type") not in ("disk", "loop") or entry.get("path") != path:
+                return None
+            return self._device(entry)
+        except (subprocess.SubprocessError, OSError, ValueError, KeyError, TypeError):
             return None
-        # "loop" наравне с "disk": файл-образ, подключённый через losetup, --
-        # это штатная цель стенда, а lsblk называет его типом "loop". Фильтр
-        # по одному "disk" отбрасывал его, describe возвращал None, и мастер
-        # строил устройство из текстовых полей. Последствие серьёзнее пустого
-        # списка разделов на экране подтверждения: вместе с ними терялись
-        # точки монтирования, ради которых эта функция и написана, -- то есть
-        # на файл-образе не работала защита от разметки поверх смонтированной
-        # файловой системы. Найдено живым прогоном 28.08.2026: экран сказал
-        # «разделов не обнаружено» о носителе с пятью разделами.
-        entries = [e for e in data.get("blockdevices", []) if e.get("type") in ("disk", "loop")]
-        if not entries:
-            return None
-        entry = entries[0]
-        return BlockDevice(
-            name=entry.get("name", ""),
-            path=entry.get("path") or path,
-            size_bytes=int(entry.get("size") or 0),
-            model=(entry.get("model") or "").strip(),
-            removable=True,
-            mountpoints=collect_mountpoints(entry),
-            partitions=collect_partitions(entry),
-        )
+
+    def recheck_for_write(self, selected: BlockDevice, confirmed_path: str | None) -> BlockDevice:
+        """Сверяет подтверждённый снимок с текущим устройством перед записью."""
+        if selected.path != confirmed_path:
+            raise DeviceNotEligibleError("путь к носителю не подтверждён")
+        current = self.describe(selected.path)
+        if current is None or current.diskseq <= 0 or not current.mounts_known:
+            raise DeviceNotEligibleError(f"недостаточно сведений для записи на {selected.path}")
+        if current != selected:
+            raise DeviceNotEligibleError(
+                f"устройство {selected.path} или его разделы изменились. Выберите носитель заново."
+            )
+        return current
 
     def _lsblk_json(self, path: str | None = None) -> dict:
         argv = ["lsblk", "-J", "-b", "-o", self.LSBLK_COLUMNS]
@@ -329,6 +340,47 @@ class DeviceLister:
             check=True,
         )
         return json.loads(proc.stdout)
+
+
+# BLKGETDISKSEQ из linux/fs.h для поддерживаемых x86_64 и arm64.
+_BLKGETDISKSEQ = 0x80081280
+
+
+def check_kernel_device(device: BlockDevice) -> None:
+    """Проверяет занятость целого диска ядром, в том числе вне текущей области монтирования."""
+    try:
+        descriptor = os.open(device.path, os.O_RDONLY | os.O_EXCL | os.O_NONBLOCK | os.O_NOFOLLOW)
+        try:
+            if not stat.S_ISBLK(os.fstat(descriptor).st_mode):
+                raise DeviceNotEligibleError(f"{device.path} не является блочным устройством")
+            number, = struct.unpack("=Q", fcntl.ioctl(descriptor, _BLKGETDISKSEQ, bytes(8)))
+            if number != device.diskseq:
+                raise DeviceNotEligibleError(f"подключение {device.path} изменилось")
+        finally:
+            os.close(descriptor)
+    except OSError as exc:
+        raise DeviceNotEligibleError(f"не удалось подтвердить свободный диск {device.path}: {exc}") from exc
+
+
+@contextlib.contextmanager
+def reserve_writer(device: BlockDevice, directory: str = "/run"):
+    """Удерживает блокировку двух записей Якоря на одно подключение до завершения уборки."""
+    if not isinstance(device.diskseq, int) or device.diskseq <= 0:
+        raise DeviceNotEligibleError(f"не удалось определить подключение {device.path}")
+    key = f"disk-{device.diskseq}"
+    if device.kind == "loop" and device.loop_file:
+        filesystem, inode = device.loop_file
+        key = f"loop-{filesystem}-{inode}"
+    path = os.path.join(directory, f"poa-write-{key}.lock")
+    descriptor = os.open(path, os.O_RDONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    try:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise DeviceNotEligibleError(f"идёт другая запись на {device.path}") from exc
+        yield
+    finally:
+        os.close(descriptor)
 
 
 def _truthy(value) -> bool:
@@ -352,21 +404,16 @@ def _truthy(value) -> bool:
 ALLOW_NON_REMOVABLE = "POA_ALLOW_NON_REMOVABLE"
 
 
-def _non_removable_allowed() -> bool:
-    return bool(os.environ.get(ALLOW_NON_REMOVABLE))
-
-
 def check_install_eligible(
     device: BlockDevice, required_bytes: int, *, require_unmounted: bool = True
 ) -> None:
     """Implements "Установка.Проверка.Носитель" / "Установка.Проверка.ДоИзменения":
     a read-only sanity check performed before any data on the device changes.
-
-    `require_unmounted=False` is for the installer itself, which unmounts the
-    device as an explicit, logged preflight step instead of refusing outright --
-    the user has already confirmed they are about to erase it.
     """
-    if not device.removable and not _non_removable_allowed():
+    stand_image = (
+        device.kind == "loop" and device.loop_file is not None and os.environ.get(ALLOW_NON_REMOVABLE) == "1"
+    )
+    if not device.removable and not stand_image:
         raise DeviceNotEligibleError(f"устройство {device.path} не является съёмным")
     if require_unmounted and device.is_mounted:
         raise DeviceNotEligibleError(

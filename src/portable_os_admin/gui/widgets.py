@@ -481,7 +481,7 @@ def run_in_background(
     widget.after(poll_ms, poll)
 
 
-def publish_media_state(frame, media_id: str) -> None:
+def publish_media_state(frame, media_id: str, *, on_published=None) -> None:
     """Сообщает ресурсу отзыва состояние носителя, не задерживая экран.
 
     Ничего не делает, пока контейнер не знаком с ресурсом: отзыв через сеть --
@@ -507,6 +507,8 @@ def publish_media_state(frame, media_id: str) -> None:
         frame.app.save_container()
         if said:
             frame.message_bar.success(said)
+            if on_published is not None:
+                on_published()
 
     def failed(exc: BaseException) -> None:
         frame.app.save_container()

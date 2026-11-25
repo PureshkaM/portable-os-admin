@@ -15,6 +15,7 @@ from __future__ import annotations
 import base64
 import binascii
 import hashlib
+import ipaddress
 import json
 import os
 import pathlib
@@ -32,6 +33,8 @@ NONCE_RE = re.compile(r"\A[0-9a-f]{32}\Z")
 NAME_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
 HEX64_RE = re.compile(r"\A[0-9a-f]{64}\Z")
 NONCE_TTL = 120
+MFA_SECONDS = 8 * 3600
+LEASE_SECONDS = 300
 #: Ответ на пробу портала (`GET /v3/probe`); носитель сверяет его побайтно.
 PROBE_BODY = b"poa-probe 1\n"
 #: Неудач TOTP подряд, после которых носитель блокируется до администратора.
@@ -40,7 +43,7 @@ PROBE_BODY = b"poa-probe 1\n"
 TOTP_FAIL_LIMIT = 10
 BODY_LIMIT = 64 * 1024
 EVENTS_LIMIT = 256 * 1024
-TARGET_TYPES = ("rdp", "vnc", "ssh")
+TARGET_TYPES = ("rdp", "vnc")
 
 FORBIDDEN = {"error": "forbidden"}
 
@@ -121,15 +124,16 @@ def authenticate(h, path: str, limit: int = BODY_LIMIT) -> tuple[str, str, dict]
         key.verify(canon.unb64(signature), canon.device_message("POST", path, media, nonce, body))
     except Exception:
         raise Refused(403, FORBIDDEN) from None
+    h.authenticated_device_key = record["device_key"]
     return media, nonce, parse_json(body)
 
 
-def begin_step(db, media: str, nonce: str):
+def begin_step(h, db, media: str, nonce: str):
     """Общее начало шага в транзакции: nonce, отзыв, блокировка."""
     if not Store.consume_nonce(db, media, nonce):
         raise Refused(403, FORBIDDEN)
     record = Store.media(db, media)
-    if record is None or record["state"] != "ok":
+    if record is None or record["state"] != "ok" or record["device_key"] != h.authenticated_device_key:
         raise Refused(403, FORBIDDEN)
     if record["blocked"]:
         raise Refused(423, {"error": "blocked"})
@@ -196,7 +200,7 @@ def activate(h) -> None:
         return
 
     def step(db):
-        begin_step(db, media, nonce_value)
+        begin_step(h, db, media, nonce_value)
         row = db.execute("SELECT * FROM activations WHERE code_hash = ?",
                          (activation_hash(obj.get("code")),)).fetchone()
         if row is None:
@@ -257,7 +261,7 @@ def session(h) -> None:
     status = obj.get("status") if isinstance(obj.get("status"), dict) else {}
 
     def step(db):
-        record = begin_step(db, media, nonce_value)
+        record = begin_step(h, db, media, nonce_value)
         access = Store.access(db, media)
         if not access["totp"]:
             raise Refused(403, FORBIDDEN)
@@ -307,6 +311,10 @@ def session(h) -> None:
 
         proposal, proposal_h = new_link()
         db.execute("UPDATE access SET link_p = ? WHERE media_id = ?", (proposal_h, media))
+        db.execute("DELETE FROM employee_sessions WHERE media_id = ?", (media,))
+        db.execute("INSERT INTO employee_sessions (media_id, media_counter, mfa_until, status)"
+                   " VALUES (?, ?, ?, ?)", (media, record["counter"], int(time.time()) + MFA_SECONDS,
+                                            json.dumps(status)))
         db.execute("UPDATE media SET last_seen = ?, version = ?, machine = ? WHERE media_id = ?",
                    (time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime()),
                     str(status.get("version", ""))[:32] or None,
@@ -330,60 +338,174 @@ def _vpn_settings(h) -> dict:
         return {}
 
 
+def _work_catalog(h, db, media, settings):
+    """Версия различает и возврат к прежнему содержимому назначения."""
+    rows = db.execute("SELECT t.spec, COALESCE(v.version, 1) AS version FROM targets t"
+                      " LEFT JOIN target_versions v ON v.media_id = t.media_id"
+                      " AND v.target_id = t.target_id WHERE t.media_id = ? ORDER BY t.target_id",
+                      (media,)).fetchall()
+    transport = {"remotes": settings.get("remotes", []), "gateway_name": settings.get("gateway_name", ""),
+                 "version": settings.get("version", ""), "ca": hashlib.sha256(h.secrets.ca_cert_pem).hexdigest(),
+                 "tls_crypt": hashlib.sha256(h.secrets.tls_crypt_v2_server).hexdigest()}
+    entries = []
+    profiles = {}
+    for row in rows:
+        spec = json.loads(row["spec"])
+        # Сохранённая конфигурация старого текстового рабочего места.
+        if spec.get("type") == "ssh":
+            continue
+        spec = _valid_target(spec)
+        snapshot = {"version": row["version"], "target": spec, "transport": transport}
+        revision = hashlib.sha256(canon.canonical(snapshot)).hexdigest()
+        entries.append({"id": spec["id"], "name": spec["name"] or spec["host"],
+                        "version": row["version"], "revision": revision})
+        profiles[spec["id"]] = spec
+    return entries, profiles
+
+
+def _challenge(obj):
+    value = obj.get("nonce")
+    if not isinstance(value, str) or not NONCE_RE.fullmatch(value):
+        raise Refused(400, {"error": "bad_challenge"})
+    return value
+
+
 def confirm(h) -> None:
     try:
         media, nonce_value, obj = authenticate(h, "/v3/session/confirm")
+        challenge = _challenge(obj)
     except Refused as refusal:
         send_json(h, refusal.code, refusal.body)
         return
-    vpn_request = obj.get("vpn") if isinstance(obj.get("vpn"), dict) else {}
 
     def step(db):
-        begin_step(db, media, nonce_value)
+        record = begin_step(h, db, media, nonce_value)
         access = Store.access(db, media)
-        presented = link_hash(obj.get("link"))
-        if not access["link_p"] or presented != access["link_p"]:
+        pending = db.execute("SELECT * FROM employee_sessions WHERE media_id = ?", (media,)).fetchone()
+        if not access["link_p"] or link_hash(obj.get("link")) != access["link_p"] or pending is None \
+                or pending["session_id"] or pending["media_counter"] != record["counter"] \
+                or pending["mfa_until"] <= time.time():
             raise Refused(403, FORBIDDEN)
-        provider = vpn_request.get("provider", "openvpn")
-        if provider == "openvpn":
-            if not h.secrets.v3_ready:
-                raise Refused(503, {"error": "not_configured"})
-            try:
-                public_key = ca.load_client_public_key(vpn_request.get("public_key", ""))
-            except Exception:
-                raise Refused(400, {"error": "bad_vpn_key"}) from None
-        elif provider != "vipnet":
-            raise Refused(400, {"error": "bad_provider"})
-
+        targets, _ = _work_catalog(h, db, media, _vpn_settings(h))
+        session_id = secrets.token_hex(16)
         db.execute("INSERT INTO link_history (media_id, h) VALUES (?, ?) ON CONFLICT DO NOTHING",
                    (media, access["link_c"]))
         db.execute("UPDATE access SET link_c = link_p, link_p = NULL, activated = 1"
                    " WHERE media_id = ?", (media,))
-
-        settings = _vpn_settings(h)
-        if provider == "openvpn":
-            cert, serial, not_after = ca.issue_client(h.secrets.ca_key, h.secrets.ca_cert_pem,
-                                                      media, public_key)
-            db.execute("INSERT INTO certs (serial, media_id, not_after) VALUES (?, ?, ?)",
-                       (str(serial), media, not_after))
-            vpn = {"provider": "openvpn", "cert": cert.decode("ascii"),
-                   "ca": h.secrets.ca_cert_pem.decode("ascii"),
-                   "remotes": settings.get("remotes", []),
-                   # Имя в сертификате шлюза: клиент сверяет его (verify-x509-name).
-                   "gateway_name": settings.get("gateway_name", "")}
-            if h.secrets.tls_crypt_v2_server and tlscrypt.available():
-                vpn["tls_crypt_v2"] = tlscrypt.client_key(h.secrets.tls_crypt_v2_server).decode("ascii")
-        else:
-            if not access["dst"]:
-                raise Refused(503, {"error": "not_configured"})
-            not_after = int(time.time()) + int(ca.CLIENT_LIFETIME.total_seconds())
-            vpn = {"provider": "vipnet",
-                   "dst_password": h.secrets.unseal("dst", media, access["dst"]).decode("utf-8")}
-        Store.log(db, "session_granted", media, provider=provider)
-        return 200, signed_grant(h, {"media": media, "not_after": not_after, "vpn": vpn,
-                                     "targets": _targets(db, media)})
+        db.execute("UPDATE employee_sessions SET session_id = ? WHERE media_id = ?", (session_id, media))
+        return 200, signed_grant(h, {"purpose": "catalog", "nonce": challenge, "media": media,
+                                     "session": session_id, "not_after": pending["mfa_until"],
+                                     "targets": targets})
 
     run_step(h, step)
+
+
+def _openvpn_for_stand(h, db, media, request, settings):
+    """Переходный адаптер прежнего стенда. Выпуск реквизитов вызывается только при выборе."""
+    if not h.secrets.v3_ready or not settings.get("remotes"):
+        raise Refused(503, {"error": "not_configured"})
+    if not isinstance(request, dict) or request.get("provider") != "openvpn":
+        raise Refused(400, {"error": "bad_provider"})
+    try:
+        public_key = ca.load_client_public_key(request.get("public_key", ""))
+    except (TypeError, ValueError, AttributeError):
+        raise Refused(400, {"error": "bad_vpn_key"}) from None
+    cert, serial, expires = ca.issue_client(h.secrets.ca_key, h.secrets.ca_cert_pem, media, public_key)
+    vpn = {"provider": "openvpn", "cert": cert.decode("ascii"), "ca": h.secrets.ca_cert_pem.decode("ascii"),
+           "remotes": settings["remotes"], "gateway_name": settings.get("gateway_name", ""),
+           "version": settings.get("version", ""),
+           "tls_crypt_revision": hashlib.sha256(h.secrets.tls_crypt_v2_server).hexdigest()}
+    if h.secrets.tls_crypt_v2_server:
+        if not tlscrypt.available():
+            raise Refused(503, {"error": "not_configured"})
+        vpn["tls_crypt_v2"] = tlscrypt.client_key(h.secrets.tls_crypt_v2_server).decode("ascii")
+    db.execute("INSERT INTO certs (serial, media_id, not_after) VALUES (?, ?, ?)",
+               (str(serial), media, expires))
+    return vpn
+
+
+def _end_mfa(db, media, code, reason):
+    db.execute("DELETE FROM employee_sessions WHERE media_id = ?", (media,))
+    raise Refused(code, {"error": reason})
+
+
+def _selection(h, action):
+    try:
+        media, nonce_value, obj = authenticate(h, "/v3/session/" + action)
+        challenge = _challenge(obj)
+    except Refused as refusal:
+        send_json(h, refusal.code, refusal.body)
+        return
+
+    def step(db):
+        record = begin_step(h, db, media, nonce_value)
+        state = db.execute("SELECT * FROM employee_sessions WHERE media_id = ?", (media,)).fetchone()
+        if state is None or not state["session_id"] or state["session_id"] != obj.get("session") \
+                or record["counter"] != state["media_counter"]:
+            raise Refused(403, FORBIDDEN)
+        now = int(time.time())
+        if now >= state["mfa_until"] or (state["lease_until"] is not None and now >= state["lease_until"]):
+            _end_mfa(db, media, 401, "session_expired")
+        status = json.loads(state["status"])
+        if status.get("virt") not in ("none", "", None) and not Store.effective(db, record["group_id"], "allow_vm"):
+            _end_mfa(db, media, 403, "virtualization")
+        release, minimum = _release_info(db, record, status)
+        if release and minimum and (type(status.get("serial")) is not int or status["serial"] < minimum):
+            _end_mfa(db, media, 426, "update_required")
+
+        settings = _vpn_settings(h)
+        entries, profiles = _work_catalog(h, db, media, settings)
+        by_id = {entry["id"]: entry for entry in entries}
+        active = by_id.get(state["target_id"])
+        if state["target_id"] and (not active or active["revision"] != state["revision"]):
+            _end_mfa(db, media, 409, "assignment_changed")
+        common = {"purpose": action, "media": media, "session": state["session_id"], "nonce": challenge}
+        if action == "catalog":
+            return 200, signed_grant(h, {**common, "not_after": state["mfa_until"], "targets": entries})
+        generation = obj.get("generation")
+        if type(generation) is not int or not 1 <= generation <= 2**31 - 1:
+            raise Refused(400, {"error": "bad_generation"})
+        if action != "select" and (not active or generation != state["generation"]):
+            raise Refused(409, {"error": "selection_changed"})
+        common["generation"] = generation
+        if action == "release":
+            db.execute("UPDATE employee_sessions SET target_id = NULL, revision = NULL, lease_until = NULL"
+                       " WHERE media_id = ?", (media,))
+            return 200, signed_grant(h, {**common, "targets": entries})
+        chosen_id = obj.get("target_id")
+        entry = by_id.get(chosen_id) if isinstance(chosen_id, str) else None
+        if entry is None or obj.get("revision") != entry["revision"]:
+            raise Refused(409, {"error": "assignment_changed"})
+        if action == "select":
+            if generation <= state["generation"]:
+                raise Refused(409, {"error": "selection_changed"})
+            common["vpn"] = _openvpn_for_stand(h, db, media, obj.get("vpn"), settings)
+            common["target"] = profiles[chosen_id]
+        elif state["target_id"] != chosen_id:
+            raise Refused(409, {"error": "selection_changed"})
+        expires = min(now + LEASE_SECONDS, state["mfa_until"])
+        db.execute("UPDATE employee_sessions SET target_id = ?, revision = ?, lease_until = ?, generation = ?"
+                   " WHERE media_id = ?", (chosen_id, entry["revision"], expires, generation, media))
+        common.update(target_id=chosen_id, revision=entry["revision"], not_after=expires, targets=entries)
+        return 200, signed_grant(h, common)
+
+    run_step(h, step)
+
+
+def select_target(h):
+    _selection(h, "select")
+
+
+def renew(h):
+    _selection(h, "renew")
+
+
+def release_selection(h):
+    _selection(h, "release")
+
+
+def current_catalog(h):
+    _selection(h, "catalog")
 
 
 def events(h) -> None:
@@ -395,7 +517,7 @@ def events(h) -> None:
     batch = obj.get("events") if isinstance(obj.get("events"), list) else []
 
     def step(db):
-        begin_step(db, media, nonce_value)
+        begin_step(h, db, media, nonce_value)
         access = Store.access(db, media)
         acked = access["events_acked"] or 0
         now = int(time.time())
@@ -506,6 +628,17 @@ def release_file(h, rest: str) -> None:
 # ---------------------------------------------------------------------------
 # администратор
 # ---------------------------------------------------------------------------
+def _valid_host(host):
+    if not isinstance(host, str) or not host or len(host) > 253 or "%" in host:
+        return False
+    try:
+        ipaddress.ip_address(host)
+        return True
+    except ValueError:
+        label = r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
+        return all(re.fullmatch(label, part) for part in host.removesuffix(".").split("."))
+
+
 def _valid_target(spec) -> dict:
     if not isinstance(spec, dict):
         raise Refused(400, {"error": "bad_target"})
@@ -524,9 +657,9 @@ def _valid_target(spec) -> dict:
     if security not in ("nla", "tls"):
         raise Refused(400, {"error": "bad_target", "field": "security"})
     out["security"] = security
-    if not NAME_RE.match(out["id"]) or out["type"] not in TARGET_TYPES or not out["host"] \
-            or not isinstance(port, int) or not 0 < port < 65536 or not isinstance(smartcard, bool) \
-            or not out["pin"]:
+    if not NAME_RE.match(out["id"]) or out["type"] not in TARGET_TYPES or not _valid_host(out["host"]) \
+            or type(port) is not int or not 0 < port < 65536 or not isinstance(smartcard, bool) \
+            or not out["pin"] or (out["type"] == "rdp" and not re.fullmatch(r"sha256:[a-f0-9]{64}", out["pin"])):
         raise Refused(400, {"error": "bad_target", "id": out.get("id")})
     out["port"], out["smartcard"] = port, smartcard
     return out
@@ -557,6 +690,7 @@ def _cmd_activation(h, db, obj):
                (code_hash, obj["media"], expires, int(time.time())))
     # Новая активация -- новый человек или новый телефон: прежняя привязка гаснет.
     db.execute("UPDATE access SET activated = 0, totp = NULL WHERE media_id = ?", (obj["media"],))
+    db.execute("DELETE FROM employee_sessions WHERE media_id = ?", (obj["media"],))
     return {}
 
 
@@ -566,6 +700,16 @@ def _cmd_targets(h, db, obj):
     if not isinstance(targets, list) or len(targets) > 64:
         raise Refused(400, {"error": "bad_targets"})
     specs = [_valid_target(t) for t in targets]
+    old = {t["id"]: t for t in _targets(db, obj["media"])}
+    new = {t["id"]: t for t in specs}
+    if len(new) != len(specs):
+        raise Refused(400, {"error": "duplicate_target"})
+    for target_id in old.keys() | new.keys():
+        if old.get(target_id) == new.get(target_id):
+            continue
+        db.execute("INSERT INTO target_versions (media_id, target_id, version) VALUES (?, ?, ?)"
+                   " ON CONFLICT(media_id, target_id) DO UPDATE SET version = target_versions.version + 1",
+                   (obj["media"], target_id, 2 if target_id in old else 1))
     db.execute("DELETE FROM targets WHERE media_id = ?", (obj["media"],))
     for spec in specs:
         db.execute("INSERT INTO targets (media_id, target_id, spec) VALUES (?, ?, ?)",
@@ -575,13 +719,14 @@ def _cmd_targets(h, db, obj):
 
 def _cmd_get_targets(h, db, obj):
     _require_media(db, obj.get("media"))
-    return {"targets": _targets(db, obj["media"])}
+    return {"targets": [target for target in _targets(db, obj["media"]) if target.get("type") in TARGET_TYPES]}
 
 
 def _cmd_unblock(h, db, obj):
     _require_media(db, obj.get("media"))
     db.execute("UPDATE media SET blocked = 0 WHERE media_id = ?", (obj["media"],))
     db.execute("UPDATE access SET fails = 0 WHERE media_id = ?", (obj["media"],))
+    db.execute("DELETE FROM employee_sessions WHERE media_id = ?", (obj["media"],))
     return {}
 
 
@@ -671,15 +816,19 @@ def _cmd_vpn(h, db, obj):
         raise Refused(400, {"error": "bad_vpn"})
     clean = []
     for r in remotes:
-        if not isinstance(r, dict) or not isinstance(r.get("host"), str) or not r["host"] \
-                or not isinstance(r.get("port"), int) or r.get("proto") not in ("udp", "tcp"):
+        if not isinstance(r, dict) or not _valid_host(r.get("host")) or type(r.get("port")) is not int \
+                or not 0 < r["port"] < 65536 or r.get("proto") not in ("udp", "tcp"):
             raise Refused(400, {"error": "bad_vpn"})
         clean.append({"host": r["host"], "port": r["port"], "proto": r["proto"]})
     name = obj.get("gateway_name", "")
-    if not isinstance(name, str) or len(name) > 253:
+    if not isinstance(name, str) or (name and not _valid_host(name)):
         raise Refused(400, {"error": "bad_vpn"})
+    previous = _vpn_settings(h)
+    if previous.get("remotes") == clean and previous.get("gateway_name") == name:
+        return {}
+    settings = {"remotes": clean, "gateway_name": name, "version": secrets.token_hex(16)}
     tmp = h.state_dir / "vpn.json.tmp"
-    tmp.write_text(json.dumps({"remotes": clean, "gateway_name": name}, ensure_ascii=False),
+    tmp.write_text(json.dumps(settings, ensure_ascii=False),
                    encoding="utf-8")
     os.replace(tmp, h.state_dir / "vpn.json")
     return {}
@@ -780,6 +929,11 @@ def admin_command(h, name: str) -> None:
         if obj.get("cmd") != name or not isinstance(obj.get("counter"), int):
             raise Refused(400, {"error": "bad_command"})
         with h.store.tx() as db:
+            if name in {"activation", "targets", "get_targets", "unblock", "media_group", "dst"}:
+                media = obj.get("media")
+                _require_media(db, media)
+                if Store.media(db, media)["owner"] != key_id:
+                    raise Refused(403, FORBIDDEN)
             if name not in READ_ONLY and not Store.advance_counter(db, key_id, obj["counter"]):
                 raise Refused(409, {"error": "stale_counter"})
             result = command(h, db, obj)

@@ -133,35 +133,14 @@ class ConfigWizardFrame(WizardFrame):
             ("basics", "Имя и целевая ОС", ""),
             ("account", "Учётная запись пользователя", ""),
             ("disk", "Диск и шифрование", ""),
-            ("remote", "Удалённый доступ", "Необязательно."),
             ("packages", "Пакеты для предустановки", "Необязательно."),
             ("profile", "Режим системы и отзыв", ""),
             ("review", "Проверка и сохранение", ""),
         ]
 
     def step_plan(self) -> "list[tuple[str, str, str]]":
-        """Какие шаги показывать в текущем режиме.
-
-        Упрощённый режим -- не «мастер попроще», а ответ на вопрос, от чего
-        действительно зависит судьба собираемого образа. Программа начинает с
-        минимальной защищённой системы и сама знает, каким должен быть шифр,
-        как разбит диск и что удалённый доступ выключен; спрашивать об этом
-        того, кому нужен обычный киоск, значит требовать решения там, где
-        решение уже принято и обосновано.
-
-        Поэтому здесь исчезает целый шаг -- удалённый доступ, выключенный по
-        умолчанию, -- а внутри оставшихся показывается только то, что меняет
-        результат: какая система, на каком языке, с какими приложениями, для
-        скольких машин и с какой средой.
-
-        Экспертный режим ничего не переставляет, а добавляет: NN/g советует
-        ровно один уровень раскрытия, а не лестницу, -- поэтому шаги и поля
-        стоят на прежних местах, просто их становится больше.
-        """
-        plan = self._expert_plan()
-        if self.expert_mode:
-            return plan
-        return [step for step in plan if step[0] != "remote"]
+        """Оба режима используют одну последовательность. Различаются поля шагов."""
+        return self._expert_plan()
 
     def _expert_block(self, parent, title: str) -> "ttk.Frame | None":
         """Рамка для полей, которые видны только в экспертном режиме.
@@ -684,46 +663,6 @@ class ConfigWizardFrame(WizardFrame):
             return False
         return True
 
-    # -- step 3: remote access --------------------------------------------
-    def _build_step_remote(self, body: ttk.Frame) -> None:
-        form = ttk.Frame(body)
-        form.pack(anchor="w", fill="x")
-        remote = self.config.remote_access
-        self.remote_enabled_var = tk.BooleanVar(value=remote.enabled)
-        ttk.Checkbutton(
-            form, text="Включить удалённый доступ", variable=self.remote_enabled_var
-        ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
-        # Only openssh is offered because only openssh is implemented: the
-        # install puts openssh-server on the medium and enables the service.
-        # A "vpn" choice used to sit here, but nothing acted on it -- it merely
-        # got written into the configuration file, so a medium built with it
-        # had no remote access at all.
-        self.remote_method_var = tk.StringVar(value="openssh")
-        ttk.Label(form, text="Метод:").grid(row=1, column=0, sticky="ne", padx=(0, 10))
-        ttk.Label(form, text="OpenSSH (ставится openssh-server, служба включается)").grid(
-            row=1, column=1, sticky="w"
-        )
-        self.remote_port_var = tk.StringVar(value=str(remote.port))
-        add_field(form, 2, "Порт:", self.remote_port_var, width=8)
-
-    def _save_step_remote(self) -> None:
-        remote = self.config.remote_access
-        remote.enabled = self.remote_enabled_var.get()
-        remote.method = self.remote_method_var.get()
-        try:
-            remote.port = int(self.remote_port_var.get().strip())
-        except ValueError:
-            remote.port = 0
-
-    def _validate_step_remote(self) -> bool:
-        remote = self.config.remote_access
-        if not remote.enabled:
-            return True
-        if not (0 < remote.port <= 65535):
-            self.message_bar.error("Некорректный порт удалённого доступа (1-65535).")
-            return False
-        return True
-
     # -- step 4: packages ----------------------------------------------------
     def _build_step_packages(self, body: ttk.Frame) -> None:
         top = ttk.Frame(body)
@@ -1116,33 +1055,6 @@ class ConfigWizardFrame(WizardFrame):
         """
         kiosk = self.config.kiosk
 
-        self.profile_var = tk.StringVar(value=self.config.profile)
-        if self.expert_mode:
-            mode = ttk.LabelFrame(
-                body, text="Режим работы установленной системы", padding=theme.SPACE_SM
-            )
-            mode.pack(fill="x", pady=(0, theme.SPACE_MD))
-            ttk.Radiobutton(
-                mode,
-                text="Консольная система — текстовый вход, без графики (как было раньше)",
-                value="console",
-                variable=self.profile_var,
-                command=self._on_profile_changed,
-            ).pack(anchor="w", pady=(theme.SPACE_XS, 0))
-            ttk.Radiobutton(
-                mode,
-                text="Режим киоска — урезанный рабочий стол только с разрешёнными приложениями",
-                value="kiosk",
-                variable=self.profile_var,
-                command=self._on_profile_changed,
-            ).pack(anchor="w", pady=(0, theme.SPACE_XS))
-        else:
-            # Упрощённый режим строит киоск и только киоск: минимальная
-            # защищённая система -- это то, ради чего программа существует, а
-            # консольная сборка осталась от её прошлой жизни и нужна тому, кто
-            # придёт за ней сознательно.
-            self.profile_var.set("kiosk")
-
         backend_supported = self.config.target_os in ("debian", "redos")
         if not backend_supported:
             ttk.Label(
@@ -1277,8 +1189,8 @@ class ConfigWizardFrame(WizardFrame):
             box,
             text=(
                 f"Сервер: {server}. В режиме киоска приложения запускаются только "
-                "после его подтверждения. Ответ «отозван» уничтожает носитель "
-                "целиком — необратимо."
+                "после его подтверждения. При отзыве рабочий доступ закрывается, "
+                "ключи и данные сохраняются."
                 if server
                 else "Контейнер не знаком ни с одним ресурсом отзыва: «Обслуживание» → "
                 "«Подключиться». Без этого носитель проверять ответ нечем."
@@ -1286,26 +1198,6 @@ class ConfigWizardFrame(WizardFrame):
             style="Hint.TLabel",
             wraplength=theme.TEXT_WRAP,
         ).pack(anchor="w", padx=(theme.SPACE_LG, 0))
-
-        self._on_profile_changed()
-
-    def _on_profile_changed(self) -> None:
-        """Greys out the kiosk options when a console system is selected."""
-        enabled = self.profile_var.get() == "kiosk"
-        state = "normal" if enabled else "disabled"
-        for child in self._all_children(self.kiosk_frame):
-            try:
-                child.configure(state=state)
-            except tk.TclError:
-                # Frames and labels have no -state option; nothing to grey out.
-                pass
-
-    def _all_children(self, widget: tk.Widget) -> list[tk.Widget]:
-        found: list[tk.Widget] = []
-        for child in widget.winfo_children():
-            found.append(child)
-            found += self._all_children(child)
-        return found
 
     def _refresh_launchers(self) -> None:
         """Перерисовывает галочки по выбранным пакетам.
@@ -1358,9 +1250,10 @@ class ConfigWizardFrame(WizardFrame):
         ).pack(anchor="w")
 
     def _save_step_profile(self) -> None:
-        self.config.profile = self.profile_var.get()
+        self.config.profile = "kiosk"
+        self.config.remote_access.enabled = False
         kiosk = self.config.kiosk
-        kiosk.enabled = self.config.profile == "kiosk"
+        kiosk.enabled = True
         # Среда одна -- MATE (KDE упразднён 01.10.2026), выбирать нечего.
         kiosk.desktop_environment = "mate"
         kiosk.hidden_launchers = sorted(

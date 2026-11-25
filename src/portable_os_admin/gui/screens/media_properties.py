@@ -57,15 +57,17 @@ def contact_text(status) -> str:
     Время сервер хранит в UTC; показывается местное -- администратор сверяет
     его со своими часами и с тем, когда носитель видели в последний раз.
     """
+    result = ("Сервер принял отзыв. Исполнение носителем не подтверждено."
+              if status.state == "revoked" else "На сервере отзыв не зарегистрирован.")
     if not status.last_seen:
-        return "Последняя связь: не выходил на связь"
+        return result + "\nПоследняя связь: не выходил на связь"
     try:
         moment = datetime.datetime.fromisoformat(status.last_seen)
         when = moment.astimezone().strftime("%d.%m.%Y %H:%M")
     except ValueError:
         when = status.last_seen
     return (
-        f"Последняя связь: {when}, версия {status.version or '—'}, "
+        f"{result}\nПоследняя связь: {when}, версия {status.version or '—'}, "
         f"машина {status.machine or '—'}"
     )
 
@@ -103,7 +105,7 @@ class MediaPropertiesWindow(PropertiesWindow):
         self._erasing = False
 
         # Порядок вкладок -- от «что это» к «что с ним сделать», и самое
-        # разрушительное последним: отзыв уничтожает ключи безвозвратно.
+        # последней идёт вкладка с отдельным действием стирания.
         self._build_facts()
         self._build_integrity()
         self._build_update()
@@ -393,16 +395,7 @@ class MediaPropertiesWindow(PropertiesWindow):
 
     # -- вкладка «Журналы» --------------------------------------------------
     def _build_revoke(self) -> None:
-        """Отзыв носителя: два ответа разной силы.
-
-        Носитель не вернулся -- только учёт: пометка с причиной уходит на
-        сервер, и носитель, выйдя в сеть, уничтожит себя сам. Носитель
-        вернулся -- настоящий отзыв: заголовки LUKS всех томов уничтожаются, и
-        данные не открыть ничем.
-
-        Разницу между ними надо показать рядом, поэтому здесь два блока, а не
-        диалог с двумя кнопками: в диалоге её не объяснить.
-        """
+        """Отзыв рабочего доступа и отдельное стирание возвращённого носителя."""
         # Единственная вкладка с прокруткой, и она здесь по делу.
         #
         # Остальные четыре помещаются целиком, а тут два блока с пояснениями,
@@ -433,16 +426,12 @@ class MediaPropertiesWindow(PropertiesWindow):
         ttk.Label(
             page,
             text=(
-                "Потерян, украден или не сдан. Отметка уходит на сервер отзыва: "
-                "выйдя в сеть, носитель уничтожит себя, а приложения в нём без "
-                "подтверждения сервера не запустятся. Тот, кто открывает том в "
-                "обход носителя, этим не останавливается — закройте его учётную "
-                "запись и доступ в компании."
+                "Пометка будет передана серверу Якоря. После получения отзыва "
+                "носитель закрывает рабочие соединения и сохраняет ключи и данные. "
+                "Для возврата уже заблокированного носителя в работу нужен перевыпуск."
                 if self._server_connected
-                else "Потерян, украден или не сдан. Сервер отзыва не подключён, и "
-                "программа до носителя не дотянется: пометка снимает его с учёта, но "
-                "не закрывает доступ к данным. От чужой машины носитель защищает "
-                "привязка к машинам, а не эта отметка."
+                else "Сервер не подключён. Отзыв останется в этом контейнере до публикации. "
+                "Пока сервер не получил отзыв, доступ носителя может сохраняться."
             ),
             style="Hint.TLabel",
             wraplength=theme.TEXT_WRAP,
@@ -524,12 +513,18 @@ class MediaPropertiesWindow(PropertiesWindow):
         """Спрашивает ресурс отзыва в фоне: сеть не должна держать окно."""
         container = self.app.session.container
         media_id = self.media_id
+        def show_status(status):
+            if status is None:
+                return
+            self.contact_var.set(contact_text(status))
+            if status.state == "revoked" and container.note_confirmed_revocation(media_id):
+                self.app.save_container()
+            self._refresh_revoke()
+
         run_in_background(
             self,
             lambda: revocation_publish.query_record(container, media_id),
-            on_success=lambda status: (
-                self.contact_var.set(contact_text(status)) if status is not None else None
-            ),
+            on_success=show_status,
             on_error=lambda exc: self.contact_var.set(f"Последняя связь: не узнать — {exc}"),
         )
 
@@ -545,14 +540,11 @@ class MediaPropertiesWindow(PropertiesWindow):
             self.app.save_container()
             self._refresh_revoke()
             self._render_facts(self._actions.connected([self.record]).get(self.media_id))
-            self.message_bar.success(
-                f"Носитель «{self.record.display_name}» больше не числится действующим. "
-                "Данные на нём это не закрывает: если он у постороннего, он работает "
-                "как работал."
-            )
-            # Вот это как раз закрывает -- если носитель дойдёт до сети:
-            # получив «отозван», он уничтожает заголовок LUKS сам.
-            publish_media_state(self, self.media_id)
+            message = f"Отзыв носителя «{self.record.display_name}» записан в контейнер."
+            message += (" Ожидается ответ сервера." if self._server_connected
+                        else " Сервер не подключён. Отзыв не опубликован.")
+            self.message_bar.success(message)
+            publish_media_state(self, self.media_id, on_published=self._ask_server)
 
     def _restore(self) -> None:
         with error_guard(self.message_bar):
@@ -562,9 +554,8 @@ class MediaPropertiesWindow(PropertiesWindow):
             self._refresh_revoke()
             self._render_facts(self._actions.connected([self.record]).get(self.media_id))
             self.message_bar.success(
-                f"Носитель «{self.record.display_name}» снова числится действующим."
+                f"Локальная отметка снята в карточке «{self.record.display_name}»."
             )
-            publish_media_state(self, self.media_id)
 
     def _sync_erase_button(self, *_args) -> None:
         """Кнопка стирания доступна ровно тогда, когда повтор пути совпал."""
@@ -629,7 +620,8 @@ class MediaPropertiesWindow(PropertiesWindow):
             self.revoke_status.set("Состояние: действует")
         # Доступно ровно одно из двух: пометить нечего, если уже помечено.
         self.mark_btn.configure(state=("disabled" if record.is_revoked else "normal"))
-        self.restore_btn.configure(state=("normal" if record.is_revoked else "disabled"))
+        can_restore = self.app.session.container.can_cancel_local_revocation(self.media_id)
+        self.restore_btn.configure(state=("normal" if can_restore else "disabled"))
         self._sync_erase_button()
 
         for item in self.journal_table.get_children():

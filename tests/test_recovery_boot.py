@@ -89,7 +89,7 @@ def test_redos_module_is_actually_enabled_not_merely_present():
     assert "openssl" in setup
 
 
-def test_recovery_files_are_written_before_the_initramfs_is_built(session, make_config):
+def test_recovery_files_are_written_before_the_initramfs_is_built(session, make_employee_config):
     """The hooks are what copy the flow into the initramfs, so writing them
     afterwards leaves a medium that boots with no recovery at all.
 
@@ -99,11 +99,11 @@ def test_recovery_files_are_written_before_the_initramfs_is_built(session, make_
     from portable_os_admin.config import ConfigManager
     from portable_os_admin.install import BlockDevice, OSInstaller
 
-    config = make_config("stick1", "debian")
+    config = make_employee_config("stick1", "debian")
     ConfigManager().validate(config)
     device = BlockDevice(
         name="sdb", path="/dev/sdb", size_bytes=32_000_000_000, model="Cruzer", removable=True,
-        mountpoints=("/media/user/flash",),
+        mountpoints=(),
     )
     result = OSInstaller(session).run(device, config, b"user-passphrase-123", dry_run=True)
     flat = [" ".join(entry.argv) for entry in result.plan.results]
@@ -121,7 +121,7 @@ def test_recovery_files_are_written_before_the_initramfs_is_built(session, make_
     assert not any(line.endswith(f"{RECOVERY_DIR}/env") for line in flat)
 
 
-def test_the_env_names_the_slot_the_code_was_actually_issued_from(make_config):
+def test_the_env_names_the_slot_the_code_was_actually_issued_from(make_employee_config):
     """Номер recovery-слота в env -- тот же, из которого выдан код.
 
     Раньше здесь стояла константа `RECOVERY_KEYSLOT = 7`, оставшаяся от
@@ -135,7 +135,7 @@ def test_the_env_names_the_slot_the_code_was_actually_issued_from(make_config):
     from portable_os_admin.install import machine_binding
     from portable_os_admin.install.installer import recovery_env
 
-    config = make_config("stick1", "redos")
+    config = make_employee_config("stick1", "redos")
     for slots in (0, 2, 5):
         config.machine_binding.slots = slots
         expected = machine_binding.recovery_keyslots(config)[0]
@@ -356,7 +356,7 @@ def test_the_request_string_is_taken_from_a_table_not_computed():
     assert "sha256sum | cut -c1-8" not in text
 
 
-def test_the_theme_gets_the_images_the_password_field_is_drawn_from(session, make_config):
+def test_the_theme_gets_the_images_the_password_field_is_drawn_from(session, make_employee_config):
     """Плагин two-step рисует поле ввода из готовых картинок.
 
     Их у темы не было вовсе -- и plymouth, которому нечем показать запрос,
@@ -368,7 +368,7 @@ def test_the_theme_gets_the_images_the_password_field_is_drawn_from(session, mak
     from portable_os_admin.config import ConfigManager
     from portable_os_admin.install import BlockDevice, OSInstaller
 
-    config = make_config("stick1", "debian")
+    config = make_employee_config("stick1", "debian")
     ConfigManager().validate(config)
     device = BlockDevice(
         name="sdb", path="/dev/sdb", size_bytes=32_000_000_000, model="Cruzer",

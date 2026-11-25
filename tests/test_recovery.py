@@ -199,6 +199,19 @@ def test_issue_code_twice_is_denied(session_with_media):
         service.issue_code(request)
 
 
+def test_revoked_media_cannot_consume_an_offline_recovery_record(session_with_media):
+    session, media_id, _ = session_with_media
+    request = RecoveryRequest(media_id=media_id, slot=7).encode()
+    session.container.revoke_media(media_id, "отозван владельцем")
+
+    with pytest.raises(RecoveryDeniedError, match="отозван"):
+        RecoveryService(session).issue_code(request)
+
+    record = session.container.find_recovery(media_id, 7)
+    assert record.status == "available"
+    assert not record.used_at
+
+
 def test_issue_code_unknown_media(session_with_media):
     session, _, _ = session_with_media
     # Валидный идентификатор, которого просто нет в контейнере: формат

@@ -24,7 +24,7 @@ from portable_os_admin.gui.screens.config_wizard import ConfigWizardFrame
 from portable_os_admin.gui.screens.configs_list import ConfigsListFrame
 from portable_os_admin.gui.screens.release_wizard import ReleaseWizardFrame
 from portable_os_admin.gui.screens.startup import StartupFrame
-from portable_os_admin.install import machine_binding
+from portable_os_admin.install import BlockDevice, machine_binding
 
 
 @pytest.fixture
@@ -603,6 +603,9 @@ def _make_validated_debian_config(app, iso_path=None):
     экраны адресуют их именем.
     """
     config = app.config_manager.create(app.container, "stick1", "debian")
+    config.kiosk.enabled = True
+    config.profile = "kiosk"
+    config.packages = ["mate-calc"]
     # A configuration without an installation image cannot validate: the system
     # is installed from a local image, never downloaded.
     config.image_path = iso_path or _throwaway_image(app)
@@ -663,10 +666,12 @@ def _stub_install(monkeypatch):
     # has nothing to do with them. Observed exactly that way, while a genuine
     # install was writing to a stick in the next process.
     monkeypatch.setattr(release_wizard_module.leftovers, "find", lambda: None)
+    disk = BlockDevice("sdb", "/dev/sdb", 32_000_000_000, "Test USB", True, (), diskseq=10, mounts_known=True)
+    monkeypatch.setattr(device_step_module.DeviceLister, "describe", lambda self, path: disk if path == disk.path else None)
     return release_wizard_module
 
 
-def _fill_install_wizard(app, wizard, device="/dev/sdb", size="32"):
+def _fill_install_wizard(app, wizard, device="/dev/sdb"):
     # Источник идёт первым: из него выводится и путь выпуска, и то, какие
     # конфигурации вообще годятся.
     wizard.source_var.set(_throwaway_image(app))
@@ -678,7 +683,6 @@ def _fill_install_wizard(app, wizard, device="/dev/sdb", size="32"):
     app.update()
 
     wizard.device_path_var.set(device)
-    wizard.device_size_var.set(size)
     wizard._go_next()
     app.update()
     wizard.passphrase_var.set("user-passphrase-123")
@@ -737,12 +741,7 @@ def test_install_wizard_records_media_and_recovery(gui_app, tmp_path, monkeypatc
 
 
 def test_install_wizard_passes_the_real_device_not_the_form_fields(gui_app, tmp_path, monkeypatch):
-    """The wizard used to hand OSInstaller a device invented from its own text
-    fields, with no mountpoints. The installer unmounts the medium using
-    exactly those, so an automounted stick -- the normal state of a stick a
-    desktop has just seen appear -- got repartitioned underneath a live
-    filesystem, and the container recorded "(введено вручную)" as its label.
-    """
+    """План записи использует модель и разделы подтверждённого устройства."""
     from portable_os_admin.install.devices import BlockDevice, Partition
 
     _stub_install(monkeypatch)
@@ -752,8 +751,9 @@ def test_install_wizard_passes_the_real_device_not_the_form_fields(gui_app, tmp_
         size_bytes=32_000_000_000,
         model="Cruzer Blade",
         removable=True,
-        mountpoints=("/media/user/flash",),
-        partitions=(Partition("/dev/sdb1", 32_000_000_000, "ext4", "DATA", "/media/user/flash"),),
+        mountpoints=(),
+        partitions=(Partition("/dev/sdb1", 32_000_000_000, "ext4", "DATA", ""),),
+        diskseq=9, mounts_known=True,
     )
 
     class FakeLister:
@@ -771,9 +771,7 @@ def test_install_wizard_passes_the_real_device_not_the_form_fields(gui_app, tmp_
 
     app.show_frame(ReleaseWizardFrame)
     wizard = app._current_frame
-    # the size field is deliberately left at a rounded, slightly wrong value:
-    # the real byte count has to come from the system, not from this text
-    _fill_install_wizard(app, wizard, size="29")
+    _fill_install_wizard(app, wizard)
 
     wizard.confirm_device_var.set("/dev/sdb")
     wizard._start_write()
@@ -781,7 +779,6 @@ def test_install_wizard_passes_the_real_device_not_the_form_fields(gui_app, tmp_
 
     assert _StubInstaller.last_device.size_bytes == 32_000_000_000
     log = wizard.log_text.get("1.0", "end")
-    assert "umount /media/user/flash" in log, "the medium is never unmounted before repartitioning"
     # the old partition's own signatures must go before the table is replaced
     assert "wipefs --all --force /dev/sdb1" in log
     assert app.session.container.data.media_records[0].label == "Cruzer Blade"
@@ -844,7 +841,7 @@ def test_install_wizard_lists_what_will_be_destroyed(gui_app, tmp_path, monkeypa
     _stub_install(monkeypatch)
     device = BlockDevice(
         name="sdb", path="/dev/sdb", size_bytes=32_000_000_000, model="Cruzer Blade",
-        removable=True, mountpoints=("/media/user/photos",),
+        removable=True, mountpoints=("/media/user/photos",), diskseq=9, mounts_known=True,
         partitions=(
             Partition("/dev/sdb1", 1_000_000_000, "vfat", "BOOT", ""),
             Partition("/dev/sdb2", 31_000_000_000, "ext4", "ФОТО", "/media/user/photos"),
@@ -922,7 +919,6 @@ def test_the_wizard_can_open_system_settings_to_the_user(gui_app, tmp_path):
     wizard._render_step()
     app.update()
 
-    wizard.profile_var.set("kiosk")
     wizard.settings_vars["network"].set(True)
     wizard.settings_vars["keyboard"].set(True)
     wizard.save_step(wizard.step_index)
@@ -1240,26 +1236,12 @@ def _deploy_wizard(app, tmp_path):
     return app._current_frame
 
 
-def test_an_unsigned_distribution_needs_explicit_consent(gui_app, tmp_path, monkeypatch):
-    """Неподписанный -- только явным согласием; «нет» оставляет на первом шаге."""
-    asked = []
-    answer = {"value": False}
-
-    def fake_askyesno(title, *args, **kwargs):
-        asked.append(title)
-        return answer["value"]
-
-    monkeypatch.setattr("tkinter.messagebox.askyesno", fake_askyesno)
+def test_an_unsigned_distribution_is_refused(gui_app, tmp_path):
     wizard = _deploy_wizard(gui_app, tmp_path)
     _write_distribution(tmp_path / "dist")
     wizard.source_var.set(str(tmp_path / "dist"))
     wizard.save_step(0)
-
     assert wizard.validate_step(0) is False
-    assert asked == ["Дистрибутив не подписан"]
-
-    answer["value"] = True
-    assert wizard.validate_step(0) is True
 
 
 def test_a_broken_signature_is_refused_without_asking(gui_app, tmp_path, monkeypatch):
@@ -1343,7 +1325,6 @@ def test_deploy_wizard_shows_what_it_is_about_to_write(gui_app, tmp_path):
     wizard.save_step(0)
     wizard.validate_step(0)
     wizard.device_path = "/dev/sdz"
-    wizard.device_size_gb = "16"
     wizard.passphrase = "CorrectHorse123"
     # По названию, а не по номеру: шаг «Кому и что» вставлен между паролем и
     # подтверждением, и `step_index = 3` с тех пор открывал не тот шаг --
@@ -1377,7 +1358,6 @@ def test_deploy_refuses_when_the_device_confirmation_does_not_match(gui_app, tmp
     wizard.save_step(0)
     wizard.validate_step(0)
     wizard.device_path = "/dev/sdz"
-    wizard.device_size_gb = "16"
     wizard.passphrase = "CorrectHorse123"
     # По названию, а не по номеру: шаг «Кому и что» вставлен между паролем и
     # подтверждением, и `step_index = 3` с тех пор открывал не тот шаг --
@@ -1455,7 +1435,6 @@ def test_a_long_write_can_be_aborted_from_the_interface(gui_app, tmp_path, monke
     wizard.save_step(0)
     wizard.validate_step(0)
     wizard.device_path = "/dev/sdz"
-    wizard.device_size_gb = "16"
     wizard.passphrase = "CorrectHorse123"
     # По названию, а не по номеру: шаг «Кому и что» вставлен между паролем и
     # подтверждением, и `step_index = 3` с тех пор открывал не тот шаг --
@@ -1501,7 +1480,6 @@ def test_an_abort_is_reported_as_a_decision_not_a_failure(gui_app, tmp_path):
     wizard.save_step(0)
     wizard.validate_step(0)
     wizard.device_path = "/dev/sdz"
-    wizard.device_size_gb = "16"
     wizard.passphrase = "CorrectHorse123"
     # По названию, а не по номеру: шаг «Кому и что» вставлен между паролем и
     # подтверждением, и `step_index = 3` с тех пор открывал не тот шаг --
@@ -1745,7 +1723,7 @@ def test_the_wizard_offers_two_volumes_of_questions():
     from portable_os_admin.gui.screens.config_wizard import ConfigWizardFrame
 
     expert = [key for key, _title, _hint in ConfigWizardFrame._expert_plan()]
-    assert "remote" in expert, "в экспертном режиме удалённый доступ настраивается"
+    assert "remote" not in expert
     assert expert[0] == "basics" and expert[-1] == "review"
 
 
@@ -1973,7 +1951,7 @@ def test_the_erase_button_stays_disabled_until_the_path_is_repeated(gui_app, tmp
     wizard.save_step(0)
     wizard.validate_step(0)
     wizard.device_path = "/dev/sdz"
-    wizard.device_size_gb = "16"
+    wizard._selected_device = BlockDevice("sdz", "/dev/sdz", 16 * 1024**3, "Test USB", True, (), diskseq=11, mounts_known=True)
     wizard.passphrase = "CorrectHorse123"
     wizard.step_index = wizard.step_titles.index("Подтверждение и запись")
     wizard._render_step()
@@ -2028,13 +2006,7 @@ def _open_revoke(app, media_id: str = "46aed677"):
 
 
 def test_the_revoke_screen_does_not_pretend_a_mark_locks_the_medium(gui_app, tmp_path):
-    """Главное на этом экране -- не кнопки, а сказанное между ними.
-
-    Пометка отзыва ничего не запирает: носителя нет у администратора, и он
-    остаётся ровно таким, каким был. Кнопка, которая молча делает вид, что
-    заперла носитель, опаснее отсутствия кнопки -- по ней человек решит, что
-    дело закрыто, и не станет ни менять пароли, ни считать данные утекшими.
-    """
+    """Без подключённого сервера отзыв остаётся локальной записью."""
     app = gui_app
     _open_container(app, tmp_path)
     _issue_a_medium(app)
@@ -2046,17 +2018,10 @@ def test_the_revoke_screen_does_not_pretend_a_mark_locks_the_medium(gui_app, tmp
     app.update()
     shown = _visible_text(window)
 
-    # Проверяется обещание, а не буквы формулировки.
-    #
-    # Раньше тест искал слова «не запирает», которых в коде уже нет ни в одной
-    # ветви: подпись зависит от того, подключён ли ресурс отзыва. В наборе
-    # контейнер создаётся чистым, сервера нет — и это как раз тот случай, где
-    # честность важнее всего: программа до носителя не дотянется.
-    assert "не закрывает доступ" in shown, "не сказано, что пометка не закрывает доступ"
-    # И сказано, что носитель всё-таки защищает: иначе честность превращается
-    # в «мы ничего не можем», что тоже неправда.
-    assert "привязка к машинам" in shown
-    # А про стирание сказано обратное -- что оно необратимо.
+    assert "Сервер не подключён" in shown
+    assert "в этом контейнере до публикации" in shown
+    assert "доступ носителя может сохраняться" in shown
+    # Физическое стирание по-прежнему требует отдельного действия.
     assert "не открыть ничем" in shown
 
 
@@ -2113,7 +2078,7 @@ def test_a_mark_without_a_reason_is_refused(gui_app, tmp_path):
     assert not record.is_revoked, "носитель отозван без причины"
 
 
-def test_marking_a_medium_revoked_records_the_fact_and_says_what_it_did_not_do(gui_app, tmp_path):
+def test_marking_a_medium_revoked_records_the_fact_and_says_what_it_did_not_do(gui_app, tmp_path, monkeypatch):
     app = gui_app
     _open_container(app, tmp_path)
     record = _issue_a_medium(app)
@@ -2126,11 +2091,27 @@ def test_marking_a_medium_revoked_records_the_fact_and_says_what_it_did_not_do(g
     assert record.is_revoked
     assert record.revoked_reason == "сотрудник уволен 11.09.2026"
     # Успех тоже не должен обещать лишнего: сказано ровно то, что случилось.
-    assert "не числится действующим" in screen.message_bar.var.get()
-    assert "работает как работал" in screen.message_bar.var.get()
+    assert "записан в контейнер" in screen.message_bar.var.get()
+    assert "Отзыв не опубликован" in screen.message_bar.var.get()
 
     journal = app.session.container.journal_for("46aed677")
     assert [entry.action for entry in journal] == ["media_revoked"]
+
+    # Регистрация на сервере и последний контакт сами по себе
+    # не подтверждают, что USB успела исполнить решение.
+    from portable_os_admin.admin import revocation_client
+    from portable_os_admin.errors import ContainerError
+    container = app.session.container
+    container.data.revocation_server_url = "https://server.example"
+    monkeypatch.setattr(revocation_client, "query_media", lambda *args: revocation_client.MediaStatus(
+        "revoked", "2026-09-15T12:00:00+00:00", "1.2.0", "ab12cd34"))
+    window = _open_revoke(app)
+    _pump(app, lambda: "Сервер принял отзыв" in window.contact_var.get())
+    assert "Исполнение носителем не подтверждено" in window.contact_var.get()
+    assert window.restore_btn.instate(["disabled"])
+    container.data.revocation_server_url = ""
+    with pytest.raises(ContainerError, match="перевыпуск"):
+        container.restore_media(record.media_id)
 
 
 def test_a_revoked_medium_stays_in_the_list_and_is_told_apart_at_a_glance(gui_app, tmp_path):
@@ -2824,15 +2805,15 @@ def test_access_tab_issues_a_code_and_saves_workplaces(gui_app, tmp_path, monkey
             break
     assert tab.code_var.get() == "ABCDE-FGHJK"
 
-    tab._accept({"id": "ssh-1", "name": "Сервер", "type": "ssh", "host": "10.0.0.9", "port": 22,
-                 "user": "root", "domain": "", "pin": "ssh-ed25519 AAAA", "smartcard": False})
+    tab._accept({"id": "rdp-2", "name": "Сервер", "type": "rdp", "host": "10.0.0.9", "port": 3389,
+                 "user": "root", "domain": "", "pin": "sha256:" + "b" * 64, "smartcard": False})
     tab._save()
     for _ in range(100):
         app.update()
         time.sleep(0.02)
         if saved:
             break
-    assert [t["id"] for t in saved["targets"]] == ["rdp-1", "ssh-1"]
+    assert [t["id"] for t in saved["targets"]] == ["rdp-1", "rdp-2"]
     window.destroy()
 
 

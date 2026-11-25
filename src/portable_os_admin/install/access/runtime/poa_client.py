@@ -20,10 +20,14 @@ from __future__ import annotations
 import base64
 import hashlib
 import http.client
+import ipaddress
 import json
 import os
+import re
+import secrets
 import socket
 import ssl
+import time
 import urllib.parse
 from dataclasses import dataclass
 
@@ -31,6 +35,13 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ed25519
 
 TIMEOUT = 30
+
+
+def boottime() -> float:
+    """Linux считает время сна в CLOCK_BOOTTIME. Другие ОС используются в тестах."""
+    if hasattr(time, "CLOCK_BOOTTIME"):
+        return time.clock_gettime(time.CLOCK_BOOTTIME)
+    return time.monotonic()
 
 
 class AccessError(Exception):
@@ -47,6 +58,42 @@ class PinMismatch(AccessError):
 
 def canonical(obj) -> bytes:
     return json.dumps(obj, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def _host(value) -> bool:
+    if not isinstance(value, str) or not value or len(value) > 253 or "%" in value:
+        return False
+    try:
+        ipaddress.ip_address(value)
+        return True
+    except ValueError:
+        label = r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
+        return all(re.fullmatch(label, part) for part in value.removesuffix(".").split("."))
+
+
+def _checked_profile(grant: dict, entry: dict) -> None:
+    """Сверяет фактически полученные цель и транспорт с версией из каталога."""
+    target, vpn = grant.get("target"), grant.get("vpn")
+    if not isinstance(target, dict) or target.get("id") != entry["id"] or not _host(target.get("host")) \
+            or type(target.get("port")) is not int or not 0 < target["port"] < 65536 \
+            or target.get("type") not in ("rdp", "vnc") or not isinstance(target.get("pin"), str):
+        raise AccessError(0, "bad_target")
+    if target["type"] == "rdp" and not re.fullmatch(r"sha256:[a-f0-9]{64}", target["pin"]):
+        raise AccessError(0, "bad_target")
+    if not isinstance(vpn, dict) or vpn.get("provider") != "openvpn" or not isinstance(vpn.get("ca"), str):
+        raise AccessError(0, "bad_vpn")
+    remotes = vpn.get("remotes")
+    if not isinstance(remotes, list) or not 1 <= len(remotes) <= 16 or any(
+        not isinstance(remote, dict) or not _host(remote.get("host")) or type(remote.get("port")) is not int
+        or not 0 < remote["port"] < 65536 or remote.get("proto") not in ("udp", "tcp") for remote in remotes
+    ) or (vpn.get("gateway_name") and not _host(vpn["gateway_name"])):
+        raise AccessError(0, "bad_vpn")
+    transport = {"remotes": remotes, "gateway_name": vpn.get("gateway_name", ""),
+                 "version": vpn.get("version", ""), "ca": hashlib.sha256(vpn["ca"].encode()).hexdigest(),
+                 "tls_crypt": vpn.get("tls_crypt_revision")}
+    snapshot = {"version": entry["version"], "target": target, "transport": transport}
+    if hashlib.sha256(canonical(snapshot)).hexdigest() != entry["revision"]:
+        raise AccessError(0, "assignment_changed")
 
 
 def spki_sha256(der_cert: bytes) -> str:
@@ -228,7 +275,10 @@ class Client:
         grant, signature = answer.get("grant"), answer.get("signature", "")
         if not isinstance(grant, dict):
             raise AccessError(0, "bad_grant")
-        raw = base64.b64decode(signature)
+        try:
+            raw = base64.b64decode(signature, validate=True)
+        except (ValueError, TypeError):
+            raise AccessError(0, "grant_signature") from None
         for key in self.server_keys:
             try:
                 ed25519.Ed25519PublicKey.from_public_bytes(key).verify(raw, canonical(grant))
@@ -242,16 +292,64 @@ class Client:
         """Возвращает {"totp": {...}, "link": ...}; звено сохраняет вызывающий."""
         return self._verified_grant(self._signed_post("/v3/activate", {"code": code, "info": info}))
 
-    def login(self, state: State, totp: str, status: dict, vpn: dict) -> dict:
-        """Вход целиком: session → запись N+1 → confirm. Возвращает grant."""
+    def login(self, state: State, totp: str, status: dict) -> dict:
+        """Подтверждение звена после MFA открывает каталог мест."""
         data = state.load()
         answer = self._signed_post("/v3/session", {"totp": totp, "link": data["link"],
                                                    "status": status})
         data["link"] = answer["proposal"]
         data["release"] = answer.get("release")
         state.save(data)                                   # до подтверждения -- обязательно
-        return self._verified_grant(self._signed_post("/v3/session/confirm",
-                                                      {"link": data["link"], "vpn": vpn}))
+        return self._work_request("confirm", {"link": data["link"]})
+
+    def _work_request(self, action: str, obj: dict) -> dict:
+        challenge = secrets.token_hex(16)
+        sent = boottime()
+        answer = self._signed_post("/v3/session/" + action, {**obj, "nonce": challenge})
+        grant = self._verified_grant(answer)
+        purpose = "catalog" if action == "confirm" else action
+        expected = {"purpose": purpose, "nonce": challenge, "media": self.media}
+        expected.update({key: obj[key] for key in ("session", "generation", "target_id", "revision")
+                         if key in obj})
+        if any(type(grant.get(key)) is not type(value) or grant[key] != value
+               for key, value in expected.items()):
+            raise AccessError(0, "grant_binding")
+        if not isinstance(grant.get("session"), str) or not re.fullmatch(r"[0-9a-f]{32}", grant["session"]):
+            raise AccessError(0, "grant_binding")
+        entries = grant.get("targets")
+        if not isinstance(entries, list) or len(entries) > 64 or any(
+            not isinstance(item, dict) or not isinstance(item.get("id"), str)
+            or not isinstance(item.get("name"), str) or type(item.get("version")) is not int
+            or not isinstance(item.get("revision"), str) or not re.fullmatch(r"[a-f0-9]{64}", item["revision"])
+            for item in entries
+        ) or len({item["id"] for item in entries}) != len(entries):
+            raise AccessError(0, "bad_catalog")
+        if action in ("select", "renew"):
+            issued, expires = grant.get("server_time"), grant.get("not_after")
+            if type(issued) is not int or type(expires) is not int or not 0 < expires - issued <= 300:
+                raise AccessError(0, "grant_lifetime")
+            deadline = sent + (expires - issued)
+            if boottime() >= deadline:
+                raise AccessError(401, "session_expired")
+            grant["_deadline"] = deadline
+        return grant
+
+    def select(self, session: str, entry: dict, generation: int, vpn_request: dict) -> dict:
+        grant = self._work_request("select", {"session": session, "generation": generation,
+                                               "target_id": entry["id"], "revision": entry["revision"],
+                                               "vpn": vpn_request})
+        _checked_profile(grant, entry)
+        return grant
+
+    def renew(self, session: str, entry: dict, generation: int) -> dict:
+        return self._work_request("renew", {"session": session, "generation": generation,
+                                            "target_id": entry["id"], "revision": entry["revision"]})
+
+    def release(self, session: str, generation: int) -> dict:
+        return self._work_request("release", {"session": session, "generation": generation})
+
+    def catalog(self, session: str) -> dict:
+        return self._work_request("catalog", {"session": session})
 
     def send_events(self, catalog: int, events: list[dict]) -> int:
         return self._signed_post("/v3/events", {"catalog": catalog, "events": events})["acked"]

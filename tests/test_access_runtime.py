@@ -64,10 +64,14 @@ def _activate(server, client, state):
 def test_activation_and_two_logins_keep_the_chain(world):
     server, client, state = world
     secret = _activate(server, client, state)
+    harness.configure_workplaces(server)
     for _ in range(2):
         server.clock.now += 30
         code = harness.totp.code_at(secret, int(server.clock.now // 30))
-        grant = client.login(state, code, {"virt": "none", "serial": 1}, _vpn())
+        catalog = client.login(state, code, {"virt": "none", "serial": 1})
+        grant = client.select(catalog["session"], catalog["targets"][0], 1, _vpn())
+        renewed = client.renew(catalog["session"], catalog["targets"][0], 1)
+        assert rt.boottime() < renewed["_deadline"] <= rt.boottime() + 300
         assert "BEGIN CERTIFICATE" in grant["vpn"]["cert"]
     assert json.loads(pathlib.Path(state.path).read_text())["link"]
 
@@ -79,14 +83,50 @@ def test_a_grant_signed_by_another_key_is_rejected(world):
     server.clock.now += 30
     with pytest.raises(rt.AccessError, match="grant_signature"):
         client.login(state, harness.totp.code_at(secret, int(server.clock.now // 30)),
-                     {"virt": "none"}, _vpn())
+                     {"virt": "none"})
+
+
+@pytest.mark.parametrize("change,reason", [
+    ({"purpose": "select"}, "grant_binding"), ({"nonce": "0" * 32}, "grant_binding"),
+    ({"revision": "f" * 64}, "grant_binding"), ({"not_after": 401}, "grant_lifetime"),
+])
+def test_renew_checks_the_signed_response_context(world, change, reason, monkeypatch):
+    server, client, _ = world
+    entry = {"id": "a", "name": "a", "version": 1, "revision": "a" * 64}
+    session = "b" * 32
+
+    def reply(_path, request):
+        grant = {**request, "purpose": "renew", "media": client.media, "server_time": 100,
+                 "not_after": 400, "targets": [entry], **change}
+        return harness.canon.signed("grant", grant, server.sign_key)
+
+    monkeypatch.setattr(client, "_signed_post", reply)
+    with pytest.raises(rt.AccessError, match=reason):
+        client.renew(session, entry, 2)
+
+
+def test_delayed_renewal_is_rejected_and_profile_hash_covers_the_pin(world, monkeypatch):
+    server, client, state = world
+    harness.configure_workplaces(server)
+    secret = _activate(server, client, state)
+    server.clock.now += 30
+    catalog = client.login(state, harness.totp.code_at(secret, int(server.clock.now // 30)), {})
+    entry = catalog["targets"][0]
+    selected = client.select(catalog["session"], entry, 1, _vpn())
+    selected["target"]["pin"] = "sha256:" + "f" * 64
+    with pytest.raises(rt.AccessError, match="assignment_changed"):
+        rt._checked_profile(selected, entry)
+    timestamps = iter([1000.0, 1300.0])
+    monkeypatch.setattr(rt, "boottime", lambda: next(timestamps))
+    with pytest.raises(rt.AccessError, match="session_expired"):
+        client.renew(catalog["session"], entry, 1)
 
 
 def test_refusal_carries_the_server_reason(world):
     server, client, state = world
     _activate(server, client, state)
     with pytest.raises(rt.AccessError) as caught:
-        client.login(state, "000000", {"virt": "none"}, _vpn())
+        client.login(state, "000000", {"virt": "none"})
     assert (caught.value.code, caught.value.reason) == (401, "totp")
 
 

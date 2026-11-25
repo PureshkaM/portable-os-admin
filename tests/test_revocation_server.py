@@ -1,4 +1,4 @@
-"""Сервер отзыва v2: живой, в процессе, на 127.0.0.1 со случайным портом.
+"""Сервер отзыва: живой, в процессе, на 127.0.0.1 со случайным портом.
 
 Здесь сеть нужна по делу: проверяется не форма команд, а то, что сервер с
 ними делает, -- включая многопоточность (гонка знакомства) и разбор заголовков
@@ -14,9 +14,12 @@ import base64
 import http.client
 import http.server
 import importlib.util
+import os
 import pathlib
 import secrets
+import shutil
 import sqlite3
+import subprocess
 import threading
 import time
 
@@ -109,8 +112,8 @@ class _Server:
 
     def ask(self, media: str, device, nonce: str | None = None, info: str = INFO):
         nonce = nonce or secrets.token_hex(16)
-        signature = device.sign(f"poa-ask {media} {nonce} {info}".encode("ascii"))
-        return self.request("GET", "/v2/state", {
+        signature = device.sign(f"poa-ask-v3 {media} {nonce} {info}".encode("ascii"))
+        return self.request("GET", "/v3/media-state", {
             "X-POA-Media": media,
             "X-POA-Nonce": nonce,
             "X-POA-Info": info,
@@ -149,7 +152,7 @@ def test_a_signed_ask_gets_a_signed_state_and_is_remembered(server, device):
     assert status == 200
     assert response.getheader("Cache-Control") == "no-store"
     message, signature = body.decode("ascii").splitlines()
-    assert message == f"poa-state cafe0001 {nonce} ok"
+    assert message == f"poa-state-v3 cafe0001 {nonce} ok"
     server.revocation_key.public_key().verify(base64.b64decode(signature),
                                               message.encode("ascii"))
 
@@ -161,12 +164,114 @@ def test_a_signed_ask_gets_a_signed_state_and_is_remembered(server, device):
     assert fields[4:] == ["1.1.0", "ab12cd34"]
 
 
+@pytest.mark.parametrize("state", ["ok", "revoked"])
+def test_legacy_media_never_receive_an_actionable_state(server, device, state):
+    server.publish("cafe0001", 1, state, _raw_public(device))
+    nonce = secrets.token_hex(16)
+    signed = device.sign(f"poa-ask cafe0001 {nonce} {INFO}".encode("ascii"))
+    headers = {
+        "X-POA-Media": "cafe0001",
+        "X-POA-Nonce": nonce,
+        "X-POA-Info": INFO,
+        "X-POA-Signature": base64.b64encode(signed).decode("ascii"),
+    }
+    for endpoint in ("/v2/state", "/v3/media-state"):
+        status, body, _ = server.request("GET", endpoint, headers)
+        assert status == 403
+        assert b"poa-state" not in body
+
+
+def test_medium_persists_revocation_without_touching_its_key(server, device, tmp_path, monkeypatch):
+    """Два настоящих ключа, curl и сервер. Сеть сеанса и systemd заменены
+    временными исполнителями: тест проверяет порядок закрытия без прав root."""
+    from portable_os_admin.config.schema import InstallConfig
+    from portable_os_admin.install import machine_binding, revocation
+
+    if (not shutil.which("openssl") or not shutil.which("curl")
+            or "OpenSSL 3" not in subprocess.check_output(["openssl", "version"], text=True)):
+        pytest.skip("для выполнения скрипта нужны curl и openssl с Ed25519 -rawin")
+
+    config = InstallConfig.create_default("test", "debian")
+    config.revocation.url = server.url
+    run_dir, state, programs = (tmp_path / name for name in ("run", "state", "bin"))
+    programs.mkdir()
+    # Независимый от оборудования и конкретной ОС отпечаток.
+    monkeypatch.setattr(machine_binding, "fingerprint_functions",
+                        lambda: "poa_fingerprint_id() { echo ab12cd34; }")
+    server_key = tmp_path / "server.pub"
+    server_key.write_bytes(server.revocation_key.public_key().public_bytes(
+        serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo))
+    key = tmp_path / "device.pem"
+    private_pem = device.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                                       serialization.NoEncryption())
+    key.write_bytes(private_pem)
+    boot_id = tmp_path / "boot_id"
+    boot_id.write_text("test-boot")
+    env = dict(os.environ, PATH=f"{programs}:{os.environ['PATH']}", CALLS=str(tmp_path / "calls"))
+    for name, body in {
+        "ip": "echo default", "sync": "exit 0", "notify-send": "exit 0", "ps": "exit 0",
+        "quarantine": 'echo "firewall" >> "$CALLS"',
+        "systemctl": 'echo "$*" >> "$CALLS"',
+    }.items():
+        exe = programs / name
+        exe.write_text("#!/bin/sh\n" + body + "\n")
+        exe.chmod(0o755)
+    script = revocation.revocation_script(config, "cafe0001", "unused")
+    for before, after in {
+        "/run/poa": run_dir, "/var/lib/poa": state, "/etc/poa/revocation.pub": server_key,
+        "/etc/poa/device.key": key, "/proc/sys/kernel/random/boot_id": boot_id,
+        revocation.LOG_PATH: tmp_path / "check.log", "/usr/bin/python3": programs / "quarantine",
+        "/etc/poa/tls-pin": tmp_path / "unused-pin",
+    }.items():
+        script = script.replace(before, str(after))
+    def poll():
+        subprocess.run(["sh"], input=script, env=env, text=True, check=True)
+
+    assert server.publish("cafe0001", 1, "ok", _raw_public(device)) == 201
+    poll()
+    assert (run_dir / "authorized").read_text() == boot_id.read_text()
+    assert server.publish("cafe0001", 2, "revoked") == 204
+    poll()
+    assert not (run_dir / "authorized").exists()
+    assert (state / "media-revoked").is_dir()
+    assert key.read_bytes() == private_pem
+    calls = (tmp_path / "calls").read_text().splitlines()
+    assert calls[:2] == ["firewall", "stop poa-accessd.service"]
+    assert "stop poa-work-*.service poa-vpn@*.service" in calls
+
+    # Даже новое подписанное ok по ошибочно восстановленной БД не снимает
+    # полученный запрет, в том числе после перезагрузки и потери /run.
+    shutil.rmtree(run_dir)
+    assert server.publish("cafe0001", 3, "ok") == 410
+    assert server.handler.db.record_of("cafe0001")["state"] == "revoked"
+    with sqlite3.connect(server.db_path) as db:
+        db.execute("UPDATE media SET state = 'ok' WHERE media_id = 'cafe0001'")
+    poll()
+    assert not (run_dir / "authorized").exists()
+    assert (run_dir / "media-revoked").exists()
+    assert key.read_bytes() == private_pem
+
+
+def test_state_is_current_when_the_contact_is_recorded(server, device, monkeypatch):
+    server.publish("cafe0001", 1, "ok", _raw_public(device))
+    remember = server.handler.db.remember_contact
+
+    def revoke_then_remember(*args):
+        assert server.publish("cafe0001", 2, "revoked") == 204
+        return remember(*args)
+
+    monkeypatch.setattr(server.handler.db, "remember_contact", revoke_then_remember)
+    status, body, _, nonce = server.ask("cafe0001", device)
+    assert status == 200
+    assert body.decode("ascii").splitlines()[0] == f"poa-state-v3 cafe0001 {nonce} revoked"
+
+
 def test_a_revoked_medium_is_told_so(server, device):
     server.publish("cafe0001", 1, "ok", _raw_public(device))
     server.publish("cafe0001", 2, "revoked")
     status, body, _, nonce = server.ask("cafe0001", device)
     assert status == 200
-    assert body.decode("ascii").splitlines()[0] == f"poa-state cafe0001 {nonce} revoked"
+    assert body.decode("ascii").splitlines()[0] == f"poa-state-v3 cafe0001 {nonce} revoked"
 
 
 def test_an_id_with_an_administrator_prefix_works_end_to_end(server, device):
@@ -178,7 +283,7 @@ def test_an_id_with_an_administrator_prefix_works_end_to_end(server, device):
 
     status, body, _, nonce = server.ask(prefixed, device)
     assert status == 200
-    assert body.decode("ascii").splitlines()[0] == f"poa-state {prefixed} {nonce} ok"
+    assert body.decode("ascii").splitlines()[0] == f"poa-state-v3 {prefixed} {nonce} ok"
 
     status, body, _ = server.query(prefixed)
     assert status == 200
@@ -196,11 +301,13 @@ def test_every_refusal_to_a_medium_looks_the_same(server, device):
     """Перебирающий не должен узнать, на каком шаге споткнулся."""
     server.publish("cafe0001", 1, "ok", _raw_public(device))
     # Запись из 1.0.0, перенесённая без ключа.
-    server.handler.db.put("cafe0002", "legacy", "ok", 1, None)
+    with server.handler.db.database.tx() as db:
+        db.execute("INSERT INTO media (media_id, owner, state, counter, updated_at)"
+                   " VALUES (?, ?, ?, ?, ?)", ("cafe0002", "legacy", "ok", 1, srv.utc_now_iso()))
     other = ed25519.Ed25519PrivateKey.generate()
 
     refusals = [
-        server.request("GET", "/v2/state"),                          # нет заголовков
+        server.request("GET", "/v3/media-state"),                          # нет заголовков
         server.ask("CAFE0001", device)[:3],                          # кривой идентификатор
         server.ask("cafe0001", device, nonce="00" * 8)[:3],          # короткое число
         server.ask("cafe0001", device, info="version=1 1;machine=ab12cd34")[:3],
@@ -208,7 +315,7 @@ def test_every_refusal_to_a_medium_looks_the_same(server, device):
         server.ask("beef0001", device)[:3],                          # неизвестный носитель
         server.ask("cafe0002", device)[:3],                          # у записи нет ключа
         server.ask("cafe0001", other)[:3],                           # подпись чужая
-        server.request("GET", "/v2/state", {                         # подпись не base64
+        server.request("GET", "/v3/media-state", {                         # подпись не base64
             "X-POA-Media": "cafe0001", "X-POA-Nonce": "a" * 32,
             "X-POA-Info": INFO, "X-POA-Signature": "!!!",
         }),
@@ -396,6 +503,7 @@ def test_a_database_of_1_0_0_is_migrated_without_losing_records(tmp_path, device
     assert (record["owner"], record["state"], record["counter"]) == (owner, "revoked", 7)
     assert record["device_key"] is None and record["last_seen"] is None
 
-    # Старая запись получает ключ следующей командой владельца.
-    database.put("cafe0001", owner, "ok", 8, _raw_public(device))
+    # Состояние отзыва сохраняется при миграции и дополнении записи ключом.
+    assert database.put("cafe0001", owner, "ok", 8, _raw_public(device)) == 410
+    assert database.put("cafe0001", owner, "revoked", 8, _raw_public(device)) == 204
     assert database.record_of("cafe0001")["device_key"] == _raw_public(device)

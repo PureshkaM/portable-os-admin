@@ -33,13 +33,16 @@ class FakeRun:
     def __init__(self):
         self.calls = []
         self.tunnel = True
+        self.interface = ""
 
     def __call__(self, argv, check=False, capture_output=False, text=False):
         self.calls.append(argv)
+        if argv[:2] == ["systemctl", "start"] and argv[-1].startswith("poa-vpn@"):
+            self.interface = "tun" + argv[-1].split("@")[1].split(".")[0]
         if argv[0] == "systemd-detect-virt":
             out = "none\n"
         elif argv[0] == "ip":
-            out = f"{argv[-1]} dev {'tun0' if self.tunnel else 'eth0'} src 10.8.0.2\n"
+            out = f"{argv[-1]} dev {self.interface if self.tunnel else 'eth0'} src 10.8.0.2\n"
         else:
             out = "active\n"
 
@@ -89,7 +92,7 @@ def ask(sock: str, request: dict) -> dict:
         return json.loads(conn.makefile("rb").readline())
 
 
-def test_activation_then_login_brings_the_vpn_up(world):
+def test_login_opens_only_the_catalog_and_select_opens_the_vpn(world):
     server, service, sock, runner, tmp = world
     answer = ask(sock, {"cmd": "activate", "code": server.issue_code(service.config["media"])})
     secret = answer["otpauth"].split("secret=")[1].split("&")[0]
@@ -98,13 +101,17 @@ def test_activation_then_login_brings_the_vpn_up(world):
     server.clock.now += 30
     answer = ask(sock, {"cmd": "login", "totp": harness.totp.code_at(secret, int(server.clock.now // 30))})
     assert answer["targets"][0]["id"] == "ws1", answer
+    assert not list((tmp / "vpn").glob("*/client.conf"))
+    assert not ask(sock, {"cmd": "status"})["active"]
+    assert ask(sock, {"cmd": "select", "id": "missing"})["error"] == "unknown_target"
+    assert ask(sock, {"cmd": "select", "id": "ws1"})["target"]["id"] == "ws1"
     conf = next((tmp / "vpn").glob("*/client.conf")).read_text()
     assert "<key>" in conf and "BEGIN PRIVATE KEY" in conf and "verify-x509-name gw.test name" in conf
     assert "remote gw.test 1194 udp" in conf and "tls-version-min 1.3" in conf
     assert any(c[:2] == ["systemctl", "start"] for c in runner.calls)
     status = ask(sock, {"cmd": "status"})
     assert status["activated"] is True and status["vpn"] == "up"
-    assert ask(sock, {"cmd": "check"})["reachability"] == {"ws1": "up"}
+    assert status["active"] == "ws1"
     ask(sock, {"cmd": "disconnect"})
     assert not list((tmp / "vpn").glob("*/client.conf")), "ключ VPN должен исчезнуть с отключением"
 
@@ -236,17 +243,19 @@ class FirewallLog:
     def __init__(self):
         self.gateways, self.targets = None, None
 
-    def allow_gateways(self, remotes):
-        self.gateways = list(remotes)
+    def begin_request(self):
+        return 123
 
-    def allow_targets(self, targets):
-        self.targets = list(targets)
+    def open_session(self, remotes, target, interface, deadline, token):
+        assert token == 123
+        self.gateways, self.targets = list(remotes), [target]
+        assert interface.startswith("tun") and deadline > accessd.poa_client.boottime()
 
     def close_session(self):
         self.gateways, self.targets = [], []
 
 
-def test_after_login_the_gateway_stays_open_while_the_vpn_starts(world):
+def test_network_is_opened_for_one_selected_target_and_closed_on_release(world):
     """Живая загрузка 02.10.2026: экран открывался для шлюза и тут же
     запирался закрытием «прежнего» сеанса -- openvpn получал EPERM."""
     server, service, sock, runner, _tmp = world
@@ -255,6 +264,8 @@ def test_after_login_the_gateway_stays_open_while_the_vpn_starts(world):
     secret = answer["otpauth"].split("secret=")[1].split("&")[0]
     server.clock.now += 30
     ask(sock, {"cmd": "login", "totp": harness.totp.code_at(secret, int(server.clock.now // 30))})
+    assert not service.firewall.gateways and not service.firewall.targets
+    assert ask(sock, {"cmd": "select", "id": "ws1"})["target"]["id"] == "ws1"
     assert service.firewall.gateways == [{"host": "gw.test", "port": 1194, "proto": "udp"}]
     assert service.firewall.targets and service.firewall.targets[0]["id"] == "ws1"
     ask(sock, {"cmd": "disconnect"})
@@ -269,9 +280,35 @@ def test_vpn_is_up_only_once_the_route_to_the_target_goes_through_the_tunnel(wor
     server.clock.now += 30
     runner.tunnel = False
     ask(sock, {"cmd": "login", "totp": harness.totp.code_at(secret, int(server.clock.now // 30))})
+    assert ask(sock, {"cmd": "select", "id": "ws1"})["generation"] == 1
     assert ask(sock, {"cmd": "status"})["vpn"] == "connecting"
     runner.tunnel = True
     assert ask(sock, {"cmd": "status"})["vpn"] == "up"
+
+
+@pytest.mark.parametrize("reason", ["expired", "revoked", "tunnel"])
+def test_active_connection_is_closed_and_mfa_forgotten(world, monkeypatch, reason):
+    server, service, sock, runner, _ = world
+    service.firewall = FirewallLog()
+    secret = ask(sock, {"cmd": "activate", "code": server.issue_code(service.config["media"])})["otpauth"]
+    server.clock.now += 30
+    login = ask(sock, {"cmd": "login", "totp": harness.totp.code_at(
+        secret.split("secret=")[1].split("&")[0], int(server.clock.now // 30))})
+    assert login["targets"]
+    assert ask(sock, {"cmd": "select", "id": "ws1"})["target"]
+    assert ask(sock, {"cmd": "status"})["vpn"] == "up"
+    if reason == "expired":
+        deadline = service.grant["_deadline"]
+        monkeypatch.setattr(accessd.poa_client, "boottime", lambda: deadline)
+    elif reason == "revoked":
+        monkeypatch.setattr(service, "_revoked", lambda: True)
+    else:
+        runner.tunnel = False
+    service.maintain()
+    status = ask(sock, {"cmd": "status"})
+    assert not status["active"] and not status["authenticated"]
+    assert service.firewall.targets == service.firewall.gateways == []
+    assert any(c[:2] == ["systemctl", "stop"] for c in runner.calls)
 
 
 def test_a_revocation_list_is_remembered_even_if_the_next_descriptor_omits_it(world):

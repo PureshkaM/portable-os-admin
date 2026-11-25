@@ -77,7 +77,7 @@ def to_kickstart(config: InstallConfig) -> str:
     fullname = f' --gecos="{account.full_name}"' if account.full_name else ""
     lines.append(f"user --name={account.username} --shell={account.shell}{groups}{fullname} --lock")
 
-    if config.remote_access.enabled:
+    if config.remote_access.enabled and not config.kiosk.enabled:
         lines.append("services --enabled=sshd")
         lines.append(f"firewall --enabled --port={config.remote_access.port}:tcp")
 
@@ -85,7 +85,7 @@ def to_kickstart(config: InstallConfig) -> str:
     lines.append("%packages")
     lines.append("@core")
     lines += list(config.packages)
-    if config.remote_access.enabled:
+    if config.remote_access.enabled and not config.kiosk.enabled:
         lines.append("openssh-server")
     lines.append("%end")
     lines.append("")
@@ -126,7 +126,7 @@ def to_preseed(config: InstallConfig) -> str:
     ]
 
     selected = list(config.packages)
-    if config.remote_access.enabled:
+    if config.remote_access.enabled and not config.kiosk.enabled:
         selected.append("openssh-server")
     if selected:
         lines.append(f"d-i pkgsel/include string {' '.join(selected)}")
