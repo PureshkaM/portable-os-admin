@@ -141,7 +141,10 @@ cat > %{buildroot}/usr/bin/portable-os-admin <<'EOF'
 # Tcl/Tk там же, где лежит сам, а не в /usr/lib64, где их может не быть.
 RT=/usr/lib/portable-os-admin/runtime
 export PYTHONHOME="$RT/usr"
+export PYTHONNOUSERSITE=1
 export LD_LIBRARY_PATH="$RT/usr/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export TCL_LIBRARY="$RT/usr/share/tcl8.6"
+export TK_LIBRARY="$RT/usr/share/tk8.6"
 export PYTHONPATH=/usr/lib/portable-os-admin/app
 exec "$RT/usr/bin/python3.11" -m portable_os_admin.gui.app "$@"
 EOF

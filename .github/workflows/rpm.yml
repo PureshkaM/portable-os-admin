@@ -55,7 +55,8 @@ jobs:
           rpm2archive - < "$1" | tar -xz -C "$root"
           app="$root/usr/lib/portable-os-admin"
           runtime="$app/runtime/usr"
-          xvfb-run -a env PYTHONHOME="$runtime" PYTHONPATH="$app/app" \
+          xvfb-run -a env PYTHONHOME="$runtime" PYTHONPATH="$app/app" PYTHONNOUSERSITE=1 \
+            TCL_LIBRARY="$runtime/share/tcl8.6" TK_LIBRARY="$runtime/share/tk8.6" \
             LD_LIBRARY_PATH="$runtime/lib64" "$runtime/bin/python3.11" - <<'PY'
           from portable_os_admin.gui.app import PortableOSAdminGUI
 

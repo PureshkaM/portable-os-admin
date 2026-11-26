@@ -28,9 +28,9 @@ REPO=${REPO:-https://mirror.yandex.ru/redos/8.0/x86_64/os}
 PREFIX=${1:-runtime}
 WORK=${WORK:-$(mktemp -d)}
 
-# Python, Tk, cryptography с зависимостями CFFI и клиентские библиотеки X.
+# Python с BLAKE2, Tk, cryptography с зависимостями CFFI и библиотеки X.
 PACKAGES="python3 python3-libs python3-tkinter tcl tk python3-cryptography
-python3-cffi python3-pycparser python3-ply libffi
+python3-cffi python3-pycparser python3-ply libffi libb2 libgomp
 glibc libXft libX11 libXrender libXext libXi libxcb libXau libXdmcp
 fontconfig freetype libpng expat libbrotli zlib libxml2 xz-libs bzip2-libs
 graphite2"
@@ -114,11 +114,15 @@ if ! PYTHONHOME="$ABS/usr" LD_LIBRARY_PATH="$ABS/usr/lib64" \
 fi
 
 if ! PYTHONHOME="$ABS/usr" LD_LIBRARY_PATH="$ABS/usr/lib64" \
+        TCL_LIBRARY="$ABS/usr/share/tcl8.6" PYTHONNOUSERSITE=1 \
         $RUN "$ABS/usr/bin/python3.11" -c "
-import sys, cryptography, _tkinter
+import hashlib, sys, tkinter, cryptography, _tkinter
 from cffi import FFI
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
+hashlib.blake2b(b'poa-rpm').digest()
+hashlib.blake2s(b'poa-rpm').digest()
+tkinter.Tcl()
 FFI().cdef('int puts(const char *);')
 key = Ed25519PrivateKey.generate()
 message = b'poa-rpm'
