@@ -120,7 +120,7 @@ class ConnectWindow(Gtk.Window):
 
         again = Gtk.Button(label="Подключиться снова")
         again.connect("clicked", lambda *_: self._refresh_targets())
-        self.again_title = self._label("Сеанс завершён.", big=True)
+        self.again_title = self._label("Подключение завершено.", big=True)
         self.again_error = self._label()
         self._page("again", self.again_title, self.again_error, again)
 
@@ -271,7 +271,7 @@ class ConnectWindow(Gtk.Window):
 
     def _session_over(self, reason: str = "") -> None:
         self.again_title.set_markup(
-            f"<big>{'Подключение не удалось.' if reason else 'Сеанс завершён.'}</big>")
+            f"<big>{'Подключение не удалось.' if reason else 'Подключение завершено.'}</big>")
         self.again_error.set_text(reason or "Блокировка удалённого рабочего места не подтверждена.")
         self.show_all()
         self.stack.set_visible_child_name("again")

@@ -93,6 +93,21 @@ def test_window_picks_the_page_from_the_service_state(tmp_path, monkeypatch, sta
     window.destroy()
 
 
+@pytest.mark.skipif(not os.environ.get("DISPLAY"), reason="нужен экран (xvfb-run)")
+def test_window_reports_disconnection_and_unconfirmed_remote_lock(monkeypatch):
+    monkeypatch.setattr(launch, "ask", lambda request, timeout=5: {
+        "authorized": True, "activated": True,
+    })
+    window = _load("poa_connect").ConnectWindow()
+    try:
+        window._session_over()
+        assert window.stack.get_visible_child_name() == "again"
+        assert window.again_title.get_text() == "Подключение завершено."
+        assert window.again_error.get_text() == "Блокировка удалённого рабочего места не подтверждена."
+    finally:
+        window.destroy()
+
+
 # Строки сняты с FreeRDP 3 против xrdp стенда 03.10.2026.
 FINGERPRINT_CHANGED = [
     "[13:38:30:953] [2757180:002a123f] [ERROR][com.freerdp.crypto] - [tls_print_new_certificate_warn]: "
@@ -119,7 +134,7 @@ def test_rdp_failures_are_explained_in_words():
 
 
 def test_a_normal_end_of_session_is_not_an_error():
-    # Ниже 128 -- отключение, выход из системы, простой: окно говорит «Сеанс завершён».
+    # Ниже 128 -- отключение, выход из системы или простой клиента.
     assert launch.session_error("rdp", 0, NO_ANSWER) == ""
     assert launch.session_error("rdp", 12, []) == ""
 
