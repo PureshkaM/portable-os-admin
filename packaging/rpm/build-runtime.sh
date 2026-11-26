@@ -23,7 +23,8 @@
 # cryptography 41.0.7, `_tkinter` загружается (Tcl/Tk 8.6).
 set -eu
 
-REPO=${REPO:-https://repo1.red-soft.ru/redos/8.0/x86_64/os}
+# Цепочка сертификатов этого зеркала проверяется штатными УЦ сборочного хоста.
+REPO=${REPO:-https://mirror.yandex.ru/redos/8.0/x86_64/os}
 PREFIX=${1:-runtime}
 WORK=${WORK:-$(mktemp -d)}
 
