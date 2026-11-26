@@ -93,6 +93,8 @@ def test_redos_mirror_reuses_the_distribution_key(monkeypatch):
     joined = " ".join(backend.system_upgrade_command("/target"))
     assert "--repofrompath=poa-mirror,https://repo.corp/redos/8.0c/x86_64/os" in joined
     assert "--repofrompath=poa-mirror-updates,https://repo.corp/redos/8.0c/x86_64/updates" in joined
+    assert "--setopt=poa-mirror.skip_if_unavailable=False" in joined
+    assert "--setopt=poa-mirror-updates.skip_if_unavailable=False" in joined
     assert "repo1.red-soft.ru" not in joined and "https://x/os" not in joined
     assert "poa-mirror.gpgkey=file:///target/etc/pki/rpm-gpg/RPM-GPG-KEY-RED-SOFT" in joined
 

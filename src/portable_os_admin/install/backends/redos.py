@@ -525,6 +525,8 @@ class RedOSInstallBackend(InstallBackend):
         # потому что `--repo=poa-image` выше отключает всё, что не названо.
         for repo_id, url, gpgkey in self.network_repos:
             arguments += [f"--repofrompath={repo_id},{url}", f"--repo={repo_id}"]
+            if repo_id in ("poa-mirror", "poa-mirror-updates"):
+                arguments.append(f"--setopt={repo_id}.skip_if_unavailable=False")
             if gpgkey:
                 arguments += [f"--setopt={repo_id}.gpgcheck=1", f"--setopt={repo_id}.gpgkey={gpgkey}"]
             if self._repo_ca_bundle:
