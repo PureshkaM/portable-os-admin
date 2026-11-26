@@ -888,16 +888,18 @@ echo "poa-boot: меню слотов A/B написано"
     ) -> list[list[str]]:
         """Implements the OS-account-and-service half of UC-4's "настраивает
         содержимое системного раздела" step. The OS-level login password is
-        intentionally locked (`passwd -l`) rather than set here: the LUKS
+        locked when `useradd` creates the account. The LUKS
         passphrase supplied at install time is this project's single
         front-door secret (see README, раздел «Архитектура»). Because the account has
         no usable password, `config_files` also drops in a getty autologin
         override -- otherwise unlocking the disk would land the user at a
         login prompt they cannot possibly satisfy."""
         account = config.account
+        # Сразу создаём заблокированную запись. Повторная запись через passwd
+        # на РЕД ОС может отказать до расстановки меток образа.
         commands = [
-            self.chroot(mount_root, "useradd", "-m", "-s", account.shell, "-c", account.full_name, account.username),
-            self.chroot(mount_root, "passwd", "-l", account.username),
+            self.chroot(mount_root, "useradd", "-m", "-s", account.shell, "-p", "!",
+                        "-c", account.full_name, account.username),
         ]
         # Унаследованный консольный образ используется для отдельного обслуживания.
         if not config.kiosk.enabled and config.remote_access.enabled and config.remote_access.method == "openssh":
@@ -1166,13 +1168,12 @@ echo "poa-boot: меню слотов A/B написано"
             user = ExtraUserConfig(**raw) if isinstance(raw, dict) else raw
             if not user.username:
                 continue
-            argv = [mount_root, "useradd", "-m", "-s", user.shell]
+            argv = [mount_root, "useradd", "-m", "-s", user.shell, "-p", "!"]
             if user.full_name:
                 argv += ["-c", user.full_name]
             if user.groups:
                 argv += ["-G", user.groups]
             commands.append(self.chroot(*argv, user.username))
-            commands.append(self.chroot(mount_root, "passwd", "-l", user.username))
             if user.sudo:
                 commands.append(
                     self.chroot(mount_root, "usermod", "-aG", self.sudo_group, user.username)

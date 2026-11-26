@@ -40,16 +40,18 @@ def test_chroot_setup_commands_include_account_sudo_and_system_tasks():
     config = InstallConfig.create_default("stick1", "debian")
     config.account.username = "ivanov"
     config.account.sudo = True
+    config.extra_users = [{"username": "guest"}]
     config.system_tasks = ["echo hi > /etc/motd"]
 
     backend = DebianInstallBackend()
     commands = backend.chroot_setup_commands("/mnt/poa", config)
 
-    assert any("useradd" in c and "ivanov" in c for c in commands)
+    account_commands = {c[-1]: c for c in commands if c[:3] == ["chroot", "/mnt/poa", "useradd"]}
+    assert set(account_commands) == {"ivanov", "guest"}
+    assert all(c[c.index("-p") + 1] == "!" for c in account_commands.values())
     assert any("usermod" in c and "sudo" in c for c in commands)
     assert any("sh" in c and "-c" in c and "echo hi > /etc/motd" in c for c in commands)
-    # the OS login password is always locked -- LUKS passphrase is the front door
-    assert any("passwd" in c and "-l" in c for c in commands)
+    assert not any("passwd" in c and "-l" in c for c in commands)
 
 
 def test_redos_uses_wheel_group_and_sshd_service():
