@@ -9,8 +9,8 @@
 #
 # Рантайм тянется из сетевого репозитория РЕД ОС. Если он недоступен с
 # раннера, сборка обязана упасть здесь, а не отдать пакет без рантайма: об
-# этом заботится сам build-runtime.sh, который в конце запускает собранный
-# интерпретатор и требует, чтобы импортировались cryptography и _tkinter.
+# этом заботится сам build-runtime.sh, который запускает собранный
+# интерпретатор и проверяет криптографию и Tk.
 name: rpm
 
 on:
@@ -35,7 +35,7 @@ jobs:
           # rpm даёт rpmbuild и rpm2cpio, cpio нужен распаковке пакетов
           # рантайма, zstd -- метаданным репозитория РЕД ОС (они сжаты им, а
           # не gzip, как в большинстве репозиториев).
-          sudo apt-get install -y -q --no-install-recommends rpm cpio zstd
+          sudo apt-get install -y -q --no-install-recommends rpm cpio zstd xvfb xauth
 
       - name: Собрать рантайм
         run: sh packaging/rpm/build-runtime.sh runtime
@@ -44,6 +44,27 @@ jobs:
         env:
           RUNTIME: ${{ github.workspace }}/runtime
         run: sh packaging/build-rpm.sh
+
+      - name: Открыть стартовое окно из собранного RPM
+        run: |
+          set -o pipefail
+          set -- "$HOME"/rpmbuild/RPMS/x86_64/portable-os-admin-[0-9]*.rpm
+          test "$#" -eq 1
+          root=$(mktemp -d)
+          trap 'rm -rf "$root"' EXIT
+          rpm2archive - < "$1" | tar -xz -C "$root"
+          app="$root/usr/lib/portable-os-admin"
+          runtime="$app/runtime/usr"
+          xvfb-run -a env PYTHONHOME="$runtime" PYTHONPATH="$app/app" \
+            LD_LIBRARY_PATH="$runtime/lib64" "$runtime/bin/python3.11" - <<'PY'
+          from portable_os_admin.gui.app import PortableOSAdminGUI
+
+          window = PortableOSAdminGUI()
+          window.update()
+          assert window.winfo_viewable()
+          print(window.title())
+          window.destroy()
+          PY
 
       - name: Забрать пакет
         uses: actions/upload-artifact@v4

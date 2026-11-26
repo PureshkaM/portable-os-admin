@@ -28,11 +28,9 @@ REPO=${REPO:-https://mirror.yandex.ru/redos/8.0/x86_64/os}
 PREFIX=${1:-runtime}
 WORK=${WORK:-$(mktemp -d)}
 
-# Что кладём. Первые шесть -- собственно рантайм; остальное -- то, без чего
-# `_tkinter` не загружается: клиентские библиотеки X и шрифтов со своими
-# зависимостями. Список получен не рассуждением, а последовательными запусками:
-# каждый шаг называл недостающую библиотеку, пока `import _tkinter` не прошёл.
+# Python, Tk, cryptography с зависимостями CFFI и клиентские библиотеки X.
 PACKAGES="python3 python3-libs python3-tkinter tcl tk python3-cryptography
+python3-cffi python3-pycparser python3-ply libffi
 glibc libXft libX11 libXrender libXext libXi libxcb libXau libXdmcp
 fontconfig freetype libpng expat libbrotli zlib libxml2 xz-libs bzip2-libs
 graphite2"
@@ -68,7 +66,7 @@ else
 fi
 
 for name in $PACKAGES; do
-    file=$(grep -oE "<location href=\"${name}-[0-9][^\"]*\.x86_64\.rpm\"" "$WORK/primary.xml" \
+    file=$(grep -oE "<location href=\"${name}-[0-9][^\"]*\.(x86_64|noarch)\.rpm\"" "$WORK/primary.xml" \
         | sed 's/.*href="//; s/"//' | sort -V | tail -1)
     if [ -z "$file" ]; then
         echo "в репозитории нет пакета $name" >&2
@@ -118,6 +116,13 @@ fi
 if ! PYTHONHOME="$ABS/usr" LD_LIBRARY_PATH="$ABS/usr/lib64" \
         $RUN "$ABS/usr/bin/python3.11" -c "
 import sys, cryptography, _tkinter
+from cffi import FFI
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+FFI().cdef('int puts(const char *);')
+key = Ed25519PrivateKey.generate()
+message = b'poa-rpm'
+key.public_key().verify(key.sign(message), message)
 print('  интерпретатор', sys.version.split()[0])
 print('  cryptography', cryptography.__version__)
 print('  Tcl/Tk', _tkinter.TCL_VERSION, _tkinter.TK_VERSION)
