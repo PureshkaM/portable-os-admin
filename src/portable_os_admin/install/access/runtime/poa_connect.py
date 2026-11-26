@@ -287,6 +287,13 @@ class ConnectWindow(Gtk.Window):
         box.add(self._label(f"Пароль рабочего места {who}".strip()))
         entry = Gtk.Entry(visibility=False, activates_default=True)
         box.add(entry)
+        exit_hint = self._label(
+            "Перед отключением заблокируйте сеанс средствами удалённой системы. "
+            "Когда появится экран разблокировки, нажмите Ctrl+Alt+D."
+        )
+        exit_hint.set_max_width_chars(45)
+        exit_hint.set_margin_top(8)
+        box.add(exit_hint)
         dialog.show_all()
         ok = dialog.run() == Gtk.ResponseType.OK
         value = entry.get_text()

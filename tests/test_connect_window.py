@@ -94,6 +94,31 @@ def test_window_picks_the_page_from_the_service_state(tmp_path, monkeypatch, sta
 
 
 @pytest.mark.skipif(not os.environ.get("DISPLAY"), reason="нужен экран (xvfb-run)")
+def test_rdp_password_dialog_shows_how_to_lock_before_disconnect(monkeypatch):
+    monkeypatch.setattr(launch, "ask", lambda request, timeout=5: {
+        "authorized": True, "activated": True,
+    })
+    connect = _load("poa_connect")
+    window = connect.ConnectWindow()
+    labels = []
+
+    def cancel_dialog(dialog):
+        labels.extend(
+            child.get_text() for child in dialog.get_content_area().get_children()
+            if isinstance(child, connect.Gtk.Label) and child.get_visible()
+        )
+        return connect.Gtk.ResponseType.CANCEL
+
+    monkeypatch.setattr(connect.Gtk.Dialog, "run", cancel_dialog)
+    try:
+        assert window._ask_password(RDP) is None
+        assert ("Перед отключением заблокируйте сеанс средствами удалённой системы. "
+                "Когда появится экран разблокировки, нажмите Ctrl+Alt+D.") in labels
+    finally:
+        window.destroy()
+
+
+@pytest.mark.skipif(not os.environ.get("DISPLAY"), reason="нужен экран (xvfb-run)")
 def test_window_reports_disconnection_and_unconfirmed_remote_lock(monkeypatch):
     monkeypatch.setattr(launch, "ask", lambda request, timeout=5: {
         "authorized": True, "activated": True,
