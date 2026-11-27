@@ -409,7 +409,7 @@ def test_config_wizard_creates_and_validates(gui_app, tmp_path):
     wizard.name_var.set("stick1")
     wizard.target_os_var.set("redos")
     wizard._on_target_os_changed()
-    assert wizard.release_var.get() == "8.0"
+    assert wizard.release_var.get() == "8.0c"
 
     _allow_an_application(app, wizard)
     _advance_to(app, wizard, "Проверка и сохранение")
