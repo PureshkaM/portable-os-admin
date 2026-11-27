@@ -1508,6 +1508,8 @@ class OSInstaller:
                     "для установки из сети в конфигурации должен быть указан выпуск "
                     "дистрибутива: без образа его неоткуда взять"
                 )
+            if backend.name == "redos":
+                backend.prepare_package_sources(config, network_source=config.mirror)
             return config.release, config.mirror
 
         self._progress.step("Подключение установочного образа")
@@ -1522,6 +1524,8 @@ class OSInstaller:
             )
         if not info.complete:
             raise InstallError(f"образ не подходит: {info.incomplete_reason}")
+        if backend.name == "redos":
+            backend.prepare_package_sources(config, image_mountpoint=image.mountpoint, image_release=info.release)
         self._validate_against_image(config, image.mountpoint, info)
         # Kept for the install-time sources written into the chroot further
         # down, which need the components the image actually publishes.

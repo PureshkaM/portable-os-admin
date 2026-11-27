@@ -409,6 +409,23 @@ def test_without_an_image_the_release_has_to_come_from_the_configuration(session
         )
 
 
+@pytest.mark.parametrize("release", ["8.0", "8.0c"])
+def test_redos_certified_network_source_requires_an_image(make_employee_config, release):
+    from portable_os_admin.errors import InstallError
+    from portable_os_admin.install.image_source import MountedImage
+
+    installer = OSInstaller.__new__(OSInstaller)
+    installer._progress = _Progress(None)
+    config = make_employee_config(target_os="redos")
+    config.release = release
+    config.mirror = "https://mirror.yandex.ru/redos/8.0c/x86_64/os/"
+
+    with pytest.raises(InstallError, match="доверенный установочный образ"):
+        installer._prepare_source(
+            MountedImage("", mountpoint="/mnt/poa-image-test"), "", config, get_backend("redos"), dry_run=False
+        )
+
+
 def test_the_image_is_visible_from_inside_the_chroot(session, make_employee_config):
     """debootstrap points the target's sources.list at the URL it was given --
     file:///mnt/poa-image-<id> -- and that path exists only on the

@@ -27,13 +27,16 @@ generic RHEL assumptions:
 from __future__ import annotations
 
 import shlex
+from urllib.parse import urlsplit
 
 from ...config.schema import InstallConfig
+from ...errors import InstallError
 from .. import kiosk as kiosk_mode
 from .. import machine_binding
 from ..medium_initrd import SOURCE_ENV
 from ..disk import MediaLayout
 from .. import overlay as overlay_mode
+from .. import repo_metadata
 from .base import RECOVERY_DIR, RECOVERY_INITRAMFS_DIR, InstallBackend
 
 # NOT VERIFIED ON REAL HARDWARE: the kernel/bootloader half of this backend has
@@ -63,8 +66,13 @@ class RedOSInstallBackend(InstallBackend):
 
     TITLE = "РЕД ОС (dnf --installroot)"
     PROVENANCE = "Проверено против repo1.red-soft.ru (выпуски 7.3 и 8.0)."
-    RELEASES = ("8.0", "7.3")
-    DEFAULT_RELEASE = "8.0"
+    CERTIFIED_RELEASE = "8.0c"
+    RELEASES = (CERTIFIED_RELEASE, "8.0", "7.3")
+    DEFAULT_RELEASE = CERTIFIED_RELEASE
+    CERTIFIED_REPO_HOSTS = ("repo1.red-soft.ru", "mirror.yandex.ru")
+    CERTIFIED_KEY = "file:///etc/pki/rpm-gpg/RPM-GPG-KEY-RED-SOFT"
+    _image_repos: tuple[repo_metadata.Repo, ...] | None = None
+    _certified_repos: tuple[tuple[str, str, str], ...] | None = None
 
     def default_mirror(self, release: str = "", arch: str = "") -> str:
         """Адрес РЕД ОС включает и выпуск, и архитектуру.
@@ -76,6 +84,47 @@ class RedOSInstallBackend(InstallBackend):
         release = release or self.DEFAULT_RELEASE
         arch = self.ARCH_NAMES.get(arch or "amd64", "x86_64")
         return f"https://repo1.red-soft.ru/redos/{release}/{arch}/os"
+
+    def prepare_package_sources(
+        self, config: InstallConfig, *, image_mountpoint: str = "", image_release: str = "", network_source: str = ""
+    ) -> None:
+        """Проверяет редакцию и источники до развёртывания корня."""
+        arch = self.normalize_arch(config.arch)
+        self._image_repos = repo_metadata.discover_repos(image_mountpoint, arch) if image_mountpoint else ()
+        self._certified_repos = None
+        prefix = f"/redos/{self.CERTIFIED_RELEASE}/"
+        certified = self.CERTIFIED_RELEASE in (config.release, image_release) or any(
+            urlsplit(url).path.startswith(prefix)
+            for url in [network_source, *(repo.baseurl for repo in self._image_repos)]
+        )
+        if not certified:
+            return
+
+        base_path = f"{prefix}{arch}/"
+        channels = {urlsplit(repo.baseurl).path.rstrip("/"): repo for repo in self._image_repos}
+        if base_path + "os" not in channels:
+            raise InstallError("для РЕД ОС 8 Сертифицированной редакции нужен её доверенный установочный образ")
+
+        self._certified_repos = ()
+        if not config.network_packages:
+            return
+
+        mirror = config.mirror.strip().rstrip("/")
+        # Сохранённый по умолчанию адрес 8.0 не должен менять редакцию выбранного ISO.
+        if not mirror or mirror in {self.default_mirror("8.0", arch), self.default_mirror("8.0")}:
+            mirror = self.default_mirror(self.CERTIFIED_RELEASE, arch)
+        allowed_mirrors = {f"https://{host}{base_path}os" for host in self.CERTIFIED_REPO_HOSTS}
+        if mirror not in allowed_mirrors:
+            raise InstallError("для РЕД ОС 8 Сертифицированной редакции укажите официальное HTTPS-зеркало 8.0c")
+
+        repos = []
+        for channel in ("os", "updates"):
+            repo = channels.get(base_path + channel)
+            if repo is None or repo.gpgkey != self.CERTIFIED_KEY:
+                raise InstallError("установочный образ РЕД ОС 8 не содержит настройки Base и Updates с ключом РЕД СОФТ")
+            repos.append((f"poa-net-{repo.repo_id}", mirror.rsplit("/", 1)[0] + "/" + channel, repo.gpgkey))
+        self._certified_repos = tuple(repos)
+
     firewall_service = "firewalld"
     bootloader_comes_from_packages = True
     #: RHEL-семейство слушает `rhgb`, а не `splash`.
@@ -256,7 +305,7 @@ class RedOSInstallBackend(InstallBackend):
             "-y",
             f"--repofrompath=poa-image,{source_url}",
             "--repo=poa-image",
-            "--nogpgcheck",
+            "--setopt=poa-image.gpgcheck=0" if self._certified_repos is not None else "--nogpgcheck",
             "--forcearch", self.normalize_arch(config.arch),
             "install", *self.core_package_names(config),
         ]
@@ -515,8 +564,8 @@ class RedOSInstallBackend(InstallBackend):
             # unpacking a base system made of those very packages.
             arguments += ["--forcearch", self.install_arch]
         if self.install_source_url.startswith("file:"):
-            # The image is not signed; the trust anchor is the file itself.
-            arguments.append("--nogpgcheck")
+            # Для сертифицированной сборки исключение действует только на доверенный ISO.
+            arguments.append("--nogpgcheck" if self._certified_repos is None else "--setopt=poa-image.gpgcheck=0")
         if self.install_release:
             arguments += ["--releasever", self.install_release]
         # Сетевые репозитории сборки (Э22). dnf запускается снаружи, поэтому
@@ -525,7 +574,9 @@ class RedOSInstallBackend(InstallBackend):
         # потому что `--repo=poa-image` выше отключает всё, что не названо.
         for repo_id, url, gpgkey in self.network_repos:
             arguments += [f"--repofrompath={repo_id},{url}", f"--repo={repo_id}"]
-            if repo_id in ("poa-mirror", "poa-mirror-updates"):
+            if self._certified_repos is not None:
+                arguments += [f"--setopt={repo_id}.skip_if_unavailable=False", f"--setopt={repo_id}.sslverify=1"]
+            elif repo_id in ("poa-mirror", "poa-mirror-updates"):
                 arguments.append(f"--setopt={repo_id}.skip_if_unavailable=False")
             if gpgkey:
                 arguments += [f"--setopt={repo_id}.gpgcheck=1", f"--setopt={repo_id}.gpgkey={gpgkey}"]
@@ -573,19 +624,25 @@ class RedOSInstallBackend(InstallBackend):
             return
         arch = self.install_arch or self.normalize_arch(config.arch)
         root = mount_root
-        from ..repo_metadata import discover_repos
 
         def rooted(key: str) -> str:
             if key.startswith("file://") and root:
                 return "file://" + root.rstrip("/") + key[len("file://"):]
             return key
 
-        official = discover_repos(image_mountpoint, arch) if image_mountpoint else ()
         if not self._sequoia_policy_path:
             import tempfile
             fd, self._sequoia_policy_path = tempfile.mkstemp(prefix="poa-sequoia-", suffix=".config")
             with open(fd, "w", encoding="ascii") as handle:
                 handle.write(self.SEQUOIA_POLICY)
+        if self._certified_repos is not None:
+            self.network_repos = tuple((repo_id, url, rooted(key)) for repo_id, url, key in self._certified_repos)
+            self._bind_repo_trust(image_mountpoint)
+            return
+
+        official = self._image_repos
+        if official is None:
+            official = repo_metadata.discover_repos(image_mountpoint, arch) if image_mountpoint else ()
         mirror = self.company_mirror(config)
         if mirror:
             # Зеркало компании держит те же пакеты, подписанные тем же ключом

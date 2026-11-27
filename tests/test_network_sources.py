@@ -6,9 +6,12 @@
 """
 from __future__ import annotations
 
+import pytest
+
 from portable_os_admin.config.schema import InstallConfig
+from portable_os_admin.errors import InstallError
 from portable_os_admin.install.backends import get_backend
-from portable_os_admin.install import repo_metadata
+from portable_os_admin.install import repo_metadata, repo_trust
 
 
 def _config(**overrides) -> InstallConfig:
@@ -81,6 +84,72 @@ def test_redos_takes_enabled_repositories_from_the_release_package(monkeypatch):
     assert argv[0] == "env" and argv[1].startswith("RPM_SEQUOIA_CRYPTO_POLICY=")
     policy = open(argv[1].split("=", 1)[1]).read()
     assert "sha1.collision_resistance" in policy
+
+
+@pytest.fixture
+def cert_image(monkeypatch):
+    repos = [
+        repo_metadata.Repo(channel, f"https://repo1.red-soft.ru/redos/8.0c/x86_64/{channel}/",
+                           "file:///etc/pki/rpm-gpg/RPM-GPG-KEY-RED-SOFT")
+        for channel in ("os", "updates")
+    ]
+    monkeypatch.setattr(repo_metadata, "discover_repos", lambda _mountpoint, _arch: tuple(repos))
+    monkeypatch.setattr(repo_trust, "build_bundle", lambda *_args: "")
+    return repos
+
+
+@pytest.mark.parametrize("release, mirror, host", [
+    ("8.0", "https://repo1.red-soft.ru/redos/8.0/x86_64/os", "repo1.red-soft.ru"),
+    ("8.0c", "https://mirror.yandex.ru/redos/8.0c/x86_64/os/", "mirror.yandex.ru"),
+])
+def test_redos_certified_image_enables_only_signed_certified_repos(cert_image, release, mirror, host):
+    cert_image.append(repo_metadata.Repo("extra", "https://elsewhere.example/os"))
+    config = _config(target_os="redos", arch="amd64", release=release, mirror=mirror)
+    backend = get_backend("redos")
+    backend.prepare_package_sources(config, image_mountpoint="/mnt/image")
+    backend.bind_install_source("file:///mnt/image", "8.0", arch="x86_64")
+
+    bootstrap = backend.bootstrap_command("/target", config, "file:///mnt/image", "8.0")
+    assert "--setopt=poa-image.gpgcheck=0" in bootstrap and "--nogpgcheck" not in bootstrap
+
+    backend.bind_network(config, "/mnt/image", "/target")
+    argv = backend.system_upgrade_command("/target")
+    assert "--nogpgcheck" not in argv and "--setopt=poa-image.gpgcheck=0" in argv
+    assert [arg for arg in argv if arg.startswith("--repo=")] == [
+        "--repo=poa-image", "--repo=poa-net-os", "--repo=poa-net-updates",
+    ]
+    for channel in ("os", "updates"):
+        assert f"--repofrompath=poa-net-{channel},https://{host}/redos/8.0c/x86_64/{channel}" in argv
+        assert f"--setopt=poa-net-{channel}.gpgcheck=1" in argv
+        assert f"--setopt=poa-net-{channel}.gpgkey=file:///target/etc/pki/rpm-gpg/RPM-GPG-KEY-RED-SOFT" in argv
+        assert f"--setopt=poa-net-{channel}.sslverify=1" in argv
+        assert f"--setopt=poa-net-{channel}.skip_if_unavailable=False" in argv
+
+
+@pytest.mark.parametrize("mirror", [
+    "https://mirror.yandex.ru/redos/8.0/x86_64/os",
+    "https://mirror.yandex.ru.example.org/redos/8.0c/x86_64/os",
+    "http://repo1.red-soft.ru/redos/8.0c/x86_64/os",
+])
+def test_redos_certified_image_rejects_unverified_mirrors(cert_image, mirror):
+    config = _config(target_os="redos", arch="amd64", release="8.0", mirror=mirror)
+    backend = get_backend("redos")
+    with pytest.raises(InstallError, match="официальное HTTPS-зеркало"):
+        backend.prepare_package_sources(config, image_mountpoint="/mnt/image")
+
+
+def test_redos_certified_image_can_build_offline_but_checks_the_key_for_network_repos(cert_image):
+    updates = cert_image.pop()
+    cert_image.append(repo_metadata.Repo(updates.repo_id, updates.baseurl, "file:///some-other-key"))
+    config = _config(target_os="redos", arch="amd64", release="8.0c", network_packages=False)
+    backend = get_backend("redos")
+    backend.prepare_package_sources(config, image_mountpoint="/mnt/image")
+    backend.bind_network(config, "/mnt/image", "/target")
+    assert backend.system_upgrade_command("/target") is None
+
+    config.network_packages = True
+    with pytest.raises(InstallError, match="настройки Base и Updates с ключом"):
+        backend.prepare_package_sources(config, image_mountpoint="/mnt/image")
 
 
 def test_redos_mirror_reuses_the_distribution_key(monkeypatch):
