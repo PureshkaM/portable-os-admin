@@ -1,4 +1,5 @@
 import inspect
+import os
 import pytest
 
 from portable_os_admin.config import ConfigManager, InstallConfig
@@ -7,6 +8,9 @@ from portable_os_admin.errors import ConfigValidationError, DeviceNotEligibleErr
 from portable_os_admin.install import BlockDevice, OSInstaller
 from portable_os_admin.install.backends import get_backend
 from portable_os_admin.install import machine_binding
+from portable_os_admin.install.access.files import RUNTIME_DIR
+from portable_os_admin.install.command_runner import CommandPlan
+from portable_os_admin.install.kiosk.environments.mate import PANEL_LAYOUT_PATH
 from portable_os_admin.install.installer import _Progress
 from portable_os_admin.session import AdminSession
 
@@ -30,6 +34,26 @@ def test_run_rejects_unvalidated_config(session, big_removable_device):
     installer = OSInstaller(session)
     with pytest.raises(ConfigValidationError):
         installer.run(big_removable_device, config, b"user-passphrase", dry_run=True)
+
+
+@pytest.mark.parametrize(("path", "mode"), [
+    (f"{RUNTIME_DIR}/poa_connect.py", 0o755),
+    (PANEL_LAYOUT_PATH, 0o644),
+])
+def test_public_kiosk_directories_are_traversable_with_restrictive_umask(session, tmp_path, path, mode):
+    installer = OSInstaller(session)
+    root = str(tmp_path)
+    previous_umask = os.umask(0o077)
+    try:
+        installer._write_scripted_file(
+            root, path, "# generated\n", mode, CommandPlan(device=root), False, root,
+        )
+    finally:
+        os.umask(previous_umask)
+
+    installed = tmp_path / path
+    assert installed.parent.stat().st_mode & 0o777 == 0o755
+    assert installed.stat().st_mode & 0o777 == mode
 
 
 def test_run_rejects_ineligible_device(session, make_employee_config):

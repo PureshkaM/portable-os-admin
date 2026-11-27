@@ -424,11 +424,11 @@ class MateEnvironment(DesktopEnvironment):
 
     def files(self, config: InstallConfig) -> dict[str, tuple[str, int | None]]:
         return {
-            DCONF_PROFILE_PATH: (dconf_profile(), None),
+            DCONF_PROFILE_PATH: (dconf_profile(), 0o644),
             DCONF_KEYFILE_PATH: (dconf_keyfile(config), None),
             DCONF_LOCKS_PATH: (dconf_locks(config), None),
-            CAJA_DESKTOP_ENTRY_PATH: (caja_desktop_entry(), None),
-            PANEL_LAYOUT_PATH: (panel_layout(config), None),
+            CAJA_DESKTOP_ENTRY_PATH: (caja_desktop_entry(), 0o644),
+            PANEL_LAYOUT_PATH: (panel_layout(config), 0o644),
         }
 
     def apply_fragment(self, config: InstallConfig) -> str:

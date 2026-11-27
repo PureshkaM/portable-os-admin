@@ -554,9 +554,7 @@ class OSInstaller:
         # account-and-services step with "no such file", after the base system
         # and the whole desktop have already been installed.
         for relative, (content, mode) in backend.scripted_files(config, image=self._image).items():
-            target = f"{root}/{relative}"
-            run(["mkdir", "-p", target.rsplit("/", 1)[0]])
-            self._write_file(target, content, plan, dry_run, confirm, mode=mode)
+            self._write_scripted_file(root, relative, content, mode, plan, dry_run, confirm)
 
         self._install_packages_and_settings(
             config, backend, root, image_url, plan, dry_run, confirm
@@ -1135,9 +1133,7 @@ class OSInstaller:
         ).items():
             if relative in common:
                 continue
-            target = f"{layout.mount_root}/{relative}"
-            run(["mkdir", "-p", target.rsplit("/", 1)[0]])
-            self._write_file(target, content, plan, dry_run, confirm_device, mode=mode)
+            self._write_scripted_file(layout.mount_root, relative, content, mode, plan, dry_run, confirm_device)
 
         # Ключ, которым crypttab открывает тома журналов и обмена при загрузке.
         # Лежит на зашифрованном корне, то есть доступен только после того, как
@@ -2246,6 +2242,23 @@ class OSInstaller:
     ) -> CommandResult:
         kwargs = {} if timeout is None else {"timeout": timeout}
         return self.runner.run(argv, plan, dry_run=dry_run, confirm_device=confirm_device, **kwargs)
+
+    def _write_scripted_file(
+        self, root: str, relative: str, content: str, mode: int | None,
+        plan: CommandPlan, dry_run: bool, confirm_device: str | None,
+    ) -> None:
+        from .access.files import RUNTIME_DIR
+        from .kiosk.environments.mate import PANEL_LAYOUT_PATH
+
+        target = f"{root}/{relative}"
+        parent = target.rsplit("/", 1)[0]
+        if relative == PANEL_LAYOUT_PATH or relative.startswith(f"{RUNTIME_DIR}/"):
+            # Эти каталоги нужны пользователю киоска при запуске сеанса.
+            command = ["install", "-d", "-m", "0755", parent]
+        else:
+            command = ["mkdir", "-p", parent]
+        self._run(command, plan, dry_run, confirm_device)
+        self._write_file(target, content, plan, dry_run, confirm_device, mode=mode)
 
     def _write_file(
         self,
