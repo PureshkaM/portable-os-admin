@@ -120,11 +120,38 @@ fi
 
 HERE=$(cd "$(dirname "$0")" && pwd)
 
+ACME_CERT=/etc/letsencrypt/live/$DOMAIN/fullchain.pem
+ACME_KEY=/etc/letsencrypt/live/$DOMAIN/privkey.pem
+CERTBOT_PACKAGE=
+if [ -z "$TLS_CERT" ] && [ ! -f "$ACME_CERT" ]; then
+    CERTBOT_PACKAGE=certbot
+fi
+
+REDOS_CERTIFIED=
+if [ -r /etc/os-release ] && (
+    . /etc/os-release
+    [ "${ID:-}" = redos ] && [ "${EDITION:-}" = Certified ]
+); then
+    REDOS_CERTIFIED=1
+    command -v dnf >/dev/null 2>&1 || { echo "Для сертифицированной РЕД ОС требуется dnf" >&2; exit 1; }
+fi
+
+dnf_install() {
+    if [ -n "$REDOS_CERTIFIED" ]; then
+        dnf --repo=base --repo=updates \
+            --setopt=base.gpgcheck=1 --setopt=updates.gpgcheck=1 \
+            --setopt=base.skip_if_unavailable=False --setopt=updates.skip_if_unavailable=False \
+            install -y -q "$@"
+    else
+        dnf install -y -q "$@"
+    fi
+}
+
 echo "== зависимости"
-if command -v apt-get >/dev/null 2>&1; then
+if [ -z "$REDOS_CERTIFIED" ] && command -v apt-get >/dev/null 2>&1; then
     apt-get update -qq
     apt-get install -y -q --no-install-recommends \
-        python3 python3-cryptography openssl openvpn nginx certbot >/dev/null
+        python3 python3-cryptography openssl openvpn nginx ${CERTBOT_PACKAGE:+certbot} >/dev/null
     # libnss-systemd: имя временного пользователя службы (DynamicUser) должно
     # разрешаться -- по нему PostgreSQL пускает её без пароля (peer). Без него
     # «local user with ID … does not exist» (проверено на чистом Debian 13).
@@ -135,14 +162,20 @@ if command -v apt-get >/dev/null 2>&1; then
     # openvpn нужен только как генератор ключей tls-crypt-v2, сама служба не включается.
     systemctl disable --now openvpn.service >/dev/null 2>&1 || true
 elif command -v dnf >/dev/null 2>&1; then
-    dnf install -y -q python3 python3-cryptography openssl openvpn nginx certbot
+    dnf_install python3 python3-cryptography openssl openvpn nginx ${CERTBOT_PACKAGE:+certbot} || {
+        status=$?
+        if [ -n "$REDOS_CERTIFIED" ] && [ -n "$CERTBOT_PACKAGE" ]; then
+            echo "Проверьте репозитории base и updates. Если certbot в них недоступен, передайте готовые TLS-файлы через --tls-cert и --tls-key." >&2
+        fi
+        exit "$status"
+    }
     [ "$DB" != cluster ] || { echo "кластер пока ставится только на Debian" >&2; exit 1; }
     if [ "$DB" = postgresql ]; then
-        dnf install -y -q postgresql-server python3-psycopg2
+        dnf_install postgresql-server python3-psycopg2
         [ -f /var/lib/pgsql/data/PG_VERSION ] || postgresql-setup --initdb
     fi
 else
-    echo "не знаю менеджера пакетов этой системы; поставьте python3-cryptography, nginx и certbot сами" >&2
+    echo "не знаю менеджера пакетов этой системы; поставьте python3-cryptography, nginx${CERTBOT_PACKAGE:+ и certbot} сами" >&2
 fi
 
 echo "== служба"
@@ -274,8 +307,8 @@ if [ -n "$TLS_CERT" ]; then
     CERT=/etc/poa-revocation/tls/fullchain.pem
     CERT_KEY=/etc/poa-revocation/tls/privkey.pem
 else
-    CERT=/etc/letsencrypt/live/$DOMAIN/fullchain.pem
-    CERT_KEY=/etc/letsencrypt/live/$DOMAIN/privkey.pem
+    CERT=$ACME_CERT
+    CERT_KEY=$ACME_KEY
     if [ ! -f "$CERT" ]; then
         # Сначала только порт 80 -- через него Let's Encrypt проверяет домен.
         port80 > "$SITE"

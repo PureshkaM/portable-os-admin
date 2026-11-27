@@ -40,8 +40,22 @@ for f in ca.crt gateway.key gateway.crt tls-crypt-v2-server.key name; do
 done
 NAME=$(cat "$KIT/name")
 
+REDOS_CERTIFIED=
+if [ -r /etc/os-release ] && (
+    . /etc/os-release
+    [ "${ID:-}" = redos ] && [ "${EDITION:-}" = Certified ]
+); then
+    REDOS_CERTIFIED=1
+    command -v dnf >/dev/null 2>&1 || { echo "Для сертифицированной РЕД ОС требуется dnf" >&2; exit 1; }
+fi
+
 echo "== зависимости"
-if command -v apt-get >/dev/null 2>&1; then
+if [ -n "$REDOS_CERTIFIED" ]; then
+    dnf --repo=base --repo=updates \
+        --setopt=base.gpgcheck=1 --setopt=updates.gpgcheck=1 \
+        --setopt=base.skip_if_unavailable=False --setopt=updates.skip_if_unavailable=False \
+        install -y -q openvpn nftables curl
+elif command -v apt-get >/dev/null 2>&1; then
     apt-get update -qq
     apt-get install -y -q --no-install-recommends openvpn nftables curl >/dev/null
 elif command -v dnf >/dev/null 2>&1; then
