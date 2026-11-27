@@ -22,10 +22,6 @@ set -e
 # not ask polkit again in an endless loop.
 export POA_ELEVATED=1
 
-# Both packages install the application as a system Python package, so the
-# distribution's own interpreter runs it -- no virtualenv, and no version
-# pinned here: /usr/bin/python3 is 3.9 on an older RHEL and 3.13 on Debian
-# trixie, and the application supports both.
-#
-# No "$@": the arguments above are for this script, not for the application.
-exec /usr/bin/python3 -m portable_os_admin.gui.app
+# The package entry point selects system Python and locates the installed code.
+# The display arguments above belong to this launcher only.
+exec /usr/bin/portable-os-admin

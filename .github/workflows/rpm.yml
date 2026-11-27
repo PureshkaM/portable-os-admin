@@ -1,16 +1,4 @@
-# Сборка .rpm со встроенным рантаймом.
-#
-# Зачем через GitHub. Пакет несёт собственный Python с Tk и cryptography,
-# собранные для x86_64, поэтому rpm отказывается собирать его на машине другой
-# архитектуры: стенд проекта -- arm64, и там «compatible archs: aarch64
-# noarch». Раннеры GitHub -- x86_64, то есть ровно та машина, которой не
-# хватало; ничего при этом не компилируется, рантайм складывается из готовых
-# пакетов дистрибутива.
-#
-# Рантайм тянется из сетевого репозитория РЕД ОС. Если он недоступен с
-# раннера, сборка обязана упасть здесь, а не отдать пакет без рантайма: об
-# этом заботится сам build-runtime.sh, который запускает собранный
-# интерпретатор и проверяет криптографию и Tk.
+# Пакет содержит код Якоря. Python, Tk и cryptography устанавливает ОС.
 name: rpm
 
 on:
@@ -32,32 +20,23 @@ jobs:
       - name: Поставить инструменты сборки
         run: |
           sudo apt-get update -qq
-          # rpm даёт rpmbuild и rpm2cpio, cpio нужен распаковке пакетов
-          # рантайма, zstd -- метаданным репозитория РЕД ОС (они сжаты им, а
-          # не gzip, как в большинстве репозиториев).
-          sudo apt-get install -y -q --no-install-recommends rpm cpio zstd xvfb xauth
-
-      - name: Собрать рантайм
-        run: sh packaging/rpm/build-runtime.sh runtime
+          sudo apt-get install -y -q --no-install-recommends \
+            rpm xvfb xauth python3-tk python3-cryptography
 
       - name: Собрать пакет
-        env:
-          RUNTIME: ${{ github.workspace }}/runtime
         run: sh packaging/build-rpm.sh
 
       - name: Открыть стартовое окно из собранного RPM
         run: |
           set -o pipefail
-          set -- "$HOME"/rpmbuild/RPMS/x86_64/portable-os-admin-[0-9]*.rpm
+          set -- "$HOME"/rpmbuild/RPMS/noarch/portable-os-admin-[0-9]*.rpm
           test "$#" -eq 1
           root=$(mktemp -d)
           trap 'rm -rf "$root"' EXIT
           rpm2archive - < "$1" | tar -xz -C "$root"
-          app="$root/usr/lib/portable-os-admin"
-          runtime="$app/runtime/usr"
-          xvfb-run -a env PYTHONHOME="$runtime" PYTHONPATH="$app/app" PYTHONNOUSERSITE=1 \
-            TCL_LIBRARY="$runtime/share/tcl8.6" TK_LIBRARY="$runtime/share/tk8.6" \
-            LD_LIBRARY_PATH="$runtime/lib64" "$runtime/bin/python3.11" - <<'PY'
+          xvfb-run -a /usr/bin/python3 -I - "$root/usr/lib/portable-os-admin/app" <<'PY'
+          import sys
+          sys.path.insert(0, sys.argv[1])
           from portable_os_admin.gui.app import PortableOSAdminGUI
 
           window = PortableOSAdminGUI()
@@ -71,7 +50,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: portable-os-admin-rpm
-          path: ~/rpmbuild/RPMS/x86_64/*.rpm
+          path: ~/rpmbuild/RPMS/noarch/*.rpm
           if-no-files-found: error
 
 # Проверено 13.09.2026: ручной запуск через API отвечал 500 и 502 при

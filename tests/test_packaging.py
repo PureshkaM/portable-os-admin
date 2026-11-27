@@ -41,13 +41,10 @@ def test_non_python_files_ship_with_the_package():
         assert importlib.resources.files(package).joinpath(name).is_file(), name
 
 
-def test_the_launcher_pins_no_python_version():
-    """/usr/bin/python3 is 3.9 on an older RHEL and 3.13 on Debian trixie. The
-    application supports both, and the launcher must not decide otherwise."""
+def test_the_polkit_launcher_uses_the_packaged_entry_point():
+    """Both the menu and the privileged process use the packaged entry point."""
     launcher = _read("packaging/polkit/launch-root")
-    assert "/usr/bin/python3" in launcher
-    for pinned in ("python3.9", "python3.11", "python3.12", "python3.13"):
-        assert pinned not in launcher
+    assert "exec /usr/bin/portable-os-admin" in launcher
 
 
 def test_the_launcher_no_longer_looks_for_a_virtualenv():
@@ -90,10 +87,14 @@ def test_cross_architecture_support_is_suggested_not_required():
     assert "qemu-user-static" in control[control.index("Suggests:"):control.index("Description:")]
 
 
-def test_the_rpm_spec_installs_a_system_package_not_a_virtualenv():
+def test_the_rpm_resolves_python_dependencies_from_the_operating_system():
     spec = _read("packaging/rpm/portable-os-admin.spec")
-    assert "python3_sitelib" in spec
-    assert "/opt/portable-os-admin/venv" not in spec
+    requires = {
+        line.split()[1] for line in spec.splitlines() if line.startswith("Requires:")
+    }
+    assert {"python3", "python3-tkinter", "python3-cryptography"} <= requires
+    assert "exec /usr/bin/python3 -I /usr/lib/portable-os-admin/app" in spec
+    assert "/usr/lib/portable-os-admin/runtime" not in spec
 
 
 def test_the_rpm_source_archive_carries_the_files_the_spec_installs():

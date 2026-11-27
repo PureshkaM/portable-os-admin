@@ -1,59 +1,17 @@
 Name:           portable-os-admin
 Version:        1.2.0
-Release:        1%{?dist}
+Release:        2%{?dist}
 Summary:        Ткач — приложение администратора системы «Шлейф»
 
 License:        MIT
 URL:            https://github.com/PureshkaM/portable-os-admin
 Source0:        %{name}-%{version}.tar.gz
-# Не noarch: пакет несёт собственный рантайм -- Python, Tcl/Tk и cryptography,
-# собранные для x86_64. Это цена самодостаточности, и она осознанная: без
-# рантайма пакет требовал бы python3-tkinter, которого на DVD РЕД ОС 8 нет.
-BuildArch:      x86_64
+BuildArch:      noarch
 
-# %{python3_sitelib} comes from python3-rpm-macros (pulled in by
-# python3-devel below): it is how rpm's macro table learns where *this
-# RHEL-family host's* python3 keeps site-packages, e.g.
-# /usr/lib/python3.9/site-packages on RHEL8, a different path on RHEL9 --
-# a fact about the target distribution's own packaging convention.
-#
-# This used to have a fallback that asked the *build host's own* `sysconfig`
-# for that path when the macro was undefined, specifically to let the spec be
-# built -- and so checked -- on a machine with rpmbuild but no RHEL macros.
-# That is exactly the bug it looks like: sysconfig answers for whatever
-# happens to be running rpmbuild, not for the RedOS/RHEL box that will later
-# run `dnf install`. On a Debian host it resolved to
-# /usr/lib/python3/dist-packages, a path no RHEL-family python3 ever
-# searches -- `dnf install` succeeded and `portable-os-admin` then failed
-# with ModuleNotFoundError on first launch.
-#
-# There is no host-independent value to fall back to -- the whole point of
-# the macro is that it is a RHEL-family convention, not a computable fact --
-# so there is no fallback here any more. A build without the real macro must
-# refuse loudly instead of shipping a package that only looks like it works.
-# build-rpm.sh checks for exactly this before invoking rpmbuild at all.
-
-# BuildRequires больше нет вовсе.
-#
-# python3-devel требовался, пока код ставился в системный site-packages: путь
-# туда даёт макрос %{python3_sitelib}, а его приносит именно этот пакет. Со
-# своим рантаймом в собственном префиксе системный Python не нужен ни при
-# сборке, ни при установке, и требование стало ложным: сборка 13.09.2026 на
-# раннере GitHub упала на «python3-devel is needed by portable-os-admin».
-
-# RHEL-family python3 stays at 3.6 forever; 3.9/3.11/... arrive as separate,
-# differently-named packages. `python3 >= 3.9` therefore either fails to
-# resolve at all or resolves against the wrong interpreter entirely.
-# python3(abi) is the virtual provide rpm itself generates for whichever
-# interpreter python3-devel's macros were computed for on the build host --
-# the same one %{python3_sitelib} above resolves against -- so this tracks
-# the actual build, not a guessed floor.
-# Python, Tk и cryptography пакет несёт с собой, поэтому от системных здесь
-# ничего не требуется. Так и получается «ставится на любую машину семейства, не
-# спрашивая репозиториев»: `python3-tkinter` на DVD РЕД ОС 8 нет вовсе, и
-# требование его наличия делало пакет неустановимым ровно там, ради чего он
-# написан. Рантайм собирается packaging/rpm/build-runtime.sh из пакетов самого
-# дистрибутива -- ни компиляции, ни сторонних двоичных файлов.
+# Штатный менеджер пакетов разрешает зависимости из настроенных каналов РЕД ОС.
+Requires:       python3 >= 3.9
+Requires:       python3-tkinter
+Requires:       python3-cryptography >= 2.6
 # pkexec, through which the application asks the desktop for administrator
 # rights. The agent that draws the dialog comes with the desktop environment.
 Requires:       polkit
@@ -100,17 +58,8 @@ configurations, installs Debian or RedOS onto an external
 LUKS-encrypted medium, and manages its logs, exchange partition and
 recovery codes afterwards. The interface is a guided Tkinter GUI.
 
-Everything this package needs comes from the distribution. The only
-third-party Python library is cryptography, taken from
-python3-cryptography rather than downloaded, so nothing is fetched at
-install time and the package installs on a machine with no route to the
-internet -- which is the environment this tool is meant for.
-
-Note: this spec targets RedOS/RHEL-family *admin hosts*. If your install
-configurations target Debian media, the admin host still
-needs debootstrap available -- RedOS's own repositories were not found to
-carry it, so that has to come from elsewhere (see docs/ARCHITECTURE.md
-"Known limitations" in the source tree).
+Uses system Python, Tk and cryptography from the operating system repositories.
+No Python interpreter or third-party libraries are bundled.
 
 %prep
 %setup -q
@@ -121,32 +70,19 @@ carry it, so that has to come from elsewhere (see docs/ARCHITECTURE.md
 
 %install
 rm -rf %{buildroot}
-# Программа и её рантайм -- в собственном префиксе, а не в системном
-# site-packages: пакет ничего не берёт у системного Python, потому что нужного
-# ему там может не быть вовсе.
+# Каталог собственных исходников не зависит от пути site-packages ОС.
 mkdir -p %{buildroot}/usr/lib/portable-os-admin/app
 cp -r src/portable_os_admin %{buildroot}/usr/lib/portable-os-admin/app/
 find %{buildroot}/usr/lib/portable-os-admin/app -name __pycache__ -type d -exec rm -rf {} +
-# Рантайм собирается packaging/rpm/build-runtime.sh ДО rpmbuild и приезжает в
-# каталоге runtime/ вместе с исходниками. Собирать его здесь нельзя: он
-# тянется из сетевого репозитория, а сборка пакета должна работать из того,
-# что уже есть, и не зависеть от сети в этот момент.
-mkdir -p %{buildroot}/usr/lib/portable-os-admin/runtime
-cp -a runtime/. %{buildroot}/usr/lib/portable-os-admin/runtime/
+cat > %{buildroot}/usr/lib/portable-os-admin/app/__main__.py <<'EOF'
+from portable_os_admin.gui.app import run
+
+run()
+EOF
 mkdir -p %{buildroot}/usr/bin
 cat > %{buildroot}/usr/bin/portable-os-admin <<'EOF'
 #!/bin/sh
-# Свой интерпретатор и свой Tk. PYTHONHOME -- чтобы стандартная библиотека
-# искалась рядом, а не в системе; LD_LIBRARY_PATH -- чтобы _tkinter нашёл
-# Tcl/Tk там же, где лежит сам, а не в /usr/lib64, где их может не быть.
-RT=/usr/lib/portable-os-admin/runtime
-export PYTHONHOME="$RT/usr"
-export PYTHONNOUSERSITE=1
-export LD_LIBRARY_PATH="$RT/usr/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-export TCL_LIBRARY="$RT/usr/share/tcl8.6"
-export TK_LIBRARY="$RT/usr/share/tk8.6"
-export PYTHONPATH=/usr/lib/portable-os-admin/app
-exec "$RT/usr/bin/python3.11" -m portable_os_admin.gui.app "$@"
+exec /usr/bin/python3 -I /usr/lib/portable-os-admin/app "$@"
 EOF
 chmod 755 %{buildroot}/usr/bin/portable-os-admin
 mkdir -p %{buildroot}/usr/share/applications
@@ -176,7 +112,6 @@ install -m 755 packaging/polkit/launch-root %{buildroot}/usr/lib/portable-os-adm
 %files
 %license LICENSE
 /usr/lib/portable-os-admin/app
-/usr/lib/portable-os-admin/runtime
 /usr/bin/portable-os-admin
 /usr/share/applications/portable-os-admin.desktop
 /usr/share/polkit-1/actions/ru.portableosadmin.policy
