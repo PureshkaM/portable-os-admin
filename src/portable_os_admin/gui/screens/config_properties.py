@@ -15,8 +15,8 @@
 """
 from __future__ import annotations
 
-import tkinter as tk
-from tkinter import ttk
+from ..ui import tk
+from ..ui import ttk
 
 from ...config.validator import ConfigValidationUnavailableError
 from .. import theme

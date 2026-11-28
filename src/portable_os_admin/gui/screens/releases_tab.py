@@ -13,8 +13,8 @@
 """
 from __future__ import annotations
 
-import tkinter as tk
-from tkinter import filedialog, simpledialog, ttk
+from ..ui import tk
+from ..ui import filedialog, simpledialog, ttk
 
 from ...admin import access_actions
 from .. import theme

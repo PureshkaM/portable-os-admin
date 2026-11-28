@@ -1,8 +1,8 @@
 """Main window after a session is open ("Интерфейсы пользователя-2")."""
 from __future__ import annotations
 
-import tkinter as tk
-from tkinter import simpledialog, ttk
+from ..ui import tk
+from ..ui import simpledialog, ttk
 
 from ...admin import MediaActions
 from .. import theme

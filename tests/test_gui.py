@@ -1,15 +1,7 @@
-"""Headless coverage for the Tkinter GUI (gui/), mirroring the flows already
-covered for the Textual TUI in test_tui.py / test_tui_new_features.py.
-
-No real display is required to drive Tkinter widgets programmatically, but a
-Tcl/Tk runtime must be available and able to open (at least) an offscreen
-root window; environments with neither are skipped rather than failed.
-"""
+"""Exercise the shared desktop workflows using the chosen widget backend."""
 from __future__ import annotations
 
 import time
-import tkinter as tk
-from tkinter import ttk
 
 import pytest
 
@@ -17,6 +9,7 @@ from portable_os_admin.config import InstallConfig
 from portable_os_admin.config.repo_browser import RepoPackage
 from portable_os_admin.config.schema import KioskConfig
 from portable_os_admin.gui import theme  # noqa: F401 -- import-ability check
+from portable_os_admin.gui.ui import filedialog, messagebox, simpledialog, tk, ttk, using_gtk
 from portable_os_admin.gui.app import PortableOSAdminGUI
 from portable_os_admin.gui.screens import config_wizard as config_wizard_module
 from portable_os_admin.gui.screens import device_step as device_step_module
@@ -32,8 +25,9 @@ def gui_app():
     try:
         app = PortableOSAdminGUI()
     except tk.TclError as exc:
-        pytest.skip(f"no usable Tk display in this environment: {exc}")
-    app.withdraw()
+        pytest.skip(f"no usable display in this environment: {exc}")
+    if not using_gtk():
+        app.withdraw()
     yield app
     app.destroy()
 
@@ -56,6 +50,36 @@ def _pump(app, condition, timeout=20.0, interval=0.05):
         time.sleep(interval)
     app.update()
     assert condition(), "timed out waiting for background operation to complete"
+
+
+@pytest.mark.skipif(not using_gtk(), reason="GTK entry and button signals")
+def test_gtk_password_fields_and_button_create_a_container(gui_app, tmp_path):
+    from gi.repository import Gtk
+    from portable_os_admin.gui.screens.startup import MODE_CREATE
+
+    def descendants(widget):
+        for child in widget.winfo_children():
+            yield child
+            yield from descendants(child)
+
+    startup = gui_app._current_frame
+    destination = tmp_path / "new.container"
+    startup._chosen(str(destination), MODE_CREATE)
+    gui_app.update()
+    masked_entries = [
+        item.widget for item in descendants(startup)
+        if isinstance(item.widget, Gtk.Entry) and not item.widget.get_visibility()
+    ]
+    assert len(masked_entries) == 2
+    for entry in masked_entries:
+        entry.set_text("FixturePass123")
+    create = next(
+        item.widget for item in descendants(startup)
+        if isinstance(item.widget, Gtk.Button) and item.cget("text") == "Создать"
+    )
+    create.emit("clicked")
+    _pump(gui_app, lambda: gui_app.container is not None)
+    assert destination.is_file()
 
 
 def _allow_an_application(app, wizard, name: str = "mate-calc"):
@@ -344,7 +368,7 @@ def test_both_ways_out_ask_while_a_medium_is_being_written(gui_app, tmp_path, mo
     monkeypatch.setattr(app, "_quit", lambda: quits.append(True))
     monkeypatch.setattr(app, "install_in_progress", lambda: True)
     monkeypatch.setattr(
-        "tkinter.messagebox.askyesno", lambda *a, **k: asked.append(True) or False
+        messagebox, "askyesno", lambda *a, **k: asked.append(True) or False
     )
 
     app.close_session()
@@ -938,7 +962,7 @@ def test_configs_list_delete(gui_app, tmp_path, monkeypatch):
     # С 11.09.2026 удаление спрашивает подтверждение. Без подмены модальный
     # диалог под Xvfb ждал бы ответа, которого никто не даст: прогон вставал
     # молча на середине, без единой строки о причине -- так это и выглядело.
-    monkeypatch.setattr("tkinter.messagebox.askyesno", lambda *a, **k: True)
+    monkeypatch.setattr(messagebox, "askyesno", lambda *a, **k: True)
     configs._delete(name)
     app.update()
 
@@ -961,7 +985,7 @@ def test_a_configuration_survives_a_refused_confirmation(gui_app, tmp_path, monk
     app.show_frame(ConfigsListFrame)
     configs = app._current_frame
     configs.table.selection_set(configs.table.get_children()[0])
-    monkeypatch.setattr("tkinter.messagebox.askyesno", lambda *a, **k: False)
+    monkeypatch.setattr(messagebox, "askyesno", lambda *a, **k: False)
     configs._delete(name)
     app.update()
 
@@ -1035,7 +1059,6 @@ def test_leaving_a_screen_does_not_leave_tk_variables_for_another_thread(gui_app
     orphaned. This checks that nothing of Tk's is left uncollected afterwards.
     """
     import gc
-    import tkinter as tk
 
     app = gui_app
     _open_container(app, tmp_path)
@@ -1251,7 +1274,7 @@ def test_a_broken_signature_is_refused_without_asking(gui_app, tmp_path, monkeyp
     from portable_os_admin.install import distribution
 
     monkeypatch.setattr(
-        "tkinter.messagebox.askyesno",
+        messagebox, "askyesno",
         lambda *a, **k: pytest.fail("испорченную подпись предложили принять"),
     )
     wizard = _deploy_wizard(gui_app, tmp_path)
@@ -2005,6 +2028,25 @@ def _open_revoke(app, media_id: str = "46aed677"):
     return window
 
 
+def test_closing_media_properties_unmounts_the_exchange_volume(gui_app, tmp_path):
+    from portable_os_admin.gui.screens.media_properties import open_media_properties
+
+    _open_container(gui_app, tmp_path)
+    medium = _issue_a_medium(gui_app)
+    window = open_media_properties(gui_app, gui_app, medium.media_id)
+    closed = []
+
+    class Volume:
+        def close(self):
+            closed.append(True)
+
+    window._volume = Volume()
+    window.destroy()
+    gui_app.update()
+
+    assert closed == [True]
+
+
 def test_the_revoke_screen_does_not_pretend_a_mark_locks_the_medium(gui_app, tmp_path):
     """Без подключённого сервера отзыв остаётся локальной записью."""
     app = gui_app
@@ -2242,6 +2284,7 @@ def test_every_table_is_built_by_the_same_helper(gui_app):
     assert not offenders, "таблица собрана мимо data_table: " + ", ".join(offenders)
 
 
+@pytest.mark.skipif(using_gtk(), reason="Tk font metrics")
 def test_narrow_columns_keep_a_minimum_and_get_a_scrollbar(gui_app, tmp_path):
     """Узкое окно не съедает колонку до нечитаемого.
 
@@ -2404,6 +2447,7 @@ def test_the_wizard_opens_with_focus_off_the_buttons(gui_app, tmp_path):
     assert focused.startswith(str(wizard.body)), f"фокус вне содержимого шага: {focused}"
 
 
+@pytest.mark.skipif(using_gtk(), reason="Tk focus style")
 def test_the_accent_button_shows_its_focus(gui_app):
     """Рамка фокуса на главной кнопке видима.
 
@@ -2633,10 +2677,10 @@ def test_configurations_travel_between_administrators_through_the_screen(gui_app
     app.update()
     assert screen.config_name == "stick1", "выбор не доехал до окна обмена"
     monkeypatch.setattr(
-        "tkinter.simpledialog.askstring",
+        simpledialog, "askstring",
         lambda *a, **k: colleague_code,
     )
-    monkeypatch.setattr("tkinter.filedialog.asksaveasfilename", lambda *a, **k: str(parcel))
+    monkeypatch.setattr(filedialog, "asksaveasfilename", lambda *a, **k: str(parcel))
     screen._send_selected()
     app.update()
 
@@ -2656,8 +2700,8 @@ def test_configurations_travel_between_administrators_through_the_screen(gui_app
     app.show_section("configs")
     app.update()
     receiver = open_configs_share(app._current_frame, app)
-    monkeypatch.setattr("tkinter.filedialog.askopenfilename", lambda *a, **k: str(parcel))
-    monkeypatch.setattr("tkinter.messagebox.askyesno", lambda *a, **k: True)
+    monkeypatch.setattr(filedialog, "askopenfilename", lambda *a, **k: str(parcel))
+    monkeypatch.setattr(messagebox, "askyesno", lambda *a, **k: True)
     receiver._receive()
     app.update()
 
@@ -2753,8 +2797,6 @@ def test_a_table_inside_a_wizard_keeps_more_than_one_row_visible(gui_app):
     высоты не добавляет: внутри прокручиваемого шага мастера у таблицы нет
     соперников за место, и запрошенная строка так строкой и остаётся.
     """
-    from tkinter import ttk
-
     from portable_os_admin.gui.widgets import Column, data_table
 
     holder = ttk.Frame(gui_app)

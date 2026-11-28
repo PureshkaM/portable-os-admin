@@ -10,8 +10,8 @@
 """
 from __future__ import annotations
 
-import tkinter as tk
-from tkinter import messagebox, ttk
+from ..ui import tk
+from ..ui import messagebox, ttk
 
 from ...install import leftovers
 from .. import theme

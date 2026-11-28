@@ -20,9 +20,9 @@
 from __future__ import annotations
 
 import datetime
-import tkinter as tk
+from ..ui import tk
 from pathlib import Path
-from tkinter import filedialog, simpledialog, ttk
+from ..ui import filedialog, simpledialog, ttk
 
 from ...admin import ExchangeManager, MediaActions, media_revoke, revocation_publish
 from ...admin.service_volumes import ServiceVolumeError, open_exchange

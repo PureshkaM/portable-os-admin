@@ -1,4 +1,4 @@
-"""Tkinter GUI entry point.
+"""Desktop GUI entry point.
 
 Same window flow as the Textual TUI (`portable_os_admin.tui.app`) -- a
 startup screen to open/create the admin container, then a dashboard giving
@@ -13,11 +13,11 @@ from __future__ import annotations
 import gc
 import os
 import signal
-import tkinter as tk
+from .ui import tk
 from pathlib import Path
-from tkinter import ttk
+from .ui import ttk
 
-from tkinter import messagebox
+from .ui import messagebox
 
 from .. import ADMIN_APP_NAME, SYSTEM_NAME
 from ..config import ConfigManager
@@ -138,12 +138,12 @@ class PortableOSAdminGUI(tk.Tk):
     def _teardown_current(self) -> None:
         if self._current_frame is not None:
             self._current_frame.destroy()
+            self._current_frame = None
             # On the UI thread, deliberately: a screen leaves tk.Variable
             # objects behind, and finalising one from a worker thread calls
             # Tcl from the wrong thread and hangs that thread for good. See
             # gui/widgets.py run_in_background.
             gc.collect()
-            self._current_frame = None
 
     def set_status(self, text: str) -> None:
         """Строка пояснения к разделу, на который наведён курсор.

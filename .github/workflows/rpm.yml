@@ -1,4 +1,4 @@
-# Пакет содержит код Якоря. Python, Tk и cryptography устанавливает ОС.
+# Пакет содержит код Якоря. Python, GTK и cryptography устанавливает ОС.
 name: rpm
 
 on:
@@ -7,6 +7,8 @@ on:
     paths:
       - "src/**"
       - "packaging/**"
+      - "tests/test_gui.py"
+      - "tests/test_packaging.py"
       - "pyproject.toml"
       - ".github/workflows/rpm.yml"
   workflow_dispatch:
@@ -21,7 +23,20 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -q --no-install-recommends \
-            rpm xvfb xauth python3-tk python3-cryptography
+            rpm xvfb xauth gir1.2-gtk-3.0 python3-gi python3-cryptography python3-pytest
+
+      - name: Проверить сценарии Ткача на GTK 3
+        run: |
+          PYTHONPATH="$PWD/src" G_DEBUG=fatal-criticals xvfb-run -a /usr/bin/python3 - <<'PY'
+          import sys
+          import pytest
+          from portable_os_admin.gui.ui import select_gtk
+
+          select_gtk()
+          result = pytest.main(["-q", "tests/test_gui.py", "tests/test_packaging.py"])
+          assert "tkinter" not in sys.modules
+          raise SystemExit(result)
+          PY
 
       - name: Собрать пакет
         run: sh packaging/build-rpm.sh
@@ -37,12 +52,16 @@ jobs:
           xvfb-run -a /usr/bin/python3 -I - "$root/usr/lib/portable-os-admin/app" <<'PY'
           import sys
           sys.path.insert(0, sys.argv[1])
+          from portable_os_admin.gui.ui import select_gtk
+
+          select_gtk()
           from portable_os_admin.gui.app import PortableOSAdminGUI
 
           window = PortableOSAdminGUI()
           window.update()
-          assert window.winfo_viewable()
-          print(window.title())
+          assert window.widget.get_visible()
+          assert "tkinter" not in sys.modules
+          print(window.widget.get_title())
           window.destroy()
           PY
 

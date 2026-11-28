@@ -11,9 +11,9 @@ from __future__ import annotations
 import gc
 import queue
 import threading
-import tkinter as tk
+from .ui import tk
 from contextlib import contextmanager
-from tkinter import ttk
+from .ui import ttk
 from typing import Callable, NamedTuple
 
 from ..config.validator import ConfigValidationUnavailableError

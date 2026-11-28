@@ -37,9 +37,9 @@
 from __future__ import annotations
 
 import os
-import tkinter as tk
+from ..ui import tk
 from pathlib import Path
-from tkinter import filedialog, ttk
+from ..ui import filedialog, ttk
 
 from ...admin import MediaReleaseService
 from ...config.schema import InstallConfig

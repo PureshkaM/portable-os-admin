@@ -1,6 +1,6 @@
 Name:           portable-os-admin
 Version:        1.2.0
-Release:        2%{?dist}
+Release:        3%{?dist}
 Summary:        Ткач — приложение администратора системы «Шлейф»
 
 License:        MIT
@@ -8,9 +8,10 @@ URL:            https://github.com/PureshkaM/portable-os-admin
 Source0:        %{name}-%{version}.tar.gz
 BuildArch:      noarch
 
-# Штатный менеджер пакетов разрешает зависимости из настроенных каналов РЕД ОС.
+# Зависимости интерфейса доступны в репозитории сертифицированного ISO РЕД ОС 8.
 Requires:       python3 >= 3.9
-Requires:       python3-tkinter
+Requires:       gtk3
+Requires:       python3-gobject
 Requires:       python3-cryptography >= 2.6
 # pkexec, through which the application asks the desktop for administrator
 # rights. The agent that draws the dialog comes with the desktop environment.
@@ -18,6 +19,8 @@ Requires:       polkit
 Requires:       parted
 Requires:       gdisk
 Requires:       cryptsetup
+Requires:       dnf
+Requires:       attr
 # The installer creates the target's filesystems and erases the medium itself,
 # so the admin host needs these even though the *target* system gets its own.
 Requires:       dosfstools
@@ -56,9 +59,9 @@ Suggests:       qemu-user-static
 Creates and administers an encrypted admin container, builds install
 configurations, installs Debian or RedOS onto an external
 LUKS-encrypted medium, and manages its logs, exchange partition and
-recovery codes afterwards. The interface is a guided Tkinter GUI.
+recovery codes afterwards. The interface is a guided GTK 3 GUI.
 
-Uses system Python, Tk and cryptography from the operating system repositories.
+Uses system Python, GTK 3, PyGObject and cryptography from the operating system repositories.
 No Python interpreter or third-party libraries are bundled.
 
 %prep
@@ -75,7 +78,7 @@ mkdir -p %{buildroot}/usr/lib/portable-os-admin/app
 cp -r src/portable_os_admin %{buildroot}/usr/lib/portable-os-admin/app/
 find %{buildroot}/usr/lib/portable-os-admin/app -name __pycache__ -type d -exec rm -rf {} +
 cat > %{buildroot}/usr/lib/portable-os-admin/app/__main__.py <<'EOF'
-from portable_os_admin.gui.app import run
+from portable_os_admin.gui.gtk3 import run
 
 run()
 EOF

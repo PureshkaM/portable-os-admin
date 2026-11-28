@@ -92,7 +92,9 @@ def test_the_rpm_resolves_python_dependencies_from_the_operating_system():
     requires = {
         line.split()[1] for line in spec.splitlines() if line.startswith("Requires:")
     }
-    assert {"python3", "python3-tkinter", "python3-cryptography"} <= requires
+    assert {"python3", "gtk3", "python3-gobject", "python3-cryptography"} <= requires
+    assert "python3-tkinter" not in requires
+    assert "from portable_os_admin.gui.gtk3 import run" in spec
     assert "exec /usr/bin/python3 -I /usr/lib/portable-os-admin/app" in spec
     assert "/usr/lib/portable-os-admin/runtime" not in spec
 

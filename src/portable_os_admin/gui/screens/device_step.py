@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import os
 import signal
-import tkinter as tk
-from tkinter import ttk
+from ..ui import tk
+from ..ui import ttk
 
 from ...install import BlockDevice, DeviceLister, leftovers
 from .. import theme

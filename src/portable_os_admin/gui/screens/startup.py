@@ -25,9 +25,9 @@ admin.container», не говоря где: путь относительный
 """
 from __future__ import annotations
 
-import tkinter as tk
+from ..ui import tk
 from pathlib import Path
-from tkinter import filedialog, ttk
+from ..ui import filedialog, ttk
 
 from ... import ADMIN_APP_NAME
 from .. import theme

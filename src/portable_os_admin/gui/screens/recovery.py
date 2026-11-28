@@ -1,8 +1,8 @@
 """UC-7 "Выдача кода восстановления доступа"."""
 from __future__ import annotations
 
-import tkinter as tk
-from tkinter import ttk
+from ..ui import tk
+from ..ui import ttk
 
 from ...errors import MediaNotRegisteredError
 from ...recovery import RecoveryService

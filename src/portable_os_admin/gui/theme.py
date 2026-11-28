@@ -28,9 +28,11 @@ README, раздел «Архитектура» "Упаковка") rules out an
 """
 from __future__ import annotations
 
-import tkinter as tk
-from tkinter import font as tkfont
-from tkinter import ttk
+import sys
+
+from .ui import tk
+from .ui import ttk
+from .ui import using_gtk
 
 # ----------------------------------------------------------------------
 # Palette
@@ -101,13 +103,13 @@ FONT_SMALL = ("TkDefaultFont", 9)
 FONT_MONO = ("TkFixedFont", 10)
 
 
-def apply(root: tk.Misc) -> ttk.Style:
-    """Applies the theme to a Tk root and returns the configured style.
+def apply(root: tk.Misc):
+    """Apply the desktop theme for the selected interface."""
+    if using_gtk():
+        from .gtk3 import theme as gtk_theme
 
-    Built on "clam", the one built-in ttk theme that honours the colour options
-    set here on every platform -- the native themes on macOS and Windows draw
-    their own chrome and quietly ignore most of it.
-    """
+        return gtk_theme.apply(root, sys.modules[__name__])
+
     style = ttk.Style(root)
     style.theme_use("clam")
 
@@ -319,8 +321,13 @@ def apply(root: tk.Misc) -> ttk.Style:
     return style
 
 
-def fixed_font(size: int = 10) -> tkfont.Font:
+def fixed_font(size: int = 10):
     """A monospaced font for anything that must line up column by column."""
+    if using_gtk():
+        return ("TkFixedFont", size)
+
+    from .ui import font as tkfont
+
     font = tkfont.nametofont("TkFixedFont").copy()
     font.configure(size=size)
     return font

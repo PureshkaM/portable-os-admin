@@ -6,9 +6,9 @@ delete, browse its repository packages, or jump straight to installing it.
 """
 from __future__ import annotations
 
-import tkinter as tk
+from ..ui import tk
 from pathlib import Path
-from tkinter import ttk
+from ..ui import ttk
 
 from ...config.validator import ConfigValidationUnavailableError
 from .. import theme
@@ -186,7 +186,7 @@ class ConfigsListFrame(ttk.Frame):
         # давно прикрыты -- стирание носителя требует повторить путь устройства,
         # уборка следов спрашивает, -- и удаление оставалось единственным, что
         # срабатывало от одного нажатия.
-        from tkinter import messagebox
+        from ..ui import messagebox
 
         if not messagebox.askyesno(
             "Удалить конфигурацию",

@@ -36,8 +36,8 @@
 """
 from __future__ import annotations
 
-import tkinter as tk
-from tkinter import ttk
+from .ui import tk
+from .ui import ttk
 
 from .. import ADMIN_APP_NAME, SYSTEM_NAME
 from . import theme

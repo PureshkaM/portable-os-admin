@@ -16,9 +16,9 @@ from __future__ import annotations
 
 import datetime
 import json
-import tkinter as tk
+from ..ui import tk
 from pathlib import Path
-from tkinter import filedialog, ttk
+from ..ui import filedialog, ttk
 
 from ...admin import org_root
 from ...install.access.runtime import poa_trust

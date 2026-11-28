@@ -260,7 +260,10 @@ def build_privileged_argv(environment: dict[str, str] | None = None) -> list[str
         for name in ("DISPLAY", "XAUTHORITY", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR", ELEVATED_MARKER)
         if name in environment
     ]
-    return ["pkexec", "env", *passthrough, sys.executable, "-m", "portable_os_admin.gui.app"]
+    from .ui import using_gtk
+
+    module = "portable_os_admin.gui.gtk3" if using_gtk() else "portable_os_admin.gui.app"
+    return ["pkexec", "env", *passthrough, sys.executable, "-m", module]
 
 
 NO_PKEXEC = (
@@ -321,8 +324,8 @@ def _report(message: str) -> None:
     """
     print(message, file=sys.stderr)
     try:
-        import tkinter as tk
-        from tkinter import messagebox
+        from .ui import tk
+        from .ui import messagebox
 
         root = tk.Tk()
         root.withdraw()

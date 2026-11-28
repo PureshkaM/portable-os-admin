@@ -11,8 +11,8 @@ from __future__ import annotations
 
 import platform
 import re
-import tkinter as tk
-from tkinter import ttk
+from ..ui import tk
+from ..ui import ttk
 
 import json
 
@@ -798,7 +798,7 @@ class ConfigWizardFrame(WizardFrame):
 
     def _choose_image(self) -> None:
         """Выбор образа и чтение всего, что он о себе знает, одним разом."""
-        from tkinter import filedialog
+        from ..ui import filedialog
 
         chosen = filedialog.askopenfilename(
             parent=self,

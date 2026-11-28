@@ -3,7 +3,7 @@
 #
 # polkit clears the environment of the program it launches, so the session's
 # display is handed in as arguments -- without it the privileged copy has no
-# screen and dies with a Tk connection error that explains nothing.
+# screen and cannot open its window.
 #
 # The path of this script is referenced verbatim by
 # /usr/share/polkit-1/actions/ru.portableosadmin.policy; moving one without the

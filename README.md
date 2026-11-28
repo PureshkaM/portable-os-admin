@@ -57,12 +57,22 @@
 Пакеты доступны в [выпусках](https://github.com/PureshkaM/portable-os-admin/releases)
 и [сборках GitHub Actions](https://github.com/PureshkaM/portable-os-admin/actions).
 Версия пакета должна соответствовать используемым исходникам.
-Пакеты приложения используют системные Python, Tk и cryptography.
-На сертифицированной РЕД ОС 8 устанавливай `.rpm` через DNF с каналами
-`base` и `updates` ветки `8.0c` и включённой проверкой RPM-подписей.
-В доверенном локальном зеркале организации должны быть доступны те же пакеты.
+Пакет для Debian использует системные Python, Tkinter и cryptography.
+Для РЕД ОС 8 интерфейс RPM использует GTK 3 и PyGObject. Их пакеты
+(`gtk3` и `python3-gobject`) и остальные зависимости установки RPM доступны
+на установочном ISO сертифицированной редакции.
 Если зависимость отсутствует в разрешённых каналах, её конкретную версию
 и источник до включения в поставку проверяет организация.
+
+Для установки RPM с доверенного ISO смонтируй его в `/mnt/redos`
+и запусти из каталога, где лежит пакет:
+
+```sh
+sudo dnf --repofrompath=poa-iso,file:///mnt/redos --repo=poa-iso \
+  --setopt=poa-iso.gpgcheck=1 \
+  --setopt=poa-iso.gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-RED-SOFT \
+  install ./portable-os-admin-1.2.0-3.noarch.rpm
+```
 
 После установки команда запуска:
 
@@ -85,10 +95,14 @@ portable-os-admin
 
 ## Разработка и проверки
 
-Для запуска из исходников нужны Python 3.9+, Tkinter и polkit.
-Tkinter устанавливается пакетным менеджером ОС. Для сборки и записи также
+Для запуска из исходников нужны Python 3.9+, polkit и системные пакеты
+соответствующего интерфейса. На РЕД ОС GTK-версия запускается командой
+`PYTHONPATH=src /usr/bin/python3 -m portable_os_admin.gui.gtk3`.
+Для сборки и записи также
 нужны системные утилиты и пакеты, включая cryptsetup, parted, squashfs-tools,
 veritysetup, attr и debootstrap либо dnf для соответствующей целевой ОС.
+Утилиты veritysetup нет на проверенном ISO РЕД ОС 8. Она требуется для
+сборки образа с dm-verity.
 Одна установка Python-зависимостей их не заменяет.
 
 ```sh

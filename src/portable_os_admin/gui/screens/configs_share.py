@@ -17,9 +17,9 @@
 """
 from __future__ import annotations
 
-import tkinter as tk
+from ..ui import tk
 from pathlib import Path
-from tkinter import ttk
+from ..ui import ttk
 
 from ...config import exchange
 from .. import theme
@@ -112,7 +112,7 @@ class ConfigsShareWindow(PropertiesWindow):
         только этот контейнер. Поэтому он показывается прямо на экране, а не
         под подтверждением.
         """
-        from tkinter import messagebox
+        from ..ui import messagebox
 
         with error_guard(self.message_bar):
             identity = exchange.identity_of(self.app.container)
@@ -141,7 +141,7 @@ class ConfigsShareWindow(PropertiesWindow):
         self._send(names)
 
     def _send(self, names: "list[str]") -> None:
-        from tkinter import filedialog, simpledialog
+        from ..ui import filedialog, simpledialog
 
         code = simpledialog.askstring(
             "Код получателя",
@@ -174,7 +174,7 @@ class ConfigsShareWindow(PropertiesWindow):
             )
 
     def _receive(self) -> None:
-        from tkinter import filedialog, messagebox
+        from ..ui import filedialog, messagebox
 
         source = filedialog.askopenfilename(
             parent=self,
